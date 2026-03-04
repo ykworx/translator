@@ -389,8 +389,8 @@ class TranslatorWindow:
         self._is_table = is_table
         self._is_image = is_image
         self._original_html = original_html
-        panel_w = 900 if is_table else (600 if is_image else 520)
-        panel_h = 800 if is_table else (600 if is_image else 380)
+        panel_w = 620 if is_table else (620 if is_image else 520)
+        panel_h = 540 if is_table else (540 if is_image else 380)
         self._create_panel(panel_w, panel_h)
         if is_table:
             # 타이틀(38) + 라벨(18) + 원문(200) + gap(8) + 라벨(18) + 번역최소(200) + 버튼영역(56)
@@ -643,86 +643,62 @@ class TranslatorWindow:
         return btn
 
     def _make_table_view(self, content, rect, is_html=False):
-        """HTML 또는 TSV를 테이블로 렌더링 (NSAttributedString + NSTextView)"""
-        from Foundation import NSData
+        """HTML 또는 TSV를 테이블로 렌더링 (WKWebView — rowspan/colspan 완전 지원)"""
+        import objc as _objc
+        _wk = {}
+        _objc.loadBundle('WebKit', _wk, bundle_path='/System/Library/Frameworks/WebKit.framework')
+        WKWebView = _wk['WKWebView']
+        WKWebViewConfiguration = _wk['WKWebViewConfiguration']
         appearance = AppKit.NSApp.effectiveAppearance()
         is_dark = "Dark" in str(appearance.name())
         fg = "#e0e0e0" if is_dark else "#222"
         bg = "#2a2a2a" if is_dark else "#fff"
+        body_bg = "#1e1e1e" if is_dark else "#f5f5f5"
         border = "#555" if is_dark else "#ccc"
+        header_bg = "#333" if is_dark else "#f0f0f0"
 
         if is_html and "<table" in content.lower():
-            # AI가 반환한 HTML 테이블 — 스타일만 입혀서 렌더링
             import re
             styled_table = content
-            # <table>에 스타일 추가 (width 미지정 → 내용에 맞게 자동 조절)
             styled_table = re.sub(
                 r'<table[^>]*>',
-                f'<table style="border-collapse:collapse; '
-                f'font-family:-apple-system,sans-serif; font-size:12px; color:{fg};">',
+                '<table>',
                 styled_table, count=1, flags=re.IGNORECASE
-            )
-            # <td>, <th>에 스타일 추가
-            cell_style = (
-                f'border:1px solid {border}; padding:6px 10px; '
-                f'vertical-align:top; background:{bg}; white-space:pre-wrap;'
-            )
-            styled_table = re.sub(
-                r'<(td|th)(\s[^>]*)?>',
-                lambda m: f'<{m.group(1)}{m.group(2) or ""} style="{cell_style}">',
-                styled_table, flags=re.IGNORECASE
             )
             table_html = styled_table
         else:
-            # TSV → HTML 테이블 (폴백)
             rows = content.strip().split("\n")
             table_rows = []
-            header_bg = "#333" if is_dark else "#f0f0f0"
             for i, row in enumerate(rows):
                 cells = row.split("\t")
-                cell_bg = header_bg if i == 0 else bg
-                weight = "bold" if i == 0 else "normal"
+                tag = "th" if i == 0 else "td"
                 table_rows.append(
                     "<tr>" +
-                    "".join(
-                        f'<td style="border:1px solid {border}; padding:6px 10px; '
-                        f'vertical-align:top; background:{cell_bg}; font-weight:{weight}; '
-                        f'white-space:pre-wrap;">'
-                        f'{html_mod.escape(c)}</td>' for c in cells
-                    ) + "</tr>"
+                    "".join(f'<{tag}>{html_mod.escape(c)}</{tag}>' for c in cells) +
+                    "</tr>"
                 )
-            table_html = (
-                f'<table style="border-collapse:collapse; '
-                f'font-family:-apple-system,sans-serif; font-size:12px; color:{fg};">'
-                f'{"".join(table_rows)}</table>'
-            )
+            table_html = f'<table>{"".join(table_rows)}</table>'
 
-        html_str = (
-            f'<html><head><meta charset="utf-8"></head>'
-            f'<body style="margin:0;">{table_html}</body></html>'
+        html_str = f'''<html><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            * {{ margin:0; padding:0; box-sizing:border-box; }}
+            body {{ background:{body_bg}; font-family:-apple-system,sans-serif; font-size:12px; color:{fg}; padding:8px; }}
+            table {{ border-collapse:collapse; width:100%; }}
+            th, td {{ border:1px solid {border}; padding:4px 6px; vertical-align:top;
+                      background:{bg}; white-space:pre-wrap; font-size:12px; }}
+            th {{ background:{header_bg}; font-weight:bold; }}
+        </style></head><body>{table_html}</body></html>'''
+
+        config = WKWebViewConfiguration.alloc().init()
+        wv = WKWebView.alloc().initWithFrame_configuration_(
+            ((rect[0][0], rect[0][1]), (rect[1][0], rect[1][1])),
+            config
         )
-        data = NSData.dataWithBytes_length_(html_str.encode("utf-8"), len(html_str.encode("utf-8")))
-        result = AppKit.NSAttributedString.alloc().initWithHTML_documentAttributes_(data, None)
-        attr_str = result[0] if isinstance(result, tuple) else result
-
-        scroll = NSScrollView.alloc().initWithFrame_(rect)
-        scroll.setHasVerticalScroller_(True)
-        scroll.setHasHorizontalScroller_(True)
-        scroll.setBorderType_(0)
-
-        view_w = rect[1][0]
-        tv = NSTextView.alloc().initWithFrame_(((0, 0), (view_w, rect[1][1])))
-        tv.textStorage().setAttributedString_(attr_str)
-        tv.setEditable_(False)
-        tv.setBackgroundColor_(SURFACE)
-        tv.setTextContainerInset_((4, 4))
-        # 내용이 뷰 너비보다 넓으면 가로 스크롤
-        tv.setHorizontallyResizable_(True)
-        tv.textContainer().setWidthTracksTextView_(False)
-        tv.textContainer().setContainerSize_((max(view_w, 2000), 10000))
-        scroll.setDocumentView_(tv)
-        scroll.setBackgroundColor_(SURFACE)
-        return scroll
+        wv.loadHTMLString_baseURL_(html_str, None)
+        wv.setValue_forKey_(False, "drawsBackground")
+        wv.setMagnification_(1.0)
+        return wv
 
     def _make_text_area(self, text, rect):
         scroll = NSScrollView.alloc().initWithFrame_(rect)
