@@ -265,31 +265,47 @@ FG_DIM = NSColor.secondaryLabelColor()
 SURFACE = NSColor.controlBackgroundColor()
 
 # ─── Menu Bar Status Item ─────────────────────────────────────
-class StatusBarItem:
+class StatusBarItem(NSObject):
     """macOS 메뉴바 상태 아이콘"""
-    def __init__(self):
+    def init(self):
+        self = objc.super(StatusBarItem, self).init()
+        if self is None:
+            return None
         self._status_item = None
-        self._default_title = ""
         self._coordinator = None
         self._model_items = {}
+        self._anim_timer = None
+        self._anim_frame = 0
+        self._anim_images = []
+        self._static_image = None
+        return self
 
-    def show(self, message, coordinator=None):
-        self._default_title = "🌐"
+    def _load_icon(self, filename):
+        path = os.path.join(os.path.dirname(__file__), filename)
+        img = AppKit.NSImage.alloc().initWithContentsOfFile_(path)
+        if img:
+            img.setSize_((18, 18))
+            img.setTemplate_(True)
+        return img
+
+    def setupWithMessage_coordinator_(self, message, coordinator=None):
         if coordinator:
             self._coordinator = coordinator
         if self._status_item:
             return
 
+        # 애니메이션 프레임 로드
+        self._static_image = self._load_icon("menubar_icon.png")
+        for i in range(4):
+            frame = self._load_icon(f"menubar_icon_{i}.png")
+            if frame:
+                self._anim_images.append(frame)
+
         sb = AppKit.NSStatusBar.systemStatusBar()
         self._status_item = sb.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
 
-        # 아이콘 이미지 로드
-        icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
-        icon_image = AppKit.NSImage.alloc().initWithContentsOfFile_(icon_path)
-        if icon_image:
-            icon_image.setSize_((18, 18))
-            icon_image.setTemplate_(False)
-            self._status_item.button().setImage_(icon_image)
+        if self._static_image:
+            self._status_item.button().setImage_(self._static_image)
         else:
             self._status_item.button().setTitle_("🌐")
         self._status_item.button().setToolTip_(message)
@@ -338,15 +354,30 @@ class StatusBarItem:
         for m, item in self._model_items.items():
             item.setState_(1 if m == current else 0)
 
+    def animateFrame_(self, timer):
+        """NSTimer 콜백: 다음 프레임으로 전환"""
+        if not self._anim_images or not self._status_item:
+            return
+        self._anim_frame = (self._anim_frame + 1) % len(self._anim_images)
+        self._status_item.button().setImage_(self._anim_images[self._anim_frame])
+
     def set_status(self, message):
-        """메뉴바 타이틀을 임시 변경"""
-        if self._status_item:
-            self._status_item.button().setTitle_(message)
+        """번역 중 애니메이션 시작"""
+        if not self._status_item:
+            return
+        if self._anim_images and not self._anim_timer:
+            self._anim_frame = 0
+            self._anim_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.3, self, "animateFrame:", None, True
+            )
 
     def reset_status(self):
-        """메뉴바 타이틀을 기본으로 복원"""
-        if self._status_item:
-            self._status_item.button().setTitle_(self._default_title)
+        """애니메이션 중지, 기본 아이콘 복원"""
+        if self._anim_timer:
+            self._anim_timer.invalidate()
+            self._anim_timer = None
+        if self._status_item and self._static_image:
+            self._status_item.button().setImage_(self._static_image)
 
 # ─── Result Window ────────────────────────────────────────────
 class TranslatorWindow:
@@ -740,7 +771,7 @@ class Coordinator(NSObject):
         if self is None:
             return None
         self._window = TranslatorWindow()
-        self._status_bar = StatusBarItem()
+        self._status_bar = StatusBarItem.alloc().init()
         return self
 
     def triggerTranslation_(self, timer):
@@ -950,7 +981,7 @@ class Coordinator(NSObject):
 
     def initStatusBar_(self, timer):
         message = str(timer.userInfo()) if hasattr(timer, 'userInfo') else str(timer)
-        self._status_bar.show(message, coordinator=self)
+        self._status_bar.setupWithMessage_coordinator_(message, coordinator=self)
 
     def keepAlive_(self, timer):
         pass  # SIGINT가 메인 런루프에 전달되도록 주기적으로 깨움
