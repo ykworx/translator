@@ -1,0 +1,9 @@
+[    9331ms] [WARNING] Blocked aria-hidden on an element because its descendant retained focus. The focus must not be hidden from assistive technology users. Avoid using aria-hidden on a focused element or its ancestor. Consider using the inert attribute instead, which will also prevent focus. For more details, see the aria-hidden section of the WAI-ARIA specification at https://w3c.github.io/aria/#aria-hidden.
+Element with focus: <div.sZwd7c B6Vhqe>
+Ancestor with aria-hidden: <div.Ih3FE> @ https://accounts.google.com/v3/signin/identifier?continue=https%3A%2F%2Fdocs.google.com%2Fdocument%2Fd%2F1dyf_vwVPefYWoWVFoVfbleT39SYdrhp2f43QCE-PMds%2Fedit%3Ftab%3Dt.0&dsh=S-989816297%3A1772607219660367&followup=https%3A%2F%2Fdocs.google.com%2Fdocument%2Fd%2F1dyf_vwVPefYWoWVFoVfbleT39SYdrhp2f43QCE-PMds%2Fedit%3Ftab%3Dt.0&ifkv=ASfE1-ojfk2GVrgh56CR3rWAI2w7yAgt_JoHPbxt58IsdTvjqk8POJsm-H47BuPkPp36DSyH-yomCQ&ltmpl=docs&osid=1&passive=1209600&service=wise&flowName=GlifWebSignIn&flowEntry=ServiceLogin:0
+[   25010ms] [ERROR] Failed to load resource: net::ERR_FAILED @ chrome-extension://invalid/:0
+[   26908ms] [ERROR] Failed to load resource: net::ERR_FAILED @ chrome-extension://invalid/:0
+[   26984ms] [ERROR] Failed to load resource: net::ERR_FAILED @ chrome-extension://invalid/:0
+[   26991ms] [ERROR] Failed to load resource: net::ERR_FAILED @ chrome-extension://invalid/:0
+[   26992ms] [ERROR] Failed to load resource: net::ERR_FAILED @ chrome-extension://invalid/:0
+[   27210ms] [WARNING] An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing. @ https://docs.google.com/drivesharing/clientmodel?id=1dyf_vwVPefYWoWVFoVfbleT39SYdrhp2f43QCE-PMds&foreignService=kix&authuser=0&origin=https%3A%2F%2Fdocs.google.com:0
