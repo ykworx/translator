@@ -4,7 +4,6 @@
 import html as html_mod
 import os
 import signal
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -35,22 +34,69 @@ from pynput.keyboard import Key, Controller as KBController
 
 TARGET_LANG = "한국어"
 
-# ─── Model Selection ─────────────────────────────────────────
-MODELS = ["gemini", "claude"]
-_current_model_idx = [0]  # 기본: gemini
+# ─── Keychain Helpers ────────────────────────────────────────
+_KEYCHAIN_SERVICE = "com.transrator.api-key"
+_KEYCHAIN_ACCOUNT = "gemini"
 
-def get_current_model():
-    return MODELS[_current_model_idx[0]]
+def _keychain_save(api_key):
+    """API 키를 macOS Keychain에 저장 (기존 값이 있으면 업데이트)"""
+    import subprocess
+    # 기존 키 삭제 (없어도 무시)
+    subprocess.run(
+        ["security", "delete-generic-password",
+         "-s", _KEYCHAIN_SERVICE, "-a", _KEYCHAIN_ACCOUNT],
+        capture_output=True
+    )
+    result = subprocess.run(
+        ["security", "add-generic-password",
+         "-s", _KEYCHAIN_SERVICE, "-a", _KEYCHAIN_ACCOUNT,
+         "-w", api_key],
+        capture_output=True, text=True
+    )
+    return result.returncode == 0
 
-# Gemini client (lazy init)
+def _keychain_load():
+    """Keychain에서 API 키 읽기. 없으면 None 반환"""
+    import subprocess
+    result = subprocess.run(
+        ["security", "find-generic-password",
+         "-s", _KEYCHAIN_SERVICE, "-a", _KEYCHAIN_ACCOUNT, "-w"],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return None
+
+def _keychain_delete():
+    """Keychain에서 API 키 삭제"""
+    import subprocess
+    subprocess.run(
+        ["security", "delete-generic-password",
+         "-s", _KEYCHAIN_SERVICE, "-a", _KEYCHAIN_ACCOUNT],
+        capture_output=True
+    )
+
+# ─── Gemini client (lazy init) ───────────────────────────────
 _gemini_model = None
+def _get_api_key():
+    """API 키 조회: Keychain → 환경변수 순"""
+    key = _keychain_load()
+    if key:
+        return key
+    return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
+
+def _reset_gemini():
+    """Gemini 클라이언트 초기화 (키 변경 시 호출)"""
+    global _gemini_model
+    _gemini_model = None
+
 def _get_gemini():
     global _gemini_model
     if _gemini_model is None:
         import google.generativeai as genai
-        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
+        api_key = _get_api_key()
         if not api_key:
-            raise RuntimeError("GEMINI_API_KEY 또는 GOOGLE_API_KEY 환경변수를 설정하세요")
+            raise RuntimeError("API 키가 설정되지 않았습니다. 메뉴바 → 설정에서 입력하세요.")
         genai.configure(api_key=api_key)
         _gemini_model = genai.GenerativeModel("gemini-2.0-flash")
     return _gemini_model
@@ -129,20 +175,10 @@ def copy_selection():
     kb.release(Key.cmd)
 
 # ─── Model API Call ──────────────────────────────────────────
-def _call_model(prompt, timeout=60):
-    """현재 선택된 모델로 프롬프트를 전송하고 응답 텍스트를 반환"""
-    model = get_current_model()
-    if model == "gemini":
-        resp = _get_gemini().generate_content(prompt)
-        return resp.text.strip()
-    else:
-        result = subprocess.run(
-            ["claude", "-p", "--model", "haiku", prompt],
-            capture_output=True, text=True, timeout=timeout
-        )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or "Claude CLI 실행 실패")
-        return result.stdout.strip()
+def _call_model(prompt):
+    """Gemini API로 프롬프트를 전송하고 응답 텍스트를 반환"""
+    resp = _get_gemini().generate_content(prompt)
+    return resp.text.strip()
 
 # ─── Translation ──────────────────────────────────────────────
 def translate(text, table_html=None):
@@ -166,8 +202,8 @@ def translate(text, table_html=None):
         )
     try:
         mode = "HTML 테이블" if table_html else "텍스트"
-        log(f"[{get_current_model()}] 번역 중… ({mode}, 길이: {len(table_html or text)}자)")
-        result = _call_model(prompt, timeout=60)
+        log(f"[gemini] 번역 중… ({mode}, 길이: {len(table_html or text)}자)")
+        result = _call_model(prompt)
         # AI가 마크다운 코드 블록으로 감싸는 경우 제거
         if result.startswith("```"):
             lines = result.split("\n")
@@ -179,18 +215,12 @@ def translate(text, table_html=None):
             result = "\n".join(lines).strip()
         log("번역 완료")
         return result
-    except subprocess.TimeoutExpired:
-        log("번역 시간 초과 (60초)")
-        return "[오류] 번역 시간 초과 (60초)"
     except Exception as e:
         log(f"번역 오류: {e}")
         return f"[오류] {e}"
 
 def translate_image(image_data):
     """이미지 속 일본어 텍스트를 추출하고 번역 (Gemini Vision)"""
-    model = get_current_model()
-    if model != "gemini":
-        return "[오류] 이미지 번역은 Gemini만 지원합니다. 메뉴바에서 GEMINI로 전환하세요."
     try:
         log(f"[gemini] 이미지 번역 중… ({len(image_data)} bytes)")
         gemini = _get_gemini()
@@ -230,8 +260,8 @@ def suggest_replies(original, translated):
         f"Korean translation: {translated}"
     )
     try:
-        log(f"[{get_current_model()}] 빠른 답장 생성 중…")
-        raw = _call_model(prompt, timeout=30)
+        log("[gemini] 빠른 답장 생성 중…")
+        raw = _call_model(prompt)
         suggestions = []
         for line in raw.split("\n"):
             line = line.strip()
@@ -273,7 +303,7 @@ class StatusBarItem(NSObject):
             return None
         self._status_item = None
         self._coordinator = None
-        self._model_items = {}
+
         self._anim_timer = None
         self._anim_frame = 0
         self._anim_images = []
@@ -323,17 +353,11 @@ class StatusBarItem(NSObject):
 
         menu.addItem_(AppKit.NSMenuItem.separatorItem())
 
-        # 모델 선택
-        for m in MODELS:
-            item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                m.upper(), objc.selector(self._coordinator.onSelectModel_, signature=b"v@:@"), "")
-            item.setTarget_(self._coordinator)
-            if m == get_current_model():
-                item.setState_(1)  # NSOnState
-            self._model_items[m] = item
-            menu.addItem_(item)
-
-        menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        # 설정
+        settings_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "설정…", objc.selector(self._coordinator.onSettings_, signature=b"v@:@"), "")
+        settings_item.setTarget_(self._coordinator)
+        menu.addItem_(settings_item)
 
         # About
         about_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -348,11 +372,6 @@ class StatusBarItem(NSObject):
         menu.addItem_(quit_item)
 
         self._status_item.setMenu_(menu)
-
-    def _update_model_check(self):
-        current = get_current_model()
-        for m, item in self._model_items.items():
-            item.setState_(1 if m == current else 0)
 
     def animateFrame_(self, timer):
         """NSTimer 콜백: 다음 프레임으로 전환"""
@@ -926,12 +945,39 @@ class Coordinator(NSObject):
     def resetStatus_(self, _):
         self._status_bar.reset_status()
 
-    def onSelectModel_(self, sender):
-        selected = str(sender.title()).lower()
-        if selected in MODELS:
-            _current_model_idx[0] = MODELS.index(selected)
-            log(f"모델 변경: {get_current_model()}")
-        self._status_bar._update_model_check()
+    def onSettings_(self, sender):
+        log("설정 클릭")
+        from AppKit import NSAlert, NSTextField
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Gemini API 키 설정")
+
+        current_key = _get_api_key()
+        if current_key:
+            masked = current_key[:4] + "…" + current_key[-4:]
+            alert.setInformativeText_(f"현재 키: {masked}\n새 키를 입력하거나 비워두면 삭제합니다.")
+        else:
+            alert.setInformativeText_("Gemini API 키를 입력하세요.\nhttps://aistudio.google.com/apikey 에서 발급")
+
+        input_field = NSTextField.alloc().initWithFrame_(((0, 0), (300, 24)))
+        input_field.setPlaceholderString_("API 키 입력…")
+        alert.setAccessoryView_(input_field)
+        alert.addButtonWithTitle_("저장")
+        alert.addButtonWithTitle_("취소")
+
+        # 입력 필드에 포커스
+        alert.window().setInitialFirstResponder_(input_field)
+
+        response = alert.runModal()
+        if response == AppKit.NSAlertFirstButtonReturn:
+            new_key = str(input_field.stringValue()).strip()
+            if new_key:
+                _keychain_save(new_key)
+                _reset_gemini()
+                log(f"API 키 저장 완료 (Keychain)")
+            else:
+                _keychain_delete()
+                _reset_gemini()
+                log("API 키 삭제됨")
 
     def onAbout_(self, sender):
         log("About 클릭")
