@@ -753,7 +753,6 @@ class Coordinator(NSObject):
     def triggerTranslation_(self, timer):
         log("단축키 감지 → 선택 텍스트 복사 중…")
         old_clip = get_clipboard()
-        # old_clip이 튜플이면 텍스트 부분만 비교용으로 사용
         old_text = old_clip[0] if isinstance(old_clip, tuple) else (old_clip or "")
         log(f"기존 클립보드: {old_text[:40] if old_text else '(비어있음)'}…")
         copy_selection()
@@ -912,6 +911,9 @@ class Coordinator(NSObject):
             image_data=bytes(image_data) if image_data else None,
         )
         self._status_bar.reset_status()
+        # 번역 후 클립보드 비우기 (이전 이미지/텍스트가 다음 번역에 영향 방지)
+        pb = AppKit.NSPasteboard.generalPasteboard()
+        pb.clearContents()
 
     def showSuggestions_(self, suggestions):
         log(f"showSuggestions_ 호출, {len(suggestions) if suggestions else 0}개")
