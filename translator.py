@@ -339,9 +339,59 @@ class WebMessageHandler(NSObject):
         return self
 
     def userContentController_didReceiveScriptMessage_(self, controller, message):
-        body = message.body()
-        if isinstance(body, str):
+        try:
+            body = str(message.body())
+            log(f"[WebMessage] pron 요청: {body[:40]}")
             self._coordinator.onPronunciationFromJS_(body)
+        except Exception as e:
+            log(f"[WebMessage] 오류: {e}")
+
+
+class MultilineInputView(AppKit.NSTextView):
+    """멀티라인 입력: Enter→전송, Shift+Enter→줄바꿈"""
+    def initWithFrame_(self, frame):
+        self = objc.super(MultilineInputView, self).initWithFrame_(frame)
+        if self:
+            self._on_submit = None
+            self._placeholder = "번역할 텍스트 입력… (Enter)"
+        return self
+
+    def keyDown_(self, event):
+        if event.keyCode() == 36:  # Enter
+            flags = event.modifierFlags()
+            if flags & AppKit.NSEventModifierFlagShift:
+                # Shift+Enter → 줄바꿈
+                self.insertNewlineIgnoringFieldEditor_(self)
+            else:
+                # Enter → 전송
+                text = str(self.string()).strip()
+                if text and self._on_submit:
+                    self._on_submit(text)
+            return
+        objc.super(MultilineInputView, self).keyDown_(event)
+
+    def becomeFirstResponder(self):
+        result = objc.super(MultilineInputView, self).becomeFirstResponder()
+        self.setNeedsDisplay_(True)
+        return result
+
+    def drawRect_(self, rect):
+        objc.super(MultilineInputView, self).drawRect_(rect)
+        if not self.string() and self != self.window().firstResponder():
+            return
+        if not self.string():
+            attrs = {
+                AppKit.NSFontAttributeName: self.font(),
+                AppKit.NSForegroundColorAttributeName: AppKit.NSColor.placeholderTextColor(),
+            }
+            placeholder = AppKit.NSAttributedString.alloc().initWithString_attributes_(
+                self._placeholder, attrs
+            )
+            placeholder.drawAtPoint_((self.textContainerInset().width + 4, self.textContainerInset().height))
+
+    def setStringValue_(self, val):
+        """NSTextField 호환 인터페이스"""
+        self.setString_(val)
 
 
 class InputFieldDelegate(NSObject):
@@ -432,7 +482,7 @@ class TranslatorInputWindow:
         field_x = 12 + lang_w + 8
         field_w = w - field_x - 12
         field = NSTextField.alloc().initWithFrame_(((field_x, 8), (field_w, 32)))
-        field.setPlaceholderString_("번역할 텍스트 입력… (Enter: 번역, Esc: 닫기)")
+        field.setPlaceholderString_("번역할 내용을 입력하거나 붙여넣으세요.")
         field.setFont_(NSFont.systemFontOfSize_(16))
         field.setBordered_(False)
         field.setFocusRingType_(1)  # NSFocusRingTypeNone
@@ -621,6 +671,7 @@ class TranslatorWindow:
 
         # 기존 채팅 창이 있으면 추가
         if self.panel and self._webview:
+            self.remove_loading()
             self._chat_history.append(entry)
             if len(self._chat_history) > 50:
                 self._chat_history = self._chat_history[-50:]
@@ -662,8 +713,8 @@ class TranslatorWindow:
         }
 
     def _render_chat_entry(self, entry):
-        escaped_orig = html_mod.escape(entry["original"]).replace("\n", "<br>")
-        escaped_trans = html_mod.escape(entry["translated"]).replace("\n", "<br>")
+        escaped_orig = html_mod.escape(entry["original"].strip()).replace("\n", "<br>")
+        escaped_trans = html_mod.escape(entry["translated"].strip()).replace("\n", "<br>")
         data_text = html_mod.escape(entry["translated"], quote=True)
         copy_js = "var t=this.parentElement.dataset.text;var a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();document.execCommand('copy');document.body.removeChild(a);this.innerText='\\u2713 복사됨';this.classList.add('copied');var b=this;setTimeout(function(){b.classList.remove('copied');setTimeout(function(){b.innerText='복사'},300)},1200)"
 
@@ -762,7 +813,15 @@ body {{
     border: 1px solid {c["border"]}; padding: 8px 10px;
     text-align: left; vertical-align: top;
 }}
-.table-wrap th {{ background: rgba(128,128,128,0.1); font-weight: 600; }}'''
+.table-wrap th {{ background: rgba(128,128,128,0.1); font-weight: 600; }}
+@keyframes blink {{ 0%,80%,100% {{ opacity:0 }} 40% {{ opacity:1 }} }}
+.loading-dots span {{
+    display: inline-block; width: 6px; height: 6px; margin: 0 2px;
+    border-radius: 50%; background: {c["fg_dim"]};
+    animation: blink 1.4s infinite both;
+}}
+.loading-dots span:nth-child(2) {{ animation-delay: 0.2s; }}
+.loading-dots span:nth-child(3) {{ animation-delay: 0.4s; }}'''
 
     def _build_text_layout(self, content, chat_history, panel_h, w, coordinator, is_dark):
         """채팅 스타일 텍스트 결과 레이아웃"""
@@ -799,10 +858,10 @@ window.onload=function(){{window.scrollTo(0,document.body.scrollHeight);}};
         self._msg_handler = WebMessageHandler.alloc().initWithCoordinator_(coordinator)
         config.userContentController().addScriptMessageHandler_name_(self._msg_handler, "pron")
         top_margin = 38
-        # 레이아웃: [빠른답장 28+6] [입력배경 44+8] [구분선 1]
+        # 레이아웃: [빠른답장 28+6] [입력배경 60+8]
         btn_row_h = 30
-        input_h = 44
-        bottom_area = btn_row_h + input_h + 12  # 86
+        input_h = 60
+        bottom_area = btn_row_h + input_h + 12  # 102
 
         wv = WKWebView.alloc().initWithFrame_configuration_(
             ((0, bottom_area), (w + 40, panel_h - top_margin - bottom_area)),
@@ -814,11 +873,13 @@ window.onload=function(){{window.scrollTo(0,document.body.scrollHeight);}};
         content.addSubview_(wv)
         self._webview = wv
 
-        # 하단 구분선
-        separator = AppKit.NSBox.alloc().initWithFrame_(((0, bottom_area - 1), (w + 40, 1)))
-        separator.setBoxType_(2)  # NSBoxSeparator
-        separator.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
-        content.addSubview_(separator)
+        # 하단 입력 영역 블러 배경
+        blur_bg = AppKit.NSVisualEffectView.alloc().initWithFrame_(((0, 0), (w + 40, bottom_area)))
+        blur_bg.setBlendingMode_(1)  # NSVisualEffectBlendingModeWithinWindow
+        blur_bg.setMaterial_(3)      # NSVisualEffectMaterialHUDWindow
+        blur_bg.setState_(1)         # NSVisualEffectStateActive
+        blur_bg.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+        content.addSubview_(blur_bg)
 
         # 입력 필드 배경 (둥근 모서리)
         input_bg_y = btn_row_h + 4
@@ -835,12 +896,13 @@ window.onload=function(){{window.scrollTo(0,document.body.scrollHeight);}};
         input_bg.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
         content.addSubview_(input_bg)
 
-        # 언어 선택 팝업 (입력 배경 안 좌측)
+        # 언어 선택 팝업 (입력 배경 안 우측)
         lang_w = 100
         lang_h = 28
         lang_y = input_bg_y + (input_h - lang_h) / 2
+        lang_x = w + 40 - 12 - lang_w
         lang_popup = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            ((18, lang_y), (lang_w, lang_h)), False
+            ((lang_x, lang_y), (lang_w, lang_h)), False
         )
         lang_popup.addItemsWithTitles_(LANGUAGES)
         last_lang = _defaults.stringForKey_("target_language") or TARGET_LANG
@@ -849,30 +911,38 @@ window.onload=function(){{window.scrollTo(0,document.body.scrollHeight);}};
         lang_popup.setFont_(NSFont.systemFontOfSize_(12))
         lang_popup.setBordered_(False)
         lang_popup.setFocusRingType_(1)
-        lang_popup.setAutoresizingMask_(NSViewMaxYMargin)
+        lang_popup.setAutoresizingMask_(NSViewMinXMargin | NSViewMaxYMargin)
         content.addSubview_(lang_popup)
         self._lang_popup = lang_popup
 
-        # 입력 필드 (언어 팝업 우측)
-        field_h = 22
-        field_x = 18 + lang_w + 8
-        field_y = input_bg_y + (input_h - field_h) / 2
-        input_field = NSTextField.alloc().initWithFrame_(((field_x, field_y), (w + 40 - field_x - 12, field_h)))
-        input_field.setPlaceholderString_("번역할 텍스트 입력… (Enter)")
-        input_field.setFont_(NSFont.systemFontOfSize_(13))
-        input_field.setBordered_(False)
-        input_field.setFocusRingType_(1)
-        input_field.setBackgroundColor_(NSColor.clearColor())
-        input_field.setTextColor_(FG)
-        input_field.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
-        content.addSubview_(input_field)
+        # 멀티라인 입력 필드 (언어 팝업 좌측)
+        field_x = 18
+        field_y = input_bg_y + 6
+        field_w = lang_x - field_x - 4
+        field_h = input_h - 12
 
-        # 입력 delegate
-        self._input_delegate = InputFieldDelegate.alloc().init()
-        self._input_delegate._on_submit = lambda text: coordinator.onResultInputSubmit_(text)
-        self._input_delegate._on_cancel = lambda: None
-        input_field.setDelegate_(self._input_delegate)
-        self._result_input = input_field
+        scroll = AppKit.NSScrollView.alloc().initWithFrame_(((field_x, field_y), (field_w, field_h)))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setBorderType_(0)
+        scroll.setBackgroundColor_(NSColor.clearColor())
+        scroll.setDrawsBackground_(False)
+        scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+
+        input_tv = MultilineInputView.alloc().initWithFrame_(((0, 0), (field_w, field_h)))
+        input_tv.setFont_(NSFont.systemFontOfSize_(13))
+        input_tv.setBackgroundColor_(NSColor.clearColor())
+        input_tv.setTextColor_(FG)
+        input_tv.setRichText_(False)
+        input_tv.setAllowsUndo_(True)
+        input_tv.setTextContainerInset_((4, 4))
+        input_tv.textContainer().setLineFragmentPadding_(4)
+        input_tv.setVerticallyResizable_(True)
+        input_tv.setHorizontallyResizable_(False)
+        input_tv.textContainer().setWidthTracksTextView_(True)
+        input_tv._on_submit = lambda text: coordinator.onResultInputSubmit_(text)
+        scroll.setDocumentView_(input_tv)
+        content.addSubview_(scroll)
+        self._result_input = input_tv
 
         # 빠른 답장 버튼 (입력창 하단 좌측)
         suggest_btn = NSButton.alloc().initWithFrame_(((16, 4), (110, 24)))
@@ -896,6 +966,40 @@ window.onload=function(){{window.scrollTo(0,document.body.scrollHeight);}};
         clear_btn.setAction_(objc.selector(coordinator.onClearChat_, signature=b"v@:@"))
         clear_btn.setAutoresizingMask_(NSViewMinXMargin | NSViewMaxYMargin)
         content.addSubview_(clear_btn)
+
+    def show_loading(self, original):
+        """번역 중 로딩 표시: 원문 + dots 애니메이션"""
+        if not self._webview:
+            return
+        escaped_orig = html_mod.escape(original).replace("\n", "<br>")
+        orig_data = html_mod.escape(original, quote=True)
+        pron_js = "getPron(this)"
+        loading_html = f'''<div class="entry" id="loading-entry">
+    <div class="section original">
+        <div class="label">원문</div>
+        <div class="card orig" data-orig="{orig_data}"><span class="pron-btn" onclick="{pron_js}">발음</span>{escaped_orig}</div>
+    </div>
+    <div class="section translated">
+        <div class="label">번역 결과</div>
+        <div class="card trans"><div class="loading-dots"><span></span><span></span><span></span></div></div>
+    </div>
+</div>'''
+        js_html = loading_html.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+        js = (
+            "var chat=document.getElementById('chat');"
+            "var div=document.createElement('div');"
+            f"div.innerHTML='{js_html}';"
+            "while(div.firstChild)chat.appendChild(div.firstChild);"
+            "window.scrollTo(0,document.body.scrollHeight);"
+        )
+        self._webview.evaluateJavaScript_completionHandler_(js, None)
+
+    def remove_loading(self):
+        """로딩 엔트리 제거"""
+        if not self._webview:
+            return
+        js = "var el=document.getElementById('loading-entry');if(el)el.remove();"
+        self._webview.evaluateJavaScript_completionHandler_(js, None)
 
     def _append_chat_entry(self, entry):
         """기존 WKWebView에 새 채팅 엔트리를 JS로 추가"""
@@ -1140,6 +1244,11 @@ class Coordinator(NSObject):
         log(f"입력창 번역 요청 ({target_lang}): {text[:80]}{'…' if len(text) > 80 else ''}")
         self._input_window.clear_and_close()
         self._status_bar.set_status("⏳ 번역 중…")
+        # 기존 결과창이 있으면 로딩 표시
+        if self._window.panel and self._window._webview:
+            self._window.show_loading(text)
+            self._window.panel.orderFrontRegardless()
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
 
         def do_translate():
             result = translate(text, target_lang=target_lang)
@@ -1168,6 +1277,10 @@ class Coordinator(NSObject):
             target_lang = str(_defaults.stringForKey_("target_language") or TARGET_LANG)
         log(f"결과창 추가 번역 ({target_lang}): {text[:80]}{'…' if len(text) > 80 else ''}")
         self._status_bar.set_status("⏳ 번역 중…")
+        # 입력 필드 비우고 로딩 표시
+        if self._window._result_input:
+            self._window._result_input.setStringValue_("")
+        self._window.show_loading(text)
 
         def do_translate():
             result = translate(text, target_lang=target_lang)
@@ -1222,42 +1335,34 @@ class Coordinator(NSObject):
 
     def showPronunciation_(self, info):
         """발음 결과를 해당 원문 카드에 추가"""
-        orig_text = str(info.get("text", ""))
-        pron = str(info.get("pron", "")).strip()
+        pron = str(info["pron"]) if info.get("pron") else ""
+        pron = pron.strip()
+        log(f"showPronunciation_ 호출, pron 길이: {len(pron)}")
         if not self._window._webview:
+            log("webview 없음")
             return
-        # 버튼 복원 (로딩 → 발음)
-        orig_escaped = orig_text.replace("\\", "\\\\").replace("'", "\\'")
-        restore_js = (
-            "var cards=document.getElementsByClassName('card orig');"
-            "for(var i=0;i<cards.length;i++){"
-            f"if(cards[i].dataset.orig=='{orig_escaped}'){{"
-            "var b=cards[i].querySelector('.pron-btn');"
-            "if(b){b.classList.remove('loading');b.innerText='발음';}"
-            "}}"
-        )
-        if not pron:
-            self._window._webview.evaluateJavaScript_completionHandler_(restore_js, None)
-            return
-        # 발음 삽입
-        pron_escaped = pron.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "<br>")
-        js = (
-            "var cards=document.getElementsByClassName('card orig');"
-            "for(var i=0;i<cards.length;i++){"
-            f"if(cards[i].dataset.orig=='{orig_escaped}'){{"
-            "if(!cards[i].querySelector('.pron-area')){"
-            "var p=document.createElement('div');"
-            "p.className='pron-area';"
-            f"p.innerHTML='🔤 {pron_escaped}';"
-            "cards[i].appendChild(p);"
-            "}"
-            "var b=cards[i].querySelector('.pron-btn');"
-            "if(b){b.classList.remove('loading');b.innerText='발음';}"
-            "break;"
-            "}}"
-            "}"
-            "window.scrollTo(0,document.body.scrollHeight);"
-        )
+        # 로딩 중인 버튼을 찾아서 해당 카드에 발음 삽입
+        pron_escaped = pron.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "<br>") if pron else ""
+        if pron:
+            js = (
+                "var btn=document.querySelector('.pron-btn.loading');"
+                "if(btn){"
+                "var card=btn.closest('.card.orig');"
+                "if(card && !card.querySelector('.pron-area')){"
+                "var p=document.createElement('div');"
+                "p.className='pron-area';"
+                f"p.innerHTML='🔤 {pron_escaped}';"
+                "card.appendChild(p);"
+                "}"
+                "btn.classList.remove('loading');btn.innerText='발음';"
+                "}"
+                "window.scrollTo(0,document.body.scrollHeight);"
+            )
+        else:
+            js = (
+                "var btn=document.querySelector('.pron-btn.loading');"
+                "if(btn){btn.classList.remove('loading');btn.innerText='발음';}"
+            )
         self._window._webview.evaluateJavaScript_completionHandler_(js, None)
 
     def onRequestSuggest_(self, sender):
