@@ -27,7 +27,7 @@ from AppKit import (
     NSWindowStyleMaskFullSizeContentView,
     NSFloatingWindowLevel,
     NSTextAlignmentLeft,
-    NSViewWidthSizable, NSViewHeightSizable, NSViewMinYMargin, NSViewMaxYMargin,
+    NSViewWidthSizable, NSViewHeightSizable, NSViewMinXMargin, NSViewMinYMargin, NSViewMaxYMargin,
     NSBezelStyleRounded,
 )
 from pynput.keyboard import Key, Controller as KBController
@@ -295,6 +295,19 @@ def suggest_replies(original, translated):
         log(f"빠른 답장 오류: {e}")
         return []
 
+def korean_pronunciation(text):
+    """원문의 한국어 발음을 생성"""
+    prompt = (
+        "다음 텍스트의 한국어 발음(읽는 법)을 적어주세요.\n"
+        "규칙:\n"
+        "- 일본어는 한국어 음독/훈독으로 표기 (예: ありがとう → 아리가토우)\n"
+        "- 영어는 한국어 발음으로 표기 (예: hello → 헬로)\n"
+        "- 한자는 일본어 읽는 법의 한국어 표기 (예: 確認 → 카쿠닌)\n"
+        "- 발음만 출력하세요. 설명이나 부가 텍스트 없이 발음만.\n\n"
+        f"텍스트: {text}"
+    )
+    return _call_model(prompt)
+
 # ─── Screen (마우스 커서가 있는 화면) ────────────────────────────
 def active_screen():
     mouse_loc = AppKit.NSEvent.mouseLocation()
@@ -316,6 +329,20 @@ class KeyablePanel(NSPanel):
         return True
     def canBecomeMainWindow(self):
         return True
+
+class WebMessageHandler(NSObject):
+    """WKWebView JS → Native 메시지 핸들러"""
+    def initWithCoordinator_(self, coordinator):
+        self = objc.super(WebMessageHandler, self).init()
+        if self:
+            self._coordinator = coordinator
+        return self
+
+    def userContentController_didReceiveScriptMessage_(self, controller, message):
+        body = message.body()
+        if isinstance(body, str):
+            self._coordinator.onPronunciationFromJS_(body)
+
 
 class InputFieldDelegate(NSObject):
     """NSTextField delegate: Enter로 번역, Esc로 닫기"""
@@ -495,9 +522,9 @@ class StatusBarItem(NSObject):
         if event and event.type() == AppKit.NSEventTypeRightMouseUp:
             self._status_item.popUpStatusItemMenu_(self._menu)
         else:
-            # 좌클릭 → 입력창 토글
+            # 좌클릭 → 결과창 토글
             if self._coordinator:
-                self._coordinator.toggleInputWindow_(None)
+                self._coordinator.toggleResultWindow_(None)
 
     def _build_menu(self):
         menu = AppKit.NSMenu.alloc().init()
@@ -559,338 +586,397 @@ class StatusBarItem(NSObject):
 class TranslatorWindow:
     def __init__(self):
         self.panel = None
+        self._result_input = None
+        self._input_delegate = None
+        self._webview = None
+        self._lang_popup = None
+        self._msg_handler = None
+        self._chat_history = []  # [{original, translated}, ...]
+        self._coordinator = None
+
+    def _detect_theme(self):
+        appearance = AppKit.NSApp.effectiveAppearance()
+        return "Dark" in str(appearance.name())
 
     def show_result(self, original, translated, coordinator=None, is_table=False, original_html=None, is_image=False, image_data=None):
-        self._close()
         self._is_table = is_table
         self._is_image = is_image
         self._original_html = original_html
-        panel_w = 620 if is_table else (620 if is_image else 520)
-        panel_h = 540 if is_table else (540 if is_image else 380)
-        self._create_panel(panel_w, panel_h)
-        if is_table:
-            # 타이틀(38) + 라벨(18) + 원문(200) + gap(8) + 라벨(18) + 번역최소(200) + 버튼영역(56)
-            min_h = 38 + 18 + 200 + 8 + 18 + 200 + 56
-            self.panel.setMinSize_((500, min_h))
-        else:
-            self.panel.setMinSize_((400, 300))
         self._original = original
         self._translated = translated
         self._suggest_area_built = False
+        self._coordinator = coordinator
+
+        is_dark = self._detect_theme()
+
+        # 채팅 엔트리 생성
+        entry = {"original": original, "translated": translated}
+        if is_image and image_data:
+            import base64
+            entry["image_b64"] = base64.b64encode(image_data).decode("ascii")
+        if is_table:
+            entry["is_table"] = True
+            if original_html:
+                entry["original_html"] = original_html
+
+        # 기존 채팅 창이 있으면 추가
+        if self.panel and self._webview:
+            self._chat_history.append(entry)
+            if len(self._chat_history) > 50:
+                self._chat_history = self._chat_history[-50:]
+            self._append_chat_entry(entry)
+            if self._result_input:
+                self._result_input.setStringValue_("")
+            self.panel.orderFrontRegardless()
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            return
+
+        self._close()
+
+        panel_w, panel_h = 520, 480
+        self._chat_history = [entry]
+
+        self._create_panel(panel_w, panel_h)
+        self.panel.setMinSize_((400, 360))
 
         content = self.panel.contentView()
         content.setAutoresizesSubviews_(True)
         w = panel_w - 40
 
-        if is_table:
-            # 테이블 모드 레이아웃 (위→아래)
-            # ┌──────────────────────┐ ← panel_h
-            # │ titlebar (38px)      │
-            # ├──────────────────────┤ ← panel_h - 38
-            # │ "원문" 라벨 (18px)    │
-            # │ 원문 테이블 (200px)   │ ← 고정
-            # │ gap (8px)            │
-            # │ "번역 결과" 라벨 (18px)│
-            # │ 번역 테이블 (가변)    │ ← 리사이즈 시 이 영역만 변함
-            # │ gap (8px)            │
-            # │ 버튼 (32px)          │
-            # │ margin (16px)        │
-            # └──────────────────────┘
-            orig_h = 200
-            btn_area = 56     # 버튼(32) + 하단 여백(16) + gap(8)
-            top_margin = 38   # 타이틀바
+        self._build_text_layout(content, self._chat_history, panel_h, w, coordinator, is_dark)
 
-            # 원문 라벨
-            lbl1_y = panel_h - top_margin - 18
-            lbl1 = NSTextField.labelWithString_("원문")
-            lbl1.setFont_(NSFont.systemFontOfSize_(11))
-            lbl1.setTextColor_(FG_DIM)
-            lbl1.setFrame_(((20, lbl1_y), (w, 18)))
-            lbl1.setBackgroundColor_(NSColor.clearColor())
-            lbl1.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
-            content.addSubview_(lbl1)
+        self.panel.orderFrontRegardless()
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
 
-            # 원문 테이블 (고정 높이, 상단 고정)
-            orig_y = lbl1_y - orig_h
-            orig_html = getattr(self, '_original_html', None)
-            orig_wv = self._make_table_view(
-                orig_html or original,
-                ((20, orig_y), (w, orig_h)),
-                is_html=bool(orig_html)
-            )
-            orig_wv.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
-            content.addSubview_(orig_wv)
+    def _theme_colors(self, is_dark):
+        if is_dark:
+            return {
+                "bg": "transparent", "card_bg": "rgba(255,255,255,0.06)",
+                "fg": "#e8e8e8", "fg_dim": "#999",
+                "border": "rgba(255,255,255,0.1)", "divider": "rgba(255,255,255,0.06)",
+            }
+        return {
+            "bg": "transparent", "card_bg": "rgba(0,0,0,0.04)",
+            "fg": "#1a1a1a", "fg_dim": "#888",
+            "border": "rgba(0,0,0,0.1)", "divider": "rgba(0,0,0,0.06)",
+        }
 
-            # 번역 결과 라벨 (원문 아래, 상단 고정)
-            lbl2_y = orig_y - 8 - 18
-            lbl2 = NSTextField.labelWithString_("번역 결과")
-            lbl2.setFont_(NSFont.systemFontOfSize_(11))
-            lbl2.setTextColor_(FG_DIM)
-            lbl2.setFrame_(((20, lbl2_y), (w, 18)))
-            lbl2.setBackgroundColor_(NSColor.clearColor())
-            lbl2.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
-            content.addSubview_(lbl2)
+    def _render_chat_entry(self, entry):
+        escaped_orig = html_mod.escape(entry["original"]).replace("\n", "<br>")
+        escaped_trans = html_mod.escape(entry["translated"]).replace("\n", "<br>")
+        data_text = html_mod.escape(entry["translated"], quote=True)
+        copy_js = "var t=this.parentElement.dataset.text;var a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();document.execCommand('copy');document.body.removeChild(a);this.innerText='\\u2713 복사됨';this.classList.add('copied');var b=this;setTimeout(function(){b.classList.remove('copied');setTimeout(function(){b.innerText='복사'},300)},1200)"
 
-            # 번역 테이블 (나머지 공간, 리사이즈 가능)
-            trans_y = btn_area
-            trans_h = lbl2_y - trans_y
-            trans_is_html = "<table" in translated.lower()
-            trans_wv = self._make_table_view(
-                translated,
-                ((20, trans_y), (w, trans_h)),
-                is_html=trans_is_html
-            )
-            trans_wv.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
-            content.addSubview_(trans_wv)
-        elif is_image and image_data:
-            # 이미지 모드: 상단 원본 이미지 + 하단 번역 텍스트
-            from Foundation import NSData
-            img_h = 250
-            btn_area = 56
-            top_margin = 38
+        # 이미지가 포함된 엔트리
+        image_b64 = entry.get("image_b64")
+        is_table = entry.get("is_table", False)
 
-            lbl1_y = panel_h - top_margin - 18
-            lbl1 = NSTextField.labelWithString_("원본 이미지")
-            lbl1.setFont_(NSFont.systemFontOfSize_(11))
-            lbl1.setTextColor_(FG_DIM)
-            lbl1.setFrame_(((20, lbl1_y), (w, 18)))
-            lbl1.setBackgroundColor_(NSColor.clearColor())
-            lbl1.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
-            content.addSubview_(lbl1)
-
-            img_y = lbl1_y - img_h
-            ns_data = NSData.dataWithBytes_length_(image_data, len(image_data))
-            ns_image = AppKit.NSImage.alloc().initWithData_(ns_data)
-            # 실제 이미지 크기로 NSImageView 생성 (스크롤 가능)
-            img_size = ns_image.size()
-            real_w = max(int(img_size.width), w)
-            real_h = max(int(img_size.height), img_h)
-            img_view = AppKit.NSImageView.alloc().initWithFrame_(((0, 0), (real_w, real_h)))
-            img_view.setImage_(ns_image)
-            img_view.setImageScaling_(0)  # NSImageScaleNone — 원본 크기
-            img_view.setImageAlignment_(6)  # NSImageAlignTopLeft
-            # NSScrollView로 감싸기
-            img_scroll = NSScrollView.alloc().initWithFrame_(((20, img_y), (w, img_h)))
-            img_scroll.setHasVerticalScroller_(True)
-            img_scroll.setHasHorizontalScroller_(True)
-            img_scroll.setBorderType_(0)
-            img_scroll.setDocumentView_(img_view)
-            img_scroll.setBackgroundColor_(SURFACE)
-            img_scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
-            content.addSubview_(img_scroll)
-
-            lbl2_y = img_y - 8 - 18
-            lbl2 = NSTextField.labelWithString_("번역 결과")
-            lbl2.setFont_(NSFont.systemFontOfSize_(11))
-            lbl2.setTextColor_(FG_DIM)
-            lbl2.setFrame_(((20, lbl2_y), (w, 18)))
-            lbl2.setBackgroundColor_(NSColor.clearColor())
-            lbl2.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
-            content.addSubview_(lbl2)
-
-            trans_y = btn_area
-            trans_h = lbl2_y - trans_y
-            trans_scroll = self._make_text_area(translated, ((20, trans_y), (w, trans_h)))
-            trans_scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
-            content.addSubview_(trans_scroll)
-            self._trans_scroll = trans_scroll
-
-            min_h = top_margin + 18 + img_h + 8 + 18 + 120 + btn_area
-            self.panel.setMinSize_((400, min_h))
+        if image_b64:
+            orig_html = f'<img class="orig-img" src="data:image/png;base64,{image_b64}" />'
+            if escaped_orig and escaped_orig != "(이미지에서 추출)":
+                orig_html += f'<div class="orig-text">{escaped_orig}</div>'
+            orig_label = "원본 이미지"
+        elif is_table:
+            # 테이블: 원본 HTML 그대로 렌더링
+            orig_html_raw = entry.get("original_html", "")
+            orig_html = f'<div class="table-wrap">{orig_html_raw}</div>' if orig_html_raw else escaped_orig
+            orig_label = "원문"
         else:
-            # 일반 텍스트 모드
-            lbl1 = NSTextField.labelWithString_("원문")
-            lbl1.setFont_(NSFont.systemFontOfSize_(11))
-            lbl1.setTextColor_(FG_DIM)
-            lbl1.setFrame_(((20, 316), (w, 18)))
-            lbl1.setBackgroundColor_(NSColor.clearColor())
-            lbl1.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
-            content.addSubview_(lbl1)
+            orig_html = escaped_orig
+            orig_label = "원문"
 
-            orig_scroll = self._make_text_area(original, ((20, 196), (w, 115)))
-            orig_scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
-            content.addSubview_(orig_scroll)
+        # 번역 결과: 테이블이면 HTML 그대로
+        if is_table and "<table" in entry["translated"].lower():
+            trans_html = f'<div class="table-wrap">{entry["translated"]}</div>'
+        else:
+            trans_html = escaped_trans
 
-            lbl2 = NSTextField.labelWithString_("번역 결과")
-            lbl2.setFont_(NSFont.systemFontOfSize_(11))
-            lbl2.setTextColor_(FG_DIM)
-            lbl2.setFrame_(((20, 168), (w, 18)))
-            lbl2.setBackgroundColor_(NSColor.clearColor())
-            lbl2.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
-            content.addSubview_(lbl2)
+        orig_data = html_mod.escape(entry["original"], quote=True)
+        pron_js = "getPron(this)"
 
-            trans_scroll = self._make_text_area(translated, ((20, 58), (w, 105)))
-            trans_scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
-            content.addSubview_(trans_scroll)
-            self._trans_scroll = trans_scroll
+        return f'''<div class="entry">
+    <div class="section original">
+        <div class="label">{orig_label}</div>
+        <div class="card orig" data-orig="{orig_data}"><span class="pron-btn" onclick="{pron_js}">발음</span>{orig_html}</div>
+    </div>
+    <div class="section translated">
+        <div class="label">번역 결과</div>
+        <div class="card trans" data-text="{data_text}"><span class="copy-btn" onclick="{copy_js}">복사</span>{trans_html}</div>
+    </div>
+</div>'''
 
-        # 하단 버튼들
-        copy_btn = NSButton.alloc().initWithFrame_(((20, 16), (100, 32)))
-        copy_btn.setTitle_("번역 복사")
-        copy_btn.setBezelStyle_(NSBezelStyleRounded)
-        copy_btn.setTarget_(coordinator)
-        copy_btn.setAction_(objc.selector(coordinator.onCopyTranslation_, signature=b"v@:@"))
-        copy_btn.setAutoresizingMask_(NSViewMaxYMargin)
-        content.addSubview_(copy_btn)
+    def _chat_css(self, c):
+        return f'''* {{ margin:0; padding:0; box-sizing:border-box; }}
+::-webkit-scrollbar {{ width: 6px; }}
+::-webkit-scrollbar-track {{ background: transparent; }}
+::-webkit-scrollbar-thumb {{ background: rgba(128,128,128,0.3); border-radius: 3px; }}
+::-webkit-scrollbar-thumb:hover {{ background: rgba(128,128,128,0.5); }}
+body {{
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    background: {c["bg"]}; color: {c["fg"]}; padding: 20px 24px 16px;
+    -webkit-user-select: text; line-height: 1.65;
+}}
+.entry {{ padding-bottom: 16px; margin-bottom: 16px; border-bottom: 1px solid {c["divider"]}; }}
+.entry:last-child {{ border-bottom: none; margin-bottom: 0; }}
+.section {{ margin-bottom: 14px; }}
+.section:last-child {{ margin-bottom: 0; }}
+.label {{
+    font-size: 11px; font-weight: 600; color: {c["fg_dim"]};
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+}}
+.card {{
+    background: {c["card_bg"]}; border-radius: 14px;
+    padding: 16px 18px; border: 1px solid {c["border"]};
+}}
+.card.orig {{ font-size: 13px; color: {c["fg_dim"]}; line-height: 1.6; position: relative; }}
+.orig-img {{ max-width: 100%; border-radius: 8px; display: block; }}
+.orig-text {{ margin-top: 10px; }}
+.card.trans {{ font-size: 14.5px; color: {c["fg"]}; line-height: 1.7; position: relative; }}
+.copy-btn {{
+    position: absolute; top: 10px; right: 10px;
+    background: {c["card_bg"]}; border: 1px solid {c["border"]};
+    border-radius: 6px; padding: 3px 8px;
+    font-size: 11px; color: {c["fg_dim"]}; cursor: pointer;
+    opacity: 0; transition: opacity 0.2s;
+}}
+.card.trans:hover .copy-btn {{ opacity: 1; }}
+.copy-btn.copied {{ opacity: 1 !important; }}
+.copy-btn:hover {{ color: {c["fg"]}; background: rgba(128,128,128,0.15); }}
+.pron-btn {{
+    position: absolute; top: 10px; right: 10px;
+    background: {c["card_bg"]}; border: 1px solid {c["border"]};
+    border-radius: 6px; padding: 3px 8px;
+    font-size: 11px; color: {c["fg_dim"]}; cursor: pointer;
+    opacity: 0; transition: opacity 0.2s;
+}}
+.card.orig:hover .pron-btn {{ opacity: 1; }}
+.pron-btn.loading {{ opacity: 1 !important; }}
+.pron-area {{
+    margin-top: 10px; padding-top: 8px;
+    border-top: 1px solid rgba(128,128,128,0.2);
+    font-size: 12px; color: {c["fg_dim"]};
+}}
+.table-wrap {{ overflow-x: auto; }}
+.table-wrap table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+.table-wrap th, .table-wrap td {{
+    border: 1px solid {c["border"]}; padding: 8px 10px;
+    text-align: left; vertical-align: top;
+}}
+.table-wrap th {{ background: rgba(128,128,128,0.1); font-weight: 600; }}'''
 
-        suggest_btn = NSButton.alloc().initWithFrame_(((130, 16), (120, 32)))
-        suggest_btn.setTitle_("빠른 답장")
+    def _build_text_layout(self, content, chat_history, panel_h, w, coordinator, is_dark):
+        """채팅 스타일 텍스트 결과 레이아웃"""
+        import objc as _objc
+        _wk = {}
+        _objc.loadBundle('WebKit', _wk, bundle_path='/System/Library/Frameworks/WebKit.framework')
+        WKWebView = _wk['WKWebView']
+        WKWebViewConfiguration = _wk['WKWebViewConfiguration']
+
+        c = self._theme_colors(is_dark)
+        entries_html = "\n".join(self._render_chat_entry(e) for e in chat_history)
+
+        pron_script = '''function getPron(btn){
+if(btn.classList.contains('loading'))return;
+var card=btn.closest('.card.orig');
+if(!card||card.querySelector('.pron-area'))return;
+btn.classList.add('loading');btn.innerText='생성 중…';
+var text=card.dataset.orig;
+window.webkit.messageHandlers.pron.postMessage(text);
+}'''
+
+        html_str = f'''<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>{self._chat_css(c)}</style>
+</head><body>
+<div id="chat">{entries_html}</div>
+<script>
+window.onload=function(){{window.scrollTo(0,document.body.scrollHeight);}};
+{pron_script}
+</script>
+</body></html>'''
+
+        config = WKWebViewConfiguration.alloc().init()
+        # JS → Native 메시지 핸들러
+        self._msg_handler = WebMessageHandler.alloc().initWithCoordinator_(coordinator)
+        config.userContentController().addScriptMessageHandler_name_(self._msg_handler, "pron")
+        top_margin = 38
+        # 레이아웃: [빠른답장 28+6] [입력배경 44+8] [구분선 1]
+        btn_row_h = 30
+        input_h = 44
+        bottom_area = btn_row_h + input_h + 12  # 86
+
+        wv = WKWebView.alloc().initWithFrame_configuration_(
+            ((0, bottom_area), (w + 40, panel_h - top_margin - bottom_area)),
+            config
+        )
+        wv.loadHTMLString_baseURL_(html_str, None)
+        wv.setValue_forKey_(False, "drawsBackground")
+        wv.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        content.addSubview_(wv)
+        self._webview = wv
+
+        # 하단 구분선
+        separator = AppKit.NSBox.alloc().initWithFrame_(((0, bottom_area - 1), (w + 40, 1)))
+        separator.setBoxType_(2)  # NSBoxSeparator
+        separator.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+        content.addSubview_(separator)
+
+        # 입력 필드 배경 (둥근 모서리)
+        input_bg_y = btn_row_h + 4
+        input_bg = AppKit.NSView.alloc().initWithFrame_(((12, input_bg_y), (w + 40 - 24, input_h)))
+        input_bg.setWantsLayer_(True)
+        input_bg.layer().setCornerRadius_(12)
+        input_bg.layer().setBorderWidth_(1)
+        if is_dark:
+            input_bg.layer().setBorderColor_(AppKit.NSColor.colorWithWhite_alpha_(1.0, 0.1).CGColor())
+            input_bg.layer().setBackgroundColor_(AppKit.NSColor.colorWithWhite_alpha_(1.0, 0.05).CGColor())
+        else:
+            input_bg.layer().setBorderColor_(AppKit.NSColor.colorWithWhite_alpha_(0.0, 0.1).CGColor())
+            input_bg.layer().setBackgroundColor_(AppKit.NSColor.colorWithWhite_alpha_(0.0, 0.03).CGColor())
+        input_bg.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+        content.addSubview_(input_bg)
+
+        # 언어 선택 팝업 (입력 배경 안 좌측)
+        lang_w = 100
+        lang_h = 28
+        lang_y = input_bg_y + (input_h - lang_h) / 2
+        lang_popup = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            ((18, lang_y), (lang_w, lang_h)), False
+        )
+        lang_popup.addItemsWithTitles_(LANGUAGES)
+        last_lang = _defaults.stringForKey_("target_language") or TARGET_LANG
+        idx = LANGUAGES.index(last_lang) if last_lang in LANGUAGES else 0
+        lang_popup.selectItemAtIndex_(idx)
+        lang_popup.setFont_(NSFont.systemFontOfSize_(12))
+        lang_popup.setBordered_(False)
+        lang_popup.setFocusRingType_(1)
+        lang_popup.setAutoresizingMask_(NSViewMaxYMargin)
+        content.addSubview_(lang_popup)
+        self._lang_popup = lang_popup
+
+        # 입력 필드 (언어 팝업 우측)
+        field_h = 22
+        field_x = 18 + lang_w + 8
+        field_y = input_bg_y + (input_h - field_h) / 2
+        input_field = NSTextField.alloc().initWithFrame_(((field_x, field_y), (w + 40 - field_x - 12, field_h)))
+        input_field.setPlaceholderString_("번역할 텍스트 입력… (Enter)")
+        input_field.setFont_(NSFont.systemFontOfSize_(13))
+        input_field.setBordered_(False)
+        input_field.setFocusRingType_(1)
+        input_field.setBackgroundColor_(NSColor.clearColor())
+        input_field.setTextColor_(FG)
+        input_field.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+        content.addSubview_(input_field)
+
+        # 입력 delegate
+        self._input_delegate = InputFieldDelegate.alloc().init()
+        self._input_delegate._on_submit = lambda text: coordinator.onResultInputSubmit_(text)
+        self._input_delegate._on_cancel = lambda: None
+        input_field.setDelegate_(self._input_delegate)
+        self._result_input = input_field
+
+        # 빠른 답장 버튼 (입력창 하단 좌측)
+        suggest_btn = NSButton.alloc().initWithFrame_(((16, 4), (110, 24)))
+        suggest_btn.setTitle_("💬 빠른 답장")
         suggest_btn.setBezelStyle_(NSBezelStyleRounded)
+        suggest_btn.setBordered_(False)
+        suggest_btn.setFont_(NSFont.systemFontOfSize_(11))
         suggest_btn.setTarget_(coordinator)
         suggest_btn.setAction_(objc.selector(coordinator.onRequestSuggest_, signature=b"v@:@"))
         suggest_btn.setAutoresizingMask_(NSViewMaxYMargin)
         content.addSubview_(suggest_btn)
         self._suggest_btn = suggest_btn
 
-        self.panel.orderFrontRegardless()
-        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        # 초기화 버튼 (우측 하단)
+        clear_btn = NSButton.alloc().initWithFrame_(((w + 40 - 80 - 16, 4), (80, 24)))
+        clear_btn.setTitle_("🗑 초기화")
+        clear_btn.setBezelStyle_(NSBezelStyleRounded)
+        clear_btn.setBordered_(False)
+        clear_btn.setFont_(NSFont.systemFontOfSize_(11))
+        clear_btn.setTarget_(coordinator)
+        clear_btn.setAction_(objc.selector(coordinator.onClearChat_, signature=b"v@:@"))
+        clear_btn.setAutoresizingMask_(NSViewMinXMargin | NSViewMaxYMargin)
+        content.addSubview_(clear_btn)
+
+    def _append_chat_entry(self, entry):
+        """기존 WKWebView에 새 채팅 엔트리를 JS로 추가"""
+        entry_html = self._render_chat_entry(entry)
+        # JS 문자열로 이스케이프 (백슬래시, 따옴표, 개행)
+        js_html = entry_html.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+        js = f"""
+        var chat = document.getElementById('chat');
+        var div = document.createElement('div');
+        div.innerHTML = '{js_html}';
+        while(div.firstChild) chat.appendChild(div.firstChild);
+        window.scrollTo(0, document.body.scrollHeight);
+        """
+        self._webview.evaluateJavaScript_completionHandler_(js, None)
+
 
     def _show_suggestions(self, suggestions, coordinator=None):
-        """빠른 답장을 창 하단에 추가"""
+        """빠른 답장을 WKWebView 내부에 HTML로 추가"""
         if self._suggest_area_built or not self.panel:
             return
         self._suggest_area_built = True
+        self._suggestions = suggestions
 
-        content = self.panel.contentView()
-        w = int(self.panel.frame().size.width - 40)
-        suggest_h = len(suggestions) * 60 + 28  # 라벨(18+10) + 버튼(28*6)
+        if self._webview:
+            # WKWebView에 JS로 제안 버튼 추가
+            btns_html = ""
+            for s in suggestions:
+                kr_esc = html_mod.escape(s["kr"])
+                jp_esc = html_mod.escape(s["jp"])
+                btns_html += f'<div class="suggest-btn" onclick="pickSuggest(this)" data-text="{kr_esc}" data-orig="KR: {kr_esc}">KR: {kr_esc}</div>'
+                btns_html += f'<div class="suggest-btn" onclick="pickSuggest(this)" data-text="{jp_esc}" data-orig="JP: {jp_esc}">JP: {jp_esc}</div>'
 
-        # 1. 모든 기존 서브뷰의 autoresizing 비활성화
-        subviews = list(content.subviews())
-        masks = [(v, v.autoresizingMask()) for v in subviews]
-        for v in subviews:
-            v.setAutoresizingMask_(0)
+            is_dark = self._detect_theme()
+            c = self._theme_colors(is_dark)
+            style = f'''
+            .suggest-section {{ margin-top: -8px; padding: 8px 0 16px; margin-bottom: 8px; border-bottom: 1px solid {c["divider"]}; }}
+            .suggest-label {{
+                font-size: 11px; font-weight: 600; color: {c["fg_dim"]};
+                text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+            }}
+            .suggest-btn {{
+                background: {c["card_bg"]}; border: 1px solid {c["border"]};
+                border-radius: 10px; padding: 10px 14px; margin-bottom: 6px;
+                font-size: 13px; cursor: pointer; color: {c["fg"]};
+            }}
+            .suggest-btn:hover {{ background: rgba(128,128,128,0.15); }}
+            '''
 
-        # 2. 창 확장
-        frame = self.panel.frame()
-        frame.size.height += suggest_h
-        frame.origin.y -= suggest_h
-        self.panel.setFrame_display_animate_(frame, True, False)
-
-        # 3. 하단 버튼(y≤50) 제외, 나머지를 suggest_h만큼 위로 이동
-        for v in subviews:
-            f = v.frame()
-            if f.origin.y > 50:
-                f.origin.y += suggest_h
-                v.setFrame_(f)
-
-        # 4. autoresizing 복원 — 단, 번역 테이블(HeightSizable)은 하단 고정으로 변경
-        for v, mask in masks:
-            if mask & NSViewHeightSizable and f.origin.y > 50:
-                # 번역 테이블: 높이 가변 유지하되, 하단 경계를 제안 영역 위로
-                v.setAutoresizingMask_(mask)
-            else:
-                v.setAutoresizingMask_(mask)
-
-        # 5. 최소 크기 업데이트 (제안 영역 높이 추가)
-        cur_min = self.panel.minSize()
-        self.panel.setMinSize_((cur_min.width, cur_min.height + suggest_h))
-
-        # 6. 제안 라벨 (하단 버튼 바로 위, 하단 고정)
-        lbl3 = NSTextField.labelWithString_("빠른 답장 (클릭하면 복사)")
-        lbl3.setFont_(NSFont.systemFontOfSize_(11))
-        lbl3.setTextColor_(FG_DIM)
-        lbl3.setFrame_(((20, 56), (w, 18)))
-        lbl3.setBackgroundColor_(NSColor.clearColor())
-        lbl3.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
-        content.addSubview_(lbl3)
-
-        # 7. 제안 버튼들 (하단 고정)
-        y = 56
-        for s in reversed(suggestions):
-            y += 28
-            btn = self._make_suggest_btn("JP: " + s["jp"], y, w, coordinator)
-            btn.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
-            content.addSubview_(btn)
-            y += 28
-            btn = self._make_suggest_btn("KR: " + s["kr"], y, w, coordinator)
-            btn.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
-            content.addSubview_(btn)
-
-    def _make_suggest_btn(self, title, y, w, coordinator):
-        btn = NSButton.alloc().initWithFrame_(((20, y), (w, 24)))
-        btn.setTitle_(title)
-        btn.setBezelStyle_(NSBezelStyleRounded)
-        btn.setAlignment_(NSTextAlignmentLeft)
-        btn.setFont_(NSFont.systemFontOfSize_(12))
-        btn.setTarget_(coordinator)
-        btn.setAction_(objc.selector(coordinator.onSuggestCopy_, signature=b"v@:@"))
-        btn.setAutoresizingMask_(NSViewWidthSizable)
-        return btn
-
-    def _make_table_view(self, content, rect, is_html=False):
-        """HTML 또는 TSV를 테이블로 렌더링 (WKWebView — rowspan/colspan 완전 지원)"""
-        import objc as _objc
-        _wk = {}
-        _objc.loadBundle('WebKit', _wk, bundle_path='/System/Library/Frameworks/WebKit.framework')
-        WKWebView = _wk['WKWebView']
-        WKWebViewConfiguration = _wk['WKWebViewConfiguration']
-        appearance = AppKit.NSApp.effectiveAppearance()
-        is_dark = "Dark" in str(appearance.name())
-        fg = "#e0e0e0" if is_dark else "#222"
-        bg = "#2a2a2a" if is_dark else "#fff"
-        body_bg = "#1e1e1e" if is_dark else "#f5f5f5"
-        border = "#555" if is_dark else "#ccc"
-        header_bg = "#333" if is_dark else "#f0f0f0"
-
-        if is_html and "<table" in content.lower():
-            import re
-            styled_table = content
-            styled_table = re.sub(
-                r'<table[^>]*>',
-                '<table>',
-                styled_table, count=1, flags=re.IGNORECASE
+            label_html = '<div class="suggest-label">빠른 답장</div>'
+            js_html = f'<div class="suggest-section" id="suggestions">{label_html}{btns_html}</div>'
+            js_html = js_html.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+            style_js = style.replace("\n", " ").replace("'", "\\'")
+            pick_fn = "function pickSuggest(el){var bs=el.parentElement.getElementsByClassName('suggest-btn');for(var i=0;i<bs.length;i++){bs[i].innerText=bs[i].dataset.orig}el.innerText='\\u2713 '+el.dataset.orig;var a=document.createElement('textarea');a.value=el.dataset.text;document.body.appendChild(a);a.select();document.execCommand('copy');document.body.removeChild(a)}"
+            js = (
+                "var style=document.createElement('style');"
+                f"style.textContent='{style_js}';"
+                "document.head.appendChild(style);"
+                f"{pick_fn};"
+                "var chat=document.getElementById('chat');"
+                "var div=document.createElement('div');"
+                f"div.innerHTML='{js_html}';"
+                "while(div.firstChild)chat.appendChild(div.firstChild);"
+                "window.scrollTo(0,document.body.scrollHeight);"
             )
-            table_html = styled_table
-        else:
-            rows = content.strip().split("\n")
-            table_rows = []
-            for i, row in enumerate(rows):
-                cells = row.split("\t")
-                tag = "th" if i == 0 else "td"
-                table_rows.append(
-                    "<tr>" +
-                    "".join(f'<{tag}>{html_mod.escape(c)}</{tag}>' for c in cells) +
-                    "</tr>"
-                )
-            table_html = f'<table>{"".join(table_rows)}</table>'
+            self._webview.evaluateJavaScript_completionHandler_(js, None)
 
-        html_str = f'''<html><head><meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-            * {{ margin:0; padding:0; box-sizing:border-box; }}
-            body {{ background:{body_bg}; font-family:-apple-system,sans-serif; font-size:12px; color:{fg}; padding:8px; }}
-            table {{ border-collapse:collapse; width:100%; }}
-            th, td {{ border:1px solid {border}; padding:4px 6px; vertical-align:top;
-                      background:{bg}; white-space:pre-wrap; font-size:12px; }}
-            th {{ background:{header_bg}; font-weight:bold; }}
-        </style></head><body>{table_html}</body></html>'''
+    def _hide_suggestions(self):
+        """빠른 답장 영역 제거"""
+        if not self._suggest_area_built or not self.panel or not self._webview:
+            return
 
-        config = WKWebViewConfiguration.alloc().init()
-        wv = WKWebView.alloc().initWithFrame_configuration_(
-            ((rect[0][0], rect[0][1]), (rect[1][0], rect[1][1])),
-            config
-        )
-        wv.loadHTMLString_baseURL_(html_str, None)
-        wv.setValue_forKey_(False, "drawsBackground")
-        wv.setMagnification_(1.0)
-        return wv
+        js = """
+        var el = document.getElementById('suggestions');
+        if(el) el.remove();
+        """
+        self._webview.evaluateJavaScript_completionHandler_(js, None)
 
-    def _make_text_area(self, text, rect):
-        scroll = NSScrollView.alloc().initWithFrame_(rect)
-        scroll.setHasVerticalScroller_(True)
-        scroll.setBorderType_(0)
+        self._suggest_area_built = False
 
-        tv = NSTextView.alloc().initWithFrame_(((0, 0), (rect[1][0], rect[1][1])))
-        tv.setString_(text)
-        tv.setEditable_(False)
-        tv.setFont_(NSFont.systemFontOfSize_(13))
-        tv.setTextColor_(FG)
-        tv.setBackgroundColor_(SURFACE)
-        tv.setTextContainerInset_((8, 8))
-        scroll.setDocumentView_(tv)
-        scroll.setBackgroundColor_(SURFACE)
-        return scroll
+        if self._suggest_btn:
+            self._suggest_btn.setTitle_("💬 빠른 답장")
 
     def _create_panel(self, w, h):
         screen = active_screen().visibleFrame()
@@ -904,15 +990,27 @@ class TranslatorWindow:
         )
         self.panel.setLevel_(NSFloatingWindowLevel)
         self.panel.setHidesOnDeactivate_(False)
-        self.panel.setTitle_("번역 결과")
-        self.panel.setBackgroundColor_(BG)
+        self.panel.setTitle_("팝업 번역기")
         self.panel.setTitlebarAppearsTransparent_(True)
         self.panel.setMovableByWindowBackground_(True)
+
+        # 반투명 배경 (NSVisualEffectView)
+        vfx = AppKit.NSVisualEffectView.alloc().initWithFrame_(((0, 0), (w, h)))
+        vfx.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        vfx.setBlendingMode_(0)  # NSVisualEffectBlendingModeBehindWindow
+        vfx.setMaterial_(3)      # NSVisualEffectMaterialHUDWindow
+        vfx.setState_(1)         # NSVisualEffectStateActive
+        self.panel.contentView().addSubview_positioned_relativeTo_(vfx, -1, None)  # 맨 뒤에 배치
+        self.panel.setBackgroundColor_(NSColor.clearColor())
+        self.panel.setOpaque_(False)
 
     def _close(self):
         if self.panel:
             self.panel.orderOut_(None)
             self.panel = None
+            self._result_input = None
+            self._input_delegate = None
+            self._lang_popup = None
 
 
 # ─── Coordinator (NSObject 서브클래스 — objc 셀렉터 호출용) ───
@@ -1017,6 +1115,22 @@ class Coordinator(NSObject):
     def toggleInputWindow_(self, sender):
         self._input_window.toggle(self)
 
+    def toggleResultWindow_(self, sender):
+        """좌클릭 → 결과창 표시/토글"""
+        if self._window.panel and self._window.panel.isVisible():
+            self._window.panel.orderOut_(None)
+        else:
+            # 기존 결과가 없으면 빈 창 생성
+            if not self._window.panel:
+                self._window._create_panel(460, 520)
+                content = self._window.panel.contentView()
+                is_dark = self._window._detect_theme()
+                self._window._build_text_layout(content, [], 520, 460 - 40, self, is_dark)
+            self._window.panel.orderFrontRegardless()
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            if self._window._result_input:
+                self._window.panel.makeFirstResponder_(self._window._result_input)
+
     def onInputSubmit_(self, text):
         text = text.strip()
         if not text:
@@ -1041,29 +1155,116 @@ class Coordinator(NSObject):
             )
         threading.Thread(target=do_translate, daemon=True).start()
 
+    def onResultInputSubmit_(self, text):
+        """결과창 하단 입력 필드에서 번역 요청"""
+        text = text.strip()
+        if not text:
+            return
+        # 결과창 언어 팝업에서 선택된 언어 사용
+        if self._window._lang_popup:
+            target_lang = str(self._window._lang_popup.titleOfSelectedItem())
+            _defaults.setObject_forKey_(target_lang, "target_language")
+        else:
+            target_lang = str(_defaults.stringForKey_("target_language") or TARGET_LANG)
+        log(f"결과창 추가 번역 ({target_lang}): {text[:80]}{'…' if len(text) > 80 else ''}")
+        self._status_bar.set_status("⏳ 번역 중…")
+
+        def do_translate():
+            result = translate(text, target_lang=target_lang)
+            log(f"번역 결과: {result[:80]}{'…' if len(result) > 80 else ''}")
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                objc.selector(None, selector=b"showResult:", signature=b"v@:@"),
+                {
+                    "original": text,
+                    "translated": result,
+                    "is_table": False,
+                    "original_html": None,
+                }, False
+            )
+        threading.Thread(target=do_translate, daemon=True).start()
+
     def setStatusTranslating_(self, _):
         self._status_bar.set_status("⏳ 번역 중…")
 
     # ─── 버튼 핸들러 ─────────────────────────────────────────
-    def onCopyTranslation_(self, sender):
-        log("번역 복사 클릭")
-        translated = self._window._translated
-        if self._window._is_table:
-            # 번역 결과가 HTML이면 그대로, 아니면 TSV→HTML 변환
-            translated_html = translated if "<table" in translated.lower() else _tsv_to_html_table(translated)
-            # plain text는 HTML 태그 제거한 텍스트
-            import re
-            plain = re.sub(r'<[^>]+>', ' ', translated_html)
-            plain = re.sub(r'\s+', ' ', plain).strip()
-            set_clipboard_with_html(plain, translated_html)
-            log("테이블 형식으로 복사 (HTML + 텍스트)")
-        else:
-            set_clipboard(translated)
-        sender.setTitle_("✓ 복사됨")
+    def onClearChat_(self, sender):
+        """채팅 기록 초기화"""
+        self._window._chat_history = []
+        self._window._suggest_area_built = False
+        if self._window._webview:
+            self._window._webview.evaluateJavaScript_completionHandler_(
+                "document.getElementById('chat').innerHTML='';", None
+            )
+        log("채팅 기록 초기화")
+
+    def onPronunciationFromJS_(self, original_text):
+        """WKWebView JS에서 호출 — 한국어 발음 생성"""
+        original = str(original_text).strip()
+        if not original:
+            return
+        log(f"한국어 발음 요청: {original[:40]}")
+
+        def do_pron():
+            try:
+                pron = korean_pronunciation(original)
+                log(f"한국어 발음: {pron}")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    objc.selector(None, selector=b"showPronunciation:", signature=b"v@:@"),
+                    {"text": original, "pron": pron}, False
+                )
+            except Exception as e:
+                log(f"발음 생성 오류: {e}")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    objc.selector(None, selector=b"showPronunciation:", signature=b"v@:@"),
+                    {"text": original, "pron": ""}, False
+                )
+        threading.Thread(target=do_pron, daemon=True).start()
+
+    def showPronunciation_(self, info):
+        """발음 결과를 해당 원문 카드에 추가"""
+        orig_text = str(info.get("text", ""))
+        pron = str(info.get("pron", "")).strip()
+        if not self._window._webview:
+            return
+        # 버튼 복원 (로딩 → 발음)
+        orig_escaped = orig_text.replace("\\", "\\\\").replace("'", "\\'")
+        restore_js = (
+            "var cards=document.getElementsByClassName('card orig');"
+            "for(var i=0;i<cards.length;i++){"
+            f"if(cards[i].dataset.orig=='{orig_escaped}'){{"
+            "var b=cards[i].querySelector('.pron-btn');"
+            "if(b){b.classList.remove('loading');b.innerText='발음';}"
+            "}}"
+        )
+        if not pron:
+            self._window._webview.evaluateJavaScript_completionHandler_(restore_js, None)
+            return
+        # 발음 삽입
+        pron_escaped = pron.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "<br>")
+        js = (
+            "var cards=document.getElementsByClassName('card orig');"
+            "for(var i=0;i<cards.length;i++){"
+            f"if(cards[i].dataset.orig=='{orig_escaped}'){{"
+            "if(!cards[i].querySelector('.pron-area')){"
+            "var p=document.createElement('div');"
+            "p.className='pron-area';"
+            f"p.innerHTML='🔤 {pron_escaped}';"
+            "cards[i].appendChild(p);"
+            "}"
+            "var b=cards[i].querySelector('.pron-btn');"
+            "if(b){b.classList.remove('loading');b.innerText='발음';}"
+            "break;"
+            "}}"
+            "}"
+            "window.scrollTo(0,document.body.scrollHeight);"
+        )
+        self._window._webview.evaluateJavaScript_completionHandler_(js, None)
 
     def onRequestSuggest_(self, sender):
+        if self._window._suggest_area_built:
+            return
         log("빠른 답장 버튼 클릭")
-        sender.setTitle_("생성 중…")
+        sender.setTitle_("💬 생성 중…")
         sender.setEnabled_(False)
         self._status_bar.set_status("💬 빠른 답장 생성 중…")
         original = self._window._original
@@ -1083,22 +1284,6 @@ class Coordinator(NSObject):
                     [], False
                 )
         threading.Thread(target=do_suggest, daemon=True).start()
-
-    def onSuggestCopy_(self, sender):
-        title = str(sender.title())
-        # 이미 선택된 버튼을 다시 클릭하면 무시
-        if title.startswith("✓ "):
-            return
-        # 다른 제안 버튼의 체크 해제
-        content = self._window.panel.contentView()
-        for v in content.subviews():
-            if isinstance(v, NSButton) and str(v.title()).startswith("✓ "):
-                v.setTitle_(str(v.title())[2:])  # "✓ " 제거
-        # 선택한 버튼만 체크
-        text = title.split(": ", 1)[-1] if ": " in title else title
-        set_clipboard(text)
-        sender.setTitle_("✓ " + title)
-        log(f"답장 복사: {text}")
 
     def showResult_(self, info):
         original = str(info["original"])
@@ -1121,7 +1306,7 @@ class Coordinator(NSObject):
 
     def showSuggestions_(self, suggestions):
         log(f"showSuggestions_ 호출, {len(suggestions) if suggestions else 0}개")
-        self._window._suggest_btn.setTitle_("빠른 답장")
+        self._window._suggest_btn.setTitle_("💬 빠른 답장")
         self._window._suggest_btn.setEnabled_(True)
         if suggestions:
             self._window._show_suggestions(suggestions, coordinator=self)
