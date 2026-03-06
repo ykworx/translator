@@ -33,6 +33,7 @@ from AppKit import (
 from pynput.keyboard import Key, Controller as KBController
 
 TARGET_LANG = "한국어"
+LANGUAGES = ["한국어", "日本語", "English", "中文(简体)", "中文(繁體)", "Español", "Français", "Deutsch"]
 
 # ─── Keychain Helpers ────────────────────────────────────────
 _KEYCHAIN_SERVICE = "com.transrator.api-key"
@@ -76,6 +77,18 @@ def _keychain_delete():
         capture_output=True
     )
 
+# ─── Gemini Model Selection ──────────────────────────────────
+GEMINI_MODELS = [
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+]
+_defaults = AppKit.NSUserDefaults.standardUserDefaults()
+_selected_gemini_model = str(_defaults.stringForKey_("geminiModel") or GEMINI_MODELS[0])
+if _selected_gemini_model not in GEMINI_MODELS:
+    _selected_gemini_model = GEMINI_MODELS[0]
+
 # ─── Gemini client (lazy init) ───────────────────────────────
 _gemini_model = None
 def _get_api_key():
@@ -98,7 +111,7 @@ def _get_gemini():
         if not api_key:
             raise RuntimeError("API 키가 설정되지 않았습니다. 메뉴바 → 설정에서 입력하세요.")
         genai.configure(api_key=api_key)
-        _gemini_model = genai.GenerativeModel("gemini-2.0-flash")
+        _gemini_model = genai.GenerativeModel(_selected_gemini_model)
     return _gemini_model
 
 # ─── Logging ─────────────────────────────────────────────────
@@ -181,13 +194,14 @@ def _call_model(prompt):
     return resp.text.strip()
 
 # ─── Translation ──────────────────────────────────────────────
-def translate(text, table_html=None):
+def translate(text, table_html=None, target_lang=None):
     """텍스트 번역. table_html이 있으면 HTML 구조를 보존하며 번역."""
+    lang = target_lang or TARGET_LANG
     if table_html:
         prompt = (
-            f"Translate ALL Japanese text in the following HTML table to {TARGET_LANG}.\n"
+            f"Translate ALL Japanese text in the following HTML table to {lang}.\n"
             "IMPORTANT RULES:\n"
-            "- Translate ALL Japanese text to Korean, including technical terms\n"
+            f"- Translate ALL Japanese text to {lang}, including technical terms\n"
             "- Keep ALL HTML tags and attributes (rowspan, colspan, etc.) EXACTLY as-is\n"
             "- Do NOT translate: product IDs (e.g. AF-01), version numbers, URLs, English words\n"
             "- Do NOT add, remove, or modify any HTML tags\n"
@@ -196,7 +210,7 @@ def translate(text, table_html=None):
         )
     else:
         prompt = (
-            f"Translate the following text to {TARGET_LANG}. "
+            f"Translate the following text to {lang}. "
             "Output ONLY the translated text, nothing else.\n\n"
             f"{text}"
         )
@@ -219,8 +233,9 @@ def translate(text, table_html=None):
         log(f"번역 오류: {e}")
         return f"[오류] {e}"
 
-def translate_image(image_data):
+def translate_image(image_data, target_lang=None):
     """이미지 속 일본어 텍스트를 추출하고 번역 (Gemini Vision)"""
+    lang = target_lang or TARGET_LANG
     try:
         log(f"[gemini] 이미지 번역 중… ({len(image_data)} bytes)")
         gemini = _get_gemini()
@@ -228,7 +243,7 @@ def translate_image(image_data):
         prompt = (
             f"This image contains Japanese text. Do the following:\n"
             f"1. Extract ALL text from the image\n"
-            f"2. Translate ALL Japanese text to {TARGET_LANG}\n\n"
+            f"2. Translate ALL Japanese text to {lang}\n\n"
             f"Format your response EXACTLY like this:\n"
             f"[원문]\n(extracted Japanese text)\n\n"
             f"[번역]\n(Korean translation)"
@@ -294,6 +309,132 @@ FG = NSColor.labelColor()
 FG_DIM = NSColor.secondaryLabelColor()
 SURFACE = NSColor.controlBackgroundColor()
 
+# ─── Translation Input Window (Spotlight 스타일) ─────────────
+class KeyablePanel(NSPanel):
+    """Borderless NSPanel이 키 입력을 받을 수 있도록 오버라이드"""
+    def canBecomeKeyWindow(self):
+        return True
+    def canBecomeMainWindow(self):
+        return True
+
+class InputFieldDelegate(NSObject):
+    """NSTextField delegate: Enter로 번역, Esc로 닫기"""
+    def init(self):
+        self = objc.super(InputFieldDelegate, self).init()
+        if self is None:
+            return None
+        self._on_submit = None
+        self._on_cancel = None
+        return self
+
+    def control_textView_doCommandBySelector_(self, control, tv, selector):
+        sel_name = str(selector)
+        if sel_name == "insertNewline:":
+            if self._on_submit:
+                self._on_submit(str(control.stringValue()))
+            return True
+        if sel_name == "cancelOperation:":
+            if self._on_cancel:
+                self._on_cancel()
+            return True
+        return False
+
+
+class TranslatorInputWindow:
+    """Spotlight 스타일 번역 입력창"""
+    def __init__(self):
+        self.panel = None
+        self._delegate = None
+        self._lang_popup = None
+
+    def toggle(self, coordinator):
+        if self.panel and self.panel.isVisible():
+            self._close()
+            return
+        self._show(coordinator)
+
+    def selected_language(self):
+        """현재 선택된 언어 반환"""
+        if self._lang_popup:
+            return str(self._lang_popup.titleOfSelectedItem())
+        return TARGET_LANG
+
+    def _show(self, coordinator):
+        self._close()
+        screen = active_screen().visibleFrame()
+        lang_w = 100
+        w, h = 500 + lang_w + 8, 48
+        x = screen.origin.x + (screen.size.width - w) / 2
+        y = screen.origin.y + screen.size.height - h - 200  # 화면 상단 근처
+
+        self.panel = KeyablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            ((x, y), (w, h)),
+            AppKit.NSWindowStyleMaskBorderless,
+            NSBackingStoreBuffered, False
+        )
+        self.panel.setLevel_(NSFloatingWindowLevel + 1)
+        self.panel.setHidesOnDeactivate_(True)
+        self.panel.setBecomesKeyOnlyIfNeeded_(False)
+        self.panel.setMovableByWindowBackground_(True)
+        self.panel.setBackgroundColor_(NSColor.clearColor())
+        self.panel.setOpaque_(False)
+
+        # 둥근 모서리 배경
+        content = self.panel.contentView()
+        content.setWantsLayer_(True)
+        content.layer().setCornerRadius_(12)
+        content.layer().setMasksToBounds_(True)
+        content.setBackgroundColor_(BG)
+
+        # 언어 선택 팝업
+        lang_popup = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            ((12, 8), (lang_w, 32)), False
+        )
+        lang_popup.addItemsWithTitles_(LANGUAGES)
+        # 이전 선택 복원
+        last_lang = _defaults.stringForKey_("target_language") or TARGET_LANG
+        idx = LANGUAGES.index(last_lang) if last_lang in LANGUAGES else 0
+        lang_popup.selectItemAtIndex_(idx)
+        lang_popup.setFont_(NSFont.systemFontOfSize_(13))
+        lang_popup.setBordered_(False)
+        lang_popup.setFocusRingType_(1)
+        content.addSubview_(lang_popup)
+        self._lang_popup = lang_popup
+
+        # 입력 필드
+        field_x = 12 + lang_w + 8
+        field_w = w - field_x - 12
+        field = NSTextField.alloc().initWithFrame_(((field_x, 8), (field_w, 32)))
+        field.setPlaceholderString_("번역할 텍스트 입력… (Enter: 번역, Esc: 닫기)")
+        field.setFont_(NSFont.systemFontOfSize_(16))
+        field.setBordered_(False)
+        field.setFocusRingType_(1)  # NSFocusRingTypeNone
+        field.setBackgroundColor_(NSColor.clearColor())
+        field.setTextColor_(FG)
+
+        self._delegate = InputFieldDelegate.alloc().init()
+        self._delegate._on_submit = lambda text: coordinator.onInputSubmit_(text)
+        self._delegate._on_cancel = lambda: self._close()
+        field.setDelegate_(self._delegate)
+
+        content.addSubview_(field)
+        self._field = field
+
+        self.panel.makeKeyAndOrderFront_(None)
+        self.panel.makeFirstResponder_(field)
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+
+    def _close(self):
+        if self.panel:
+            self.panel.orderOut_(None)
+            self.panel = None
+            self._delegate = None
+            self._lang_popup = None
+
+    def clear_and_close(self):
+        self._close()
+
+
 # ─── Menu Bar Status Item ─────────────────────────────────────
 class StatusBarItem(NSObject):
     """macOS 메뉴바 상태 아이콘"""
@@ -340,7 +481,23 @@ class StatusBarItem(NSObject):
             self._status_item.button().setTitle_("🌐")
         self._status_item.button().setToolTip_(message)
 
-        self._build_menu()
+        # 좌클릭: 번역 실행 / 우클릭: 메뉴 표시
+        btn = self._status_item.button()
+        btn.setTarget_(self)
+        btn.setAction_(objc.selector(self.onStatusBarClick_, signature=b"v@:@"))
+        # sendActionOn: 좌클릭(1) + 우클릭(2)
+        btn.sendActionOn_(AppKit.NSEventMaskLeftMouseUp | AppKit.NSEventMaskRightMouseUp)
+
+        self._menu = self._build_menu()
+
+    def onStatusBarClick_(self, sender):
+        event = AppKit.NSApp.currentEvent()
+        if event and event.type() == AppKit.NSEventTypeRightMouseUp:
+            self._status_item.popUpStatusItemMenu_(self._menu)
+        else:
+            # 좌클릭 → 입력창 토글
+            if self._coordinator:
+                self._coordinator.toggleInputWindow_(None)
 
     def _build_menu(self):
         menu = AppKit.NSMenu.alloc().init()
@@ -371,7 +528,7 @@ class StatusBarItem(NSObject):
         quit_item.setTarget_(self._coordinator)
         menu.addItem_(quit_item)
 
-        self._status_item.setMenu_(menu)
+        return menu
 
     def animateFrame_(self, timer):
         """NSTimer 콜백: 다음 프레임으로 전환"""
@@ -766,6 +923,7 @@ class Coordinator(NSObject):
         if self is None:
             return None
         self._window = TranslatorWindow()
+        self._input_window = TranslatorInputWindow()
         self._status_bar = StatusBarItem.alloc().init()
         return self
 
@@ -855,6 +1013,33 @@ class Coordinator(NSObject):
                     }, False
                 )
         threading.Thread(target=do_copy_and_translate, daemon=True).start()
+
+    def toggleInputWindow_(self, sender):
+        self._input_window.toggle(self)
+
+    def onInputSubmit_(self, text):
+        text = text.strip()
+        if not text:
+            return
+        target_lang = self._input_window.selected_language()
+        _defaults.setObject_forKey_(target_lang, "target_language")
+        log(f"입력창 번역 요청 ({target_lang}): {text[:80]}{'…' if len(text) > 80 else ''}")
+        self._input_window.clear_and_close()
+        self._status_bar.set_status("⏳ 번역 중…")
+
+        def do_translate():
+            result = translate(text, target_lang=target_lang)
+            log(f"번역 결과: {result[:80]}{'…' if len(result) > 80 else ''}")
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                objc.selector(None, selector=b"showResult:", signature=b"v@:@"),
+                {
+                    "original": text,
+                    "translated": result,
+                    "is_table": False,
+                    "original_html": None,
+                }, False
+            )
+        threading.Thread(target=do_translate, daemon=True).start()
 
     def setStatusTranslating_(self, _):
         self._status_bar.set_status("⏳ 번역 중…")
@@ -946,38 +1131,72 @@ class Coordinator(NSObject):
         self._status_bar.reset_status()
 
     def onSettings_(self, sender):
+        global _selected_gemini_model
         log("설정 클릭")
-        from AppKit import NSAlert, NSTextField
+        from AppKit import NSAlert, NSTextField, NSPopUpButton, NSView, NSFont
+
         alert = NSAlert.alloc().init()
-        alert.setMessageText_("Gemini API 키 설정")
+        alert.setMessageText_("설정")
 
         current_key = _get_api_key()
         if current_key:
             masked = current_key[:4] + "…" + current_key[-4:]
-            alert.setInformativeText_(f"현재 키: {masked}\n새 키를 입력하거나 비워두면 삭제합니다.")
+            alert.setInformativeText_(f"현재 키: {masked}\n새 키를 입력하면 변경, 비워두면 유지됩니다.")
         else:
             alert.setInformativeText_("Gemini API 키를 입력하세요.\nhttps://aistudio.google.com/apikey 에서 발급")
 
-        input_field = NSTextField.alloc().initWithFrame_(((0, 0), (300, 24)))
-        input_field.setPlaceholderString_("API 키 입력…")
-        alert.setAccessoryView_(input_field)
+        # 컨테이너 뷰 (API 키 입력 + 모델 선택)
+        container = NSView.alloc().initWithFrame_(((0, 0), (300, 62)))
+
+        # 모델 선택 라벨 + 드롭다운 (상단)
+        model_label = NSTextField.labelWithString_("모델:")
+        model_label.setFont_(NSFont.systemFontOfSize_(12))
+        model_label.setFrame_(((0, 38), (40, 20)))
+        container.addSubview_(model_label)
+
+        model_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(((42, 36), (256, 24)), False)
+        for m in GEMINI_MODELS:
+            model_popup.addItemWithTitle_(m)
+        model_popup.selectItemWithTitle_(_selected_gemini_model)
+        container.addSubview_(model_popup)
+
+        # API 키 입력 (하단)
+        key_label = NSTextField.labelWithString_("API 키:")
+        key_label.setFont_(NSFont.systemFontOfSize_(12))
+        key_label.setFrame_(((0, 6), (46, 20)))
+        container.addSubview_(key_label)
+
+        input_field = NSTextField.alloc().initWithFrame_(((48, 4), (250, 24)))
+        input_field.setPlaceholderString_("새 키 입력 (비워두면 유지)…")
+        container.addSubview_(input_field)
+
+        alert.setAccessoryView_(container)
         alert.addButtonWithTitle_("저장")
         alert.addButtonWithTitle_("취소")
-
-        # 입력 필드에 포커스
+        if current_key:
+            alert.addButtonWithTitle_("키 삭제")
         alert.window().setInitialFirstResponder_(input_field)
 
         response = alert.runModal()
         if response == AppKit.NSAlertFirstButtonReturn:
+            # API 키 처리
             new_key = str(input_field.stringValue()).strip()
             if new_key:
                 _keychain_save(new_key)
                 _reset_gemini()
-                log(f"API 키 저장 완료 (Keychain)")
-            else:
-                _keychain_delete()
+                log("API 키 저장 완료 (Keychain)")
+
+            # 모델 변경 처리
+            new_model = str(model_popup.titleOfSelectedItem())
+            if new_model != _selected_gemini_model:
+                _selected_gemini_model = new_model
+                _defaults.setObject_forKey_(new_model, "geminiModel")
                 _reset_gemini()
-                log("API 키 삭제됨")
+                log(f"모델 변경: {new_model}")
+        elif response == AppKit.NSAlertThirdButtonReturn:
+            _keychain_delete()
+            _reset_gemini()
+            log("API 키 삭제됨")
 
     def onAbout_(self, sender):
         log("About 클릭")
@@ -1017,6 +1236,23 @@ def main():
 
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+
+    # Edit 메뉴 추가 (⌘+V 붙여넣기 등 기본 텍스트 편집 지원)
+    menubar = AppKit.NSMenu.alloc().init()
+    edit_menu_item = AppKit.NSMenuItem.alloc().init()
+    menubar.addItem_(edit_menu_item)
+    edit_menu = AppKit.NSMenu.alloc().initWithTitle_("Edit")
+    for title, action, key in [
+        ("Cut", "cut:", "x"),
+        ("Copy", "copy:", "c"),
+        ("Paste", "paste:", "v"),
+        ("Select All", "selectAll:", "a"),
+        ("Undo", "undo:", "z"),
+    ]:
+        item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, key)
+        edit_menu.addItem_(item)
+    edit_menu_item.setSubmenu_(edit_menu)
+    app.setMainMenu_(menubar)
 
     coordinator = Coordinator.alloc().init()
 
