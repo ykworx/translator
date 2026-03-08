@@ -26,6 +26,7 @@
         </div>
         <div id="toolbar-right">
           <select id="lang-select">
+            <option value="auto">🔄 자동 감지</option>
             <option value="한국어">한국어</option>
             <option value="日本語">日本語</option>
             <option value="English">English</option>
@@ -46,6 +47,28 @@
       <h3>설정</h3>
       <label>Gemini API Key</label>
       <input type="password" id="api-key-input" placeholder="API 키를 입력하세요...">
+      <label>내 언어</label>
+      <select id="my-lang-select">
+        <option value="한국어">한국어</option>
+        <option value="日本語">日本語</option>
+        <option value="English">English</option>
+        <option value="中文(简体)">中文(简体)</option>
+        <option value="中文(繁體)">中文(繁體)</option>
+        <option value="Español">Español</option>
+        <option value="Français">Français</option>
+        <option value="Deutsch">Deutsch</option>
+      </select>
+      <label>상대 언어 (자동 감지 시)</label>
+      <select id="pair-lang-select">
+        <option value="日本語">日本語</option>
+        <option value="한국어">한국어</option>
+        <option value="English">English</option>
+        <option value="中文(简体)">中文(简体)</option>
+        <option value="中文(繁體)">中文(繁體)</option>
+        <option value="Español">Español</option>
+        <option value="Français">Français</option>
+        <option value="Deutsch">Deutsch</option>
+      </select>
       <label>모델</label>
       <select id="model-select">
         <option value="gemini-2.0-flash">gemini-2.0-flash</option>

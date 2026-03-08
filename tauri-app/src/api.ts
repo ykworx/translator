@@ -28,19 +28,30 @@ export async function callGemini(prompt: string): Promise<string> {
   return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
 }
 
-export async function translate(text: string, targetLang: string): Promise<string> {
-  const prompt =
-    `Translate the following text to ${targetLang}.\n` +
+export async function translate(text: string, targetLang: string, autoLangPair?: { myLang: string; pairLang: string }): Promise<string> {
+  const langInstruction = autoLangPair
+    ? `If the text is in ${autoLangPair.myLang}, translate to ${autoLangPair.pairLang}.\n` +
+      `If the text is in ${autoLangPair.pairLang}, translate to ${autoLangPair.myLang}.\n` +
+      `If multiple languages are mixed, translate everything to ${autoLangPair.myLang}.\n` +
+      `For any other language, translate to ${autoLangPair.myLang}.\n`
+    : `Translate the following text to ${targetLang}.\n`;
+  const prompt = langInstruction +
     `Output ONLY the translation, no explanations.\n\n` +
     text;
   return callGemini(prompt);
 }
 
-export async function translateTable(tableHtml: string, targetLang: string): Promise<string> {
+export async function translateTable(tableHtml: string, targetLang: string, autoLangPair?: { myLang: string; pairLang: string }): Promise<string> {
+  const langInstruction = autoLangPair
+    ? `If the table text is in ${autoLangPair.myLang}, translate to ${autoLangPair.pairLang}.\n` +
+      `If the table text is in ${autoLangPair.pairLang}, translate to ${autoLangPair.myLang}.\n` +
+      `If multiple languages are mixed, translate everything to ${autoLangPair.myLang}.\n` +
+      `For any other language, translate to ${autoLangPair.myLang}.\n`
+    : `Translate ALL text in the following HTML table to ${targetLang}.\n`;
   const prompt =
-    `Translate ALL text in the following HTML table to ${targetLang}.\n` +
+    langInstruction +
     `IMPORTANT RULES:\n` +
-    `- Translate ALL text to ${targetLang}, including technical terms\n` +
+    `- Translate ALL text, including technical terms\n` +
     `- Keep ALL HTML tags and attributes (rowspan, colspan, etc.) EXACTLY as-is\n` +
     `- Do NOT translate: product IDs, version numbers, URLs, English words\n` +
     `- Do NOT add, remove, or modify any HTML tags\n` +
@@ -83,12 +94,15 @@ export async function suggestReplies(original: string, translated: string): Prom
   return suggestions;
 }
 
-export async function translateImage(base64Png: string, targetLang: string): Promise<string> {
+export async function translateImage(base64Png: string, targetLang: string, autoLangPair?: { myLang: string; pairLang: string }): Promise<string> {
   const apiKey = await getSetting("apiKey", "");
   const model = await getSetting("model", "gemini-2.0-flash");
   if (!apiKey) {
     throw new Error("API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.");
   }
+  const langInstruction = autoLangPair
+    ? `2. If the text is in ${autoLangPair.myLang}, translate to ${autoLangPair.pairLang}. If in ${autoLangPair.pairLang}, translate to ${autoLangPair.myLang}. If mixed or other languages, translate to ${autoLangPair.myLang}.\n\n`
+    : `2. Translate ALL text to ${targetLang}\n\n`;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const resp = await fetch(url, {
     method: "POST",
@@ -100,7 +114,7 @@ export async function translateImage(base64Png: string, targetLang: string): Pro
             text:
               `This image contains text. Do the following:\n` +
               `1. Extract ALL text from the image\n` +
-              `2. Translate ALL text to ${targetLang}\n\n` +
+              langInstruction +
               `Format your response EXACTLY like this:\n` +
               `[원문]\n(extracted text)\n\n` +
               `[번역]\n(translation)`

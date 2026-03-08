@@ -14,6 +14,18 @@ const langSelect = document.getElementById("lang-select") as HTMLSelectElement;
 const btnSuggest = document.getElementById("btn-suggest") as HTMLButtonElement;
 const btnClear = document.getElementById("btn-clear") as HTMLButtonElement;
 
+// ─── Auto-detect helper ─────────────────────────────
+type LangConfig = { targetLang: string; autoLangPair?: { myLang: string; pairLang: string } };
+
+async function resolveLangConfig(): Promise<LangConfig> {
+  const selected = langSelect.value;
+  if (selected !== "auto") return { targetLang: selected };
+
+  const myLang = await getSetting("myLang", "한국어");
+  const pairLang = await getSetting("pairLang", "日本語");
+  return { targetLang: myLang, autoLangPair: { myLang, pairLang } };
+}
+
 // ─── Tray animation ─────────────────────────────────
 function startTrayAnim(): void {
   invoke("tray_anim_start").catch(() => {});
@@ -26,7 +38,6 @@ function stopTrayAnim(): void {
 async function handleSubmit(): Promise<void> {
   const text = inputField.value.trim();
   if (!text) return;
-  const targetLang = langSelect.value;
 
   inputField.value = "";
   chat.appendChild(renderLoading(text));
@@ -34,7 +45,8 @@ async function handleSubmit(): Promise<void> {
   startTrayAnim();
 
   try {
-    const result = await translate(text, targetLang);
+    const { targetLang, autoLangPair } = await resolveLangConfig();
+    const result = await translate(text, targetLang, autoLangPair);
     addEntry({ original: text, translated: result });
   } catch (e: any) {
     removeLoading();
@@ -107,18 +119,24 @@ inputField.addEventListener("input", () => {
 // ─── Settings modal ─────────────────────────────────
 const settingsModal = document.getElementById("settings-modal")!;
 const apiKeyInput = document.getElementById("api-key-input") as HTMLInputElement;
+const myLangSelect = document.getElementById("my-lang-select") as HTMLSelectElement;
+const pairLangSelect = document.getElementById("pair-lang-select") as HTMLSelectElement;
 const modelSelect = document.getElementById("model-select") as HTMLSelectElement;
 const btnSaveSettings = document.getElementById("btn-save-settings")!;
 const btnCancelSettings = document.getElementById("btn-cancel-settings")!;
 
 async function openSettings(): Promise<void> {
   apiKeyInput.value = await getSetting("apiKey", "");
+  myLangSelect.value = await getSetting("myLang", "한국어");
+  pairLangSelect.value = await getSetting("pairLang", "日本語");
   modelSelect.value = await getSetting("model", "gemini-2.0-flash");
   settingsModal.classList.remove("hidden");
 }
 
 btnSaveSettings.addEventListener("click", async () => {
   await setSetting("apiKey", apiKeyInput.value.trim());
+  await setSetting("myLang", myLangSelect.value);
+  await setSetting("pairLang", pairLangSelect.value);
   await setSetting("model", modelSelect.value);
   settingsModal.classList.add("hidden");
 });
@@ -139,8 +157,6 @@ listen("open-settings", () => openSettings());
 listen("global-translate", async () => {
   startTrayAnim();
   try {
-    const targetLang = langSelect.value;
-
     // 1. Check for HTML table in clipboard
     let tableHtml: string | null = null;
     try {
@@ -156,7 +172,8 @@ listen("global-translate", async () => {
       chat.appendChild(renderLoading(displayText));
       chat.scrollTop = chat.scrollHeight;
       try {
-        const result = await translateTable(tableHtml, targetLang);
+        const { targetLang, autoLangPair } = await resolveLangConfig();
+        const result = await translateTable(tableHtml, targetLang, autoLangPair);
         addEntry({ original: displayText, translated: result, isTable: true, originalHtml: tableHtml });
       } catch (e: any) {
         removeLoading();
@@ -177,7 +194,8 @@ listen("global-translate", async () => {
       chat.appendChild(renderLoading(text));
       chat.scrollTop = chat.scrollHeight;
       try {
-        const result = await translate(text, targetLang);
+        const { targetLang, autoLangPair } = await resolveLangConfig();
+        const result = await translate(text, targetLang, autoLangPair);
         addEntry({ original: text, translated: result });
       } catch (e: any) {
         removeLoading();
@@ -186,14 +204,15 @@ listen("global-translate", async () => {
       return;
     }
 
-    // 3. Check for image
+    // 3. Check for image (이미지는 언어 감지 불가 → 설정 기반)
     try {
       const imageBase64 = await invoke<string | null>("read_clipboard_image");
       if (imageBase64) {
         chat.appendChild(renderLoading("(이미지 번역 중…)"));
         chat.scrollTop = chat.scrollHeight;
         try {
-          const result = await translateImage(imageBase64, targetLang);
+          const { targetLang, autoLangPair } = await resolveLangConfig();
+          const result = await translateImage(imageBase64, targetLang, autoLangPair);
           let original = "(이미지에서 추출)";
           let translated = result;
           const origMatch = result.match(/\[원문\]\s*\n([\s\S]*?)\n\n\[번역\]\s*\n([\s\S]*)/);
@@ -222,7 +241,7 @@ listen("global-translate", async () => {
 
 // ─── Restore language preference ────────────────────
 (async () => {
-  const savedLang = await getSetting("targetLanguage", "한국어");
+  const savedLang = await getSetting("targetLanguage", "auto");
   langSelect.value = savedLang;
 })();
 
