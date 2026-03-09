@@ -1,6 +1,7 @@
 // ─── UI Rendering ───────────────────────────────────
 import { writeTextToClipboard } from "./clipboard";
 import { koreanPronunciation } from "./api";
+import { COPY_FEEDBACK_MS } from "./constants";
 
 export interface ChatEntry {
   original: string;
@@ -77,7 +78,7 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
       }
       copyOrigBtn.textContent = "✓ 복사됨";
       copyOrigBtn.classList.add("active");
-      setTimeout(() => { copyOrigBtn.classList.remove("active"); setTimeout(() => { copyOrigBtn.textContent = "⧉ 복사"; }, 300); }, 1200);
+      setTimeout(() => { copyOrigBtn.classList.remove("active"); setTimeout(() => { copyOrigBtn.textContent = "⧉ 복사"; }, 300); }, COPY_FEEDBACK_MS);
     });
   }
 
@@ -91,7 +92,7 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
       }
       copyTransBtn.textContent = "✓ 복사됨";
       copyTransBtn.classList.add("active");
-      setTimeout(() => { copyTransBtn.classList.remove("active"); setTimeout(() => { copyTransBtn.textContent = "⧉ 복사"; }, 300); }, 1200);
+      setTimeout(() => { copyTransBtn.classList.remove("active"); setTimeout(() => { copyTransBtn.textContent = "⧉ 복사"; }, 300); }, COPY_FEEDBACK_MS);
     });
   }
 

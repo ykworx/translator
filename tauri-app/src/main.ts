@@ -7,6 +7,7 @@ import { getSetting, setSetting } from "./store";
 import { readText, writeTextToClipboard } from "./clipboard";
 import { translate, translateTable, translateImage, suggestReplies } from "./api";
 import { chatHistory, chat, renderLoading, removeLoading, addEntry, clearChat } from "./ui";
+import { LANGUAGES, MODELS, DEFAULTS, MAX_TEXTAREA_HEIGHT } from "./constants";
 
 // ─── DOM References ──────────────────────────────────
 const inputField = document.getElementById("input-field") as HTMLTextAreaElement;
@@ -21,8 +22,8 @@ async function resolveLangConfig(): Promise<LangConfig> {
   const selected = langSelect.value;
   if (selected !== "auto") return { targetLang: selected };
 
-  const myLang = await getSetting("myLang", "한국어");
-  const pairLang = await getSetting("pairLang", "日本語");
+  const myLang = await getSetting("myLang", DEFAULTS.myLang);
+  const pairLang = await getSetting("pairLang", DEFAULTS.pairLang);
   return { targetLang: myLang, autoLangPair: { myLang, pairLang } };
 }
 
@@ -112,7 +113,7 @@ inputField.addEventListener("keydown", (e: KeyboardEvent) => {
 // Auto-resize textarea
 inputField.addEventListener("input", () => {
   inputField.style.height = "auto";
-  inputField.style.height = Math.min(inputField.scrollHeight, 195) + "px";
+  inputField.style.height = Math.min(inputField.scrollHeight, MAX_TEXTAREA_HEIGHT) + "px";
 });
 
 
@@ -127,9 +128,9 @@ const btnCancelSettings = document.getElementById("btn-cancel-settings")!;
 
 async function openSettings(): Promise<void> {
   apiKeyInput.value = await getSetting("apiKey", "");
-  myLangSelect.value = await getSetting("myLang", "한국어");
-  pairLangSelect.value = await getSetting("pairLang", "日本語");
-  modelSelect.value = await getSetting("model", "gemini-2.0-flash");
+  myLangSelect.value = await getSetting("myLang", DEFAULTS.myLang);
+  pairLangSelect.value = await getSetting("pairLang", DEFAULTS.pairLang);
+  modelSelect.value = await getSetting("model", DEFAULTS.model);
   settingsModal.classList.remove("hidden");
 }
 
@@ -238,6 +239,21 @@ listen("global-translate", async () => {
     stopTrayAnim();
   }
 });
+
+// ─── Populate select elements ───────────────────────
+function populateSelect(select: HTMLSelectElement, items: { value: string; label: string }[]): void {
+  for (const item of items) {
+    const option = document.createElement("option");
+    option.value = item.value;
+    option.textContent = item.label;
+    select.appendChild(option);
+  }
+}
+
+populateSelect(langSelect, LANGUAGES);
+populateSelect(myLangSelect, LANGUAGES);
+populateSelect(pairLangSelect, LANGUAGES);
+populateSelect(modelSelect, MODELS);
 
 // ─── Restore language preference ────────────────────
 (async () => {

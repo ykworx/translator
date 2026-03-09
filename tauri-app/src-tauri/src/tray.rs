@@ -44,6 +44,10 @@ pub fn tray_anim_start(app: tauri::AppHandle, state: tauri::State<'_, TrayAnimSt
                         warn!("Failed to set tray animation icon: {e}");
                     }
                 }
+                #[cfg(target_os = "macos")]
+                if let Err(e) = tray.set_icon_as_template(true) {
+                    warn!("Failed to set tray icon as template during animation: {e}");
+                }
             }
             idx = (idx + 1) % frames.len();
             std::thread::sleep(std::time::Duration::from_millis(250));

@@ -1,33 +1,8 @@
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
 
-// ─── Store helpers ──────────────────────────────────
-let storeRid: number | null = null;
-
-async function getStoreRid(): Promise<number> {
-  if (storeRid === null) {
-    storeRid = await invoke("plugin:store|load", {
-      path: "settings.json",
-      options: { autoSave: true },
-    });
-  }
-  return storeRid!;
-}
-
-async function getSetting<T>(key: string, defaultValue: T): Promise<T> {
-  try {
-    const rid = await getStoreRid();
-    const [value, exists] = await invoke<[T, boolean]>("plugin:store|get", { rid, key });
-    return exists ? value : defaultValue;
-  } catch {
-    return defaultValue;
-  }
-}
-
-async function setSetting<T>(key: string, value: T): Promise<void> {
-  const rid = await getStoreRid();
-  await invoke("plugin:store|set", { rid, key, value });
-}
+import { LANGUAGES, MODELS, DEFAULTS } from "./constants";
+import { getSetting, setSetting } from "./store";
 
 // ─── DOM ────────────────────────────────────────────
 const apiKeyInput = document.getElementById("api-key") as HTMLInputElement;
@@ -58,12 +33,9 @@ tabItems.forEach(item => {
 });
 
 // ─── Shortcut recording ─────────────────────────────
-const DEFAULT_SELECT = "Super+Ctrl+KeyT";
-const DEFAULT_CLIPBOARD = "Super+Ctrl+Shift+KeyT";
-
 // Current shortcut values (machine format)
-let selectShortcutStr = DEFAULT_SELECT;
-let clipboardShortcutStr = DEFAULT_CLIPBOARD;
+let selectShortcutStr: string = DEFAULTS.selectShortcut;
+let clipboardShortcutStr: string = DEFAULTS.clipboardShortcut;
 let recordingBtn: HTMLButtonElement | null = null;
 
 /** Convert machine format "Super+Ctrl+KeyT" to compact display "⌃⌘T" */
@@ -138,12 +110,12 @@ shortcutClipboardBtn.addEventListener("click", () => startRecording(shortcutClip
 
 // Reset buttons
 document.getElementById("reset-select")!.addEventListener("click", () => {
-  selectShortcutStr = DEFAULT_SELECT;
-  shortcutSelectBtn.textContent = shortcutDisplay(DEFAULT_SELECT);
+  selectShortcutStr = DEFAULTS.selectShortcut;
+  shortcutSelectBtn.textContent = shortcutDisplay(DEFAULTS.selectShortcut);
 });
 document.getElementById("reset-clipboard")!.addEventListener("click", () => {
-  clipboardShortcutStr = DEFAULT_CLIPBOARD;
-  shortcutClipboardBtn.textContent = shortcutDisplay(DEFAULT_CLIPBOARD);
+  clipboardShortcutStr = DEFAULTS.clipboardShortcut;
+  shortcutClipboardBtn.textContent = shortcutDisplay(DEFAULTS.clipboardShortcut);
 });
 
 document.addEventListener("keydown", (e: KeyboardEvent) => {
@@ -173,15 +145,29 @@ document.addEventListener("keydown", (e: KeyboardEvent) => {
   if (e.key === "Escape") getCurrentWindow().close();
 });
 
+// ─── Populate select elements ───────────────────────
+function populateSelect(select: HTMLSelectElement, items: { value: string; label: string }[]): void {
+  for (const item of items) {
+    const option = document.createElement("option");
+    option.value = item.value;
+    option.textContent = item.label;
+    select.appendChild(option);
+  }
+}
+
+populateSelect(myLangSelect, LANGUAGES);
+populateSelect(pairLangSelect, LANGUAGES);
+populateSelect(modelSelect, MODELS);
+
 // ─── Load settings ──────────────────────────────────
 (async () => {
   apiKeyInput.value = await getSetting("apiKey", "");
-  myLangSelect.value = await getSetting("myLang", "한국어");
-  pairLangSelect.value = await getSetting("pairLang", "日本語");
-  modelSelect.value = await getSetting("model", "gemini-2.0-flash");
+  myLangSelect.value = await getSetting("myLang", DEFAULTS.myLang);
+  pairLangSelect.value = await getSetting("pairLang", DEFAULTS.pairLang);
+  modelSelect.value = await getSetting("model", DEFAULTS.model);
 
-  selectShortcutStr = await getSetting("selectShortcut", DEFAULT_SELECT);
-  clipboardShortcutStr = await getSetting("clipboardShortcut", DEFAULT_CLIPBOARD);
+  selectShortcutStr = await getSetting("selectShortcut", DEFAULTS.selectShortcut);
+  clipboardShortcutStr = await getSetting("clipboardShortcut", DEFAULTS.clipboardShortcut);
   shortcutSelectBtn.textContent = shortcutDisplay(selectShortcutStr);
   shortcutClipboardBtn.textContent = shortcutDisplay(clipboardShortcutStr);
 })();

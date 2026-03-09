@@ -1,5 +1,6 @@
 // ─── Gemini API ─────────────────────────────────────
 import { getSetting } from "./store";
+import { DEFAULTS } from "./constants";
 
 export interface Suggestion {
   kr: string;
@@ -8,7 +9,7 @@ export interface Suggestion {
 
 export async function callGemini(prompt: string): Promise<string> {
   const apiKey = await getSetting("apiKey", "");
-  const model = await getSetting("model", "gemini-2.0-flash");
+  const model = await getSetting("model", DEFAULTS.model);
   if (!apiKey) {
     throw new Error("API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.");
   }
@@ -96,7 +97,7 @@ export async function suggestReplies(original: string, translated: string): Prom
 
 export async function translateImage(base64Png: string, targetLang: string, autoLangPair?: { myLang: string; pairLang: string }): Promise<string> {
   const apiKey = await getSetting("apiKey", "");
-  const model = await getSetting("model", "gemini-2.0-flash");
+  const model = await getSetting("model", DEFAULTS.model);
   if (!apiKey) {
     throw new Error("API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.");
   }
