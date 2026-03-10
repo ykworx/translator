@@ -157,20 +157,11 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if window.label() != "main" { return; }
-            match event {
-                WindowEvent::CloseRequested { api, .. } => {
-                    if let Err(e) = window.hide() {
-                        warn!("Failed to hide window on close: {e}");
-                    }
-                    api.prevent_close();
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if let Err(e) = window.hide() {
+                    warn!("Failed to hide window on close: {e}");
                 }
-                WindowEvent::Focused(false) => {
-                    // Drop always-on-top when focus is lost
-                    if let Err(e) = window.set_always_on_top(false) {
-                        warn!("Failed to unset always on top: {e}");
-                    }
-                }
-                _ => {}
+                api.prevent_close();
             }
         })
         .run(tauri::generate_context!())

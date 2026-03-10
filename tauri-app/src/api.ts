@@ -31,10 +31,11 @@ export async function callGemini(prompt: string): Promise<string> {
 
 export async function translate(text: string, targetLang: string, autoLangPair?: { myLang: string; pairLang: string }): Promise<string> {
   const langInstruction = autoLangPair
-    ? `If the text is in ${autoLangPair.myLang}, translate to ${autoLangPair.pairLang}.\n` +
-      `If the text is in ${autoLangPair.pairLang}, translate to ${autoLangPair.myLang}.\n` +
-      `If multiple languages are mixed, translate everything to ${autoLangPair.myLang}.\n` +
-      `For any other language, translate to ${autoLangPair.myLang}.\n`
+    ? `You are a translator. Detect the language of the text and translate it.\n` +
+      `- If the text is written in ${autoLangPair.myLang} → translate to ${autoLangPair.pairLang}\n` +
+      `- If the text is written in ${autoLangPair.pairLang} → translate to ${autoLangPair.myLang}\n` +
+      `- If the text is in any other language → translate to ${autoLangPair.myLang}\n` +
+      `IMPORTANT: You MUST translate. Never return the original text as-is.\n`
     : `Translate the following text to ${targetLang}.\n`;
   const prompt = langInstruction +
     `Output ONLY the translation, no explanations.\n\n` +
@@ -44,10 +45,10 @@ export async function translate(text: string, targetLang: string, autoLangPair?:
 
 export async function translateTable(tableHtml: string, targetLang: string, autoLangPair?: { myLang: string; pairLang: string }): Promise<string> {
   const langInstruction = autoLangPair
-    ? `If the table text is in ${autoLangPair.myLang}, translate to ${autoLangPair.pairLang}.\n` +
-      `If the table text is in ${autoLangPair.pairLang}, translate to ${autoLangPair.myLang}.\n` +
-      `If multiple languages are mixed, translate everything to ${autoLangPair.myLang}.\n` +
-      `For any other language, translate to ${autoLangPair.myLang}.\n`
+    ? `Detect the language of the table text and translate it.\n` +
+      `- If the text is written in ${autoLangPair.myLang} → translate to ${autoLangPair.pairLang}\n` +
+      `- If the text is written in ${autoLangPair.pairLang} → translate to ${autoLangPair.myLang}\n` +
+      `- If the text is in any other language → translate to ${autoLangPair.myLang}\n`
     : `Translate ALL text in the following HTML table to ${targetLang}.\n`;
   const prompt =
     langInstruction +
@@ -102,7 +103,7 @@ export async function translateImage(base64Png: string, targetLang: string, auto
     throw new Error("API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.");
   }
   const langInstruction = autoLangPair
-    ? `2. If the text is in ${autoLangPair.myLang}, translate to ${autoLangPair.pairLang}. If in ${autoLangPair.pairLang}, translate to ${autoLangPair.myLang}. If mixed or other languages, translate to ${autoLangPair.myLang}.\n\n`
+    ? `2. Detect the language: if in ${autoLangPair.myLang}, translate to ${autoLangPair.pairLang}. If in ${autoLangPair.pairLang}, translate to ${autoLangPair.myLang}. For any other language, translate to ${autoLangPair.myLang}. You MUST translate, never return original text.\n\n`
     : `2. Translate ALL text to ${targetLang}\n\n`;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const resp = await fetch(url, {

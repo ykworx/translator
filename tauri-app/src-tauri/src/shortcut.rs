@@ -119,9 +119,7 @@ fn handle_select_shortcut(app: tauri::AppHandle) {
         let app_main = app.clone();
         if let Err(e) = app.run_on_main_thread(move || {
             if let Some(window) = app_main.get_webview_window("main") {
-                if !window.is_visible().unwrap_or(false) {
-                    show_window_centered(&window);
-                }
+                show_window_centered(&window);
                 if let Err(e) = window.emit("global-translate", ()) {
                     error!("Failed to emit global-translate event: {e}");
                 }
@@ -138,9 +136,7 @@ fn handle_clipboard_shortcut(app: tauri::AppHandle) {
     let app_main = app.clone();
     if let Err(e) = app.run_on_main_thread(move || {
         if let Some(window) = app_main.get_webview_window("main") {
-            if !window.is_visible().unwrap_or(false) {
-                show_window_centered(&window);
-            }
+            show_window_centered(&window);
             if let Err(e) = window.emit("global-translate", ()) {
                 error!("Failed to emit global-translate event: {e}");
             }
