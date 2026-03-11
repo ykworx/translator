@@ -22,6 +22,43 @@ export function escapeHtml(str: string): string {
   return div.innerHTML;
 }
 
+/** Sanitize HTML table: keep only safe tags/attributes, strip scripts and event handlers */
+function sanitizeTableHtml(html: string): string {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+  const SAFE_TAGS = new Set(["TABLE", "THEAD", "TBODY", "TFOOT", "TR", "TH", "TD", "CAPTION", "COL", "COLGROUP", "BR", "SPAN", "STRONG", "EM", "B", "I", "U", "A", "DIV", "P"]);
+  const SAFE_ATTRS = new Set(["rowspan", "colspan", "scope", "headers", "href"]);
+
+  function clean(node: Element): void {
+    // Remove dangerous elements
+    node.querySelectorAll("script, style, iframe, object, embed, form, input, link, meta").forEach(el => el.remove());
+    // Walk all elements
+    const all = node.querySelectorAll("*");
+    for (const el of all) {
+      if (!SAFE_TAGS.has(el.tagName)) {
+        el.replaceWith(...el.childNodes);
+        continue;
+      }
+      // Remove all attributes except safe ones; strip all event handlers (on*)
+      for (const attr of [...el.attributes]) {
+        if (attr.name.startsWith("on") || !SAFE_ATTRS.has(attr.name)) {
+          el.removeAttribute(attr.name);
+        }
+      }
+      // Sanitize href to prevent javascript: URIs
+      if (el.hasAttribute("href")) {
+        const href = el.getAttribute("href") || "";
+        if (!/^https?:\/\//i.test(href)) {
+          el.removeAttribute("href");
+        }
+      }
+    }
+  }
+
+  clean(doc.body);
+  return doc.body.innerHTML;
+}
+
 export function renderEntry(entry: ChatEntry): HTMLDivElement {
   const div = document.createElement("div");
   div.className = "entry";
@@ -29,13 +66,13 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
   const origText = escapeHtml(entry.original.trim()).replace(/\n/g, "<br>");
   const isError = entry.translated.startsWith("[오류]");
   const transText = entry.isTable
-    ? `<div class="table-wrap">${entry.translated}</div>`
+    ? `<div class="table-wrap">${sanitizeTableHtml(entry.translated)}</div>`
     : escapeHtml(entry.translated.trim()).replace(/\n/g, "<br>");
   const origLabel = entry.isImage ? "원본 이미지" : "원문";
 
   let origContent = origText;
   if (entry.isTable && entry.originalHtml) {
-    origContent = `<div class="table-wrap">${entry.originalHtml}</div>`;
+    origContent = `<div class="table-wrap">${sanitizeTableHtml(entry.originalHtml)}</div>`;
   } else if (entry.isImage && entry.imageBase64) {
     origContent = `<img class="orig-img" src="data:image/png;base64,${entry.imageBase64}" />`;
     if (entry.original && entry.original !== "(이미지에서 추출)") {

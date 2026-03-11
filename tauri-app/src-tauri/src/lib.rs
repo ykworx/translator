@@ -157,11 +157,17 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if window.label() != "main" { return; }
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if let Err(e) = window.hide() {
-                    warn!("Failed to hide window on close: {e}");
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    if let Err(e) = window.hide() {
+                        warn!("Failed to hide window on close: {e}");
+                    }
+                    api.prevent_close();
                 }
-                api.prevent_close();
+                WindowEvent::Focused(false) => {
+                    window.set_always_on_top(false).ok();
+                }
+                _ => {}
             }
         })
         .run(tauri::generate_context!())

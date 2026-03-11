@@ -139,6 +139,19 @@ export async function translateImage(base64Png: string, targetLang: string, auto
   return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
 }
 
+export async function summarize(original: string, translated: string): Promise<string> {
+  const prompt =
+    "You are a helpful assistant. Summarize the following text in 2-3 concise bullet points in Korean.\n" +
+    "Rules:\n" +
+    "- Write in Korean\n" +
+    "- Keep each bullet point short (1 sentence)\n" +
+    "- Capture the key points only\n" +
+    "- Use bullet format: • point\n" +
+    "- Output ONLY the summary, nothing else.\n\n" +
+    `Original: ${original}\nTranslation: ${translated}`;
+  return callGemini(prompt);
+}
+
 export async function koreanPronunciation(text: string): Promise<string> {
   const prompt =
     "Write the Korean pronunciation (reading) of the following text.\n" +

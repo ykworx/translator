@@ -5,7 +5,7 @@ const { invoke } = window.__TAURI__.core;
 // ─── Module imports ──────────────────────────────────
 import { getSetting, setSetting } from "./store";
 import { readText, writeTextToClipboard } from "./clipboard";
-import { translate, translateTable, translateImage, suggestReplies } from "./api";
+import { translate, translateTable, translateImage, suggestReplies, summarize } from "./api";
 import { chatHistory, chat, renderLoading, removeLoading, addEntry, clearChat } from "./ui";
 import { LANGUAGES, MODELS, DEFAULTS, MAX_TEXTAREA_HEIGHT } from "./constants";
 
@@ -13,6 +13,7 @@ import { LANGUAGES, MODELS, DEFAULTS, MAX_TEXTAREA_HEIGHT } from "./constants";
 const inputField = document.getElementById("input-field") as HTMLTextAreaElement;
 const langSelect = document.getElementById("lang-select") as HTMLSelectElement;
 const btnSuggest = document.getElementById("btn-suggest") as HTMLButtonElement;
+const btnSummarize = document.getElementById("btn-summarize") as HTMLButtonElement;
 const btnClear = document.getElementById("btn-clear") as HTMLButtonElement;
 
 // ─── Auto-detect helper ─────────────────────────────
@@ -97,6 +98,34 @@ btnSuggest.addEventListener("click", async () => {
 
   btnSuggest.textContent = "💬 빠른 답장";
   btnSuggest.disabled = false;
+});
+
+// ─── Summarize ──────────────────────────────────────
+btnSummarize.addEventListener("click", async () => {
+  if (chatHistory.length === 0) return;
+  const last = chatHistory[chatHistory.length - 1];
+  btnSummarize.textContent = "생성 중…";
+  btnSummarize.disabled = true;
+
+  try {
+    const result = await summarize(last.original, last.translated);
+    if (result) {
+      const section = document.createElement("div");
+      section.className = "suggest-section";
+      section.innerHTML = `<div class="suggest-label">내용 요약</div>`;
+      const content = document.createElement("div");
+      content.className = "summary-content";
+      content.textContent = result;
+      section.appendChild(content);
+      chat.appendChild(section);
+      chat.scrollTop = chat.scrollHeight;
+    }
+  } catch (e) {
+    console.error("Summarize error:", e);
+  }
+
+  btnSummarize.textContent = "📋 요약";
+  btnSummarize.disabled = false;
 });
 
 // ─── Clear ──────────────────────────────────────────

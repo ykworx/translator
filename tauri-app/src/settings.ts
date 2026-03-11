@@ -178,17 +178,17 @@ btnSave.addEventListener("click", async () => {
   await setSetting("myLang", myLangSelect.value);
   await setSetting("pairLang", pairLangSelect.value);
   await setSetting("model", modelSelect.value);
-  await setSetting("selectShortcut", selectShortcutStr);
-  await setSetting("clipboardShortcut", clipboardShortcutStr);
-
-  // Re-register shortcuts in the backend
+  // Validate shortcuts by registering them first; only persist on success
   try {
     await invoke("update_shortcuts", {
       selectShortcut: selectShortcutStr,
       clipboardShortcut: clipboardShortcutStr,
     });
+    await setSetting("selectShortcut", selectShortcutStr);
+    await setSetting("clipboardShortcut", clipboardShortcutStr);
   } catch (err) {
-    console.error("Failed to update shortcuts:", err);
+    alert(`단축키 등록 실패: ${err}\n이전 단축키가 유지됩니다.`);
+    return;
   }
 
   getCurrentWindow().close();

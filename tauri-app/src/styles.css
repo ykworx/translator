@@ -308,6 +308,18 @@ body {
 }
 .suggest-btn:hover { background: rgba(128,128,128,0.15); }
 
+/* Summary content */
+.summary-content {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 13px;
+  color: var(--fg);
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
 /* Settings modal */
 .modal {
   position: fixed;
