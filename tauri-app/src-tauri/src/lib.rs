@@ -1,11 +1,9 @@
 mod clipboard;
 mod shortcut;
-mod tray;
 mod window;
 
 use log::{error, warn};
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconEvent,
@@ -22,9 +20,6 @@ use window::{center_window_on_cursor, show_window_centered};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(tray::TrayAnimState {
-            animating: Arc::new(AtomicBool::new(false)),
-        })
         .manage(Mutex::new(CurrentShortcuts {
             select: parse_shortcut_str(DEFAULT_SELECT_SHORTCUT).unwrap(),
             clipboard: parse_shortcut_str(DEFAULT_CLIPBOARD_SHORTCUT).unwrap(),
@@ -32,8 +27,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             clipboard::read_clipboard_image,
             clipboard::read_clipboard_html,
-            tray::tray_anim_start,
-            tray::tray_anim_stop,
             shortcut::update_shortcuts,
             shortcut::suspend_shortcuts,
             shortcut::resume_shortcuts

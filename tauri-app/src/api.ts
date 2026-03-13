@@ -14,6 +14,12 @@ export interface Suggestion {
   jp: string;
 }
 
+export interface ImageTranslationResult {
+  extractedText: string;
+  translatedText: string;
+  rawText: string;
+}
+
 export async function callGemini(prompt: string): Promise<string> {
   return generateText(prompt);
 }
@@ -50,6 +56,23 @@ function parseSuggestions(raw: string): Suggestion[] {
   return suggestions;
 }
 
+function parseImageTranslationResult(raw: string): ImageTranslationResult {
+  const match = raw.match(/\[원문\]\s*\n([\s\S]*?)\n\n\[번역\]\s*\n([\s\S]*)/);
+  if (!match) {
+    return {
+      extractedText: "",
+      translatedText: raw.trim(),
+      rawText: raw,
+    };
+  }
+
+  return {
+    extractedText: match[1].trim(),
+    translatedText: match[2].trim(),
+    rawText: raw,
+  };
+}
+
 export async function translate(text: string, targetLang: string, autoLangPair?: AutoLangPair): Promise<string> {
   return callGemini(buildTranslatePrompt(text, targetLang, autoLangPair));
 }
@@ -64,8 +87,9 @@ export async function suggestReplies(original: string, translated: string): Prom
   return parseSuggestions(raw);
 }
 
-export async function translateImage(base64Png: string, targetLang: string, autoLangPair?: AutoLangPair): Promise<string> {
-  return generateImage(buildTranslateImagePrompt(targetLang, autoLangPair), base64Png);
+export async function translateImage(base64Png: string, targetLang: string, autoLangPair?: AutoLangPair): Promise<ImageTranslationResult> {
+  const raw = await generateImage(buildTranslateImagePrompt(targetLang, autoLangPair), base64Png);
+  return parseImageTranslationResult(raw);
 }
 
 export async function summarize(original: string, translated: string): Promise<string> {

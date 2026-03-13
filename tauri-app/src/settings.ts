@@ -174,24 +174,24 @@ populateSelect(modelSelect, MODELS);
 
 // ─── Save ───────────────────────────────────────────
 btnSave.addEventListener("click", async () => {
-  await setSetting(SETTINGS_KEYS.apiKey, apiKeyInput.value.trim());
-  await setSetting(SETTINGS_KEYS.myLang, myLangSelect.value);
-  await setSetting(SETTINGS_KEYS.pairLang, pairLangSelect.value);
-  await setSetting(SETTINGS_KEYS.model, modelSelect.value);
-  // Validate shortcuts by registering them first; only persist on success
   try {
+    await setSetting(SETTINGS_KEYS.apiKey, apiKeyInput.value.trim());
+    await setSetting(SETTINGS_KEYS.myLang, myLangSelect.value);
+    await setSetting(SETTINGS_KEYS.pairLang, pairLangSelect.value);
+    await setSetting(SETTINGS_KEYS.model, modelSelect.value);
+
+    // Validate shortcuts by registering them first; only persist on success
     await invoke("update_shortcuts", {
       selectShortcut: selectShortcutStr,
       clipboardShortcut: clipboardShortcutStr,
     });
     await setSetting(SETTINGS_KEYS.selectShortcut, selectShortcutStr);
     await setSetting(SETTINGS_KEYS.clipboardShortcut, clipboardShortcutStr);
+
+    getCurrentWindow().close();
   } catch (err) {
     alert(`단축키 등록 실패: ${err}\n이전 단축키가 유지됩니다.`);
-    return;
   }
-
-  getCurrentWindow().close();
 });
 
 // ─── Cancel ─────────────────────────────────────────

@@ -19,6 +19,16 @@ const btnClear = document.getElementById("btn-clear") as HTMLButtonElement;
 // ─── Auto-detect helper ─────────────────────────────
 type LangConfig = { targetLang: string; autoLangPair?: { myLang: string; pairLang: string } };
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
+  return String(error);
+}
+
 async function resolveLangConfig(): Promise<LangConfig> {
   const selected = langSelect.value;
   if (selected !== "auto") return { targetLang: selected };
@@ -26,14 +36,6 @@ async function resolveLangConfig(): Promise<LangConfig> {
   const myLang = await getSetting(SETTINGS_KEYS.myLang, DEFAULTS.myLang);
   const pairLang = await getSetting(SETTINGS_KEYS.pairLang, DEFAULTS.pairLang);
   return { targetLang: myLang, autoLangPair: { myLang, pairLang } };
-}
-
-// ─── Tray animation ─────────────────────────────────
-function startTrayAnim(): void {
-  invoke("tray_anim_start").catch(() => {});
-}
-function stopTrayAnim(): void {
-  invoke("tray_anim_stop").catch(() => {});
 }
 
 // ─── Translation submit ─────────────────────────────
@@ -44,17 +46,14 @@ async function handleSubmit(): Promise<void> {
   inputField.value = "";
   chat.appendChild(renderLoading(text));
   chat.scrollTop = chat.scrollHeight;
-  startTrayAnim();
 
   try {
     const { targetLang, autoLangPair } = await resolveLangConfig();
     const result = await translate(text, targetLang, autoLangPair);
     addEntry({ original: text, translated: result });
-  } catch (e: any) {
+  } catch (e) {
     removeLoading();
-    addEntry({ original: text, translated: `[오류] ${e.message}` });
-  } finally {
-    stopTrayAnim();
+    addEntry({ original: text, translated: `[오류] ${getErrorMessage(e)}` });
   }
 }
 
@@ -148,7 +147,6 @@ inputField.addEventListener("input", () => {
 
 // ─── Event listeners ────────────────────────────────
 listen("global-translate", async () => {
-  startTrayAnim();
   try {
     // 1. Check for HTML table in clipboard
     let tableHtml: string | null = null;
@@ -168,11 +166,10 @@ listen("global-translate", async () => {
         const { targetLang, autoLangPair } = await resolveLangConfig();
         const result = await translateTable(tableHtml, targetLang, autoLangPair);
         addEntry({ original: displayText, translated: result, isTable: true, originalHtml: tableHtml });
-      } catch (e: any) {
+      } catch (e) {
         removeLoading();
-        addEntry({ original: displayText, translated: `[오류] ${e.message}` });
+        addEntry({ original: displayText, translated: `[오류] ${getErrorMessage(e)}` });
       }
-      stopTrayAnim();
       return;
     }
 
@@ -190,9 +187,9 @@ listen("global-translate", async () => {
         const { targetLang, autoLangPair } = await resolveLangConfig();
         const result = await translate(text, targetLang, autoLangPair);
         addEntry({ original: text, translated: result });
-      } catch (e: any) {
+      } catch (e) {
         removeLoading();
-        addEntry({ original: text, translated: `[오류] ${e.message}` });
+        addEntry({ original: text, translated: `[오류] ${getErrorMessage(e)}` });
       }
       return;
     }
@@ -206,17 +203,16 @@ listen("global-translate", async () => {
         try {
           const { targetLang, autoLangPair } = await resolveLangConfig();
           const result = await translateImage(imageBase64, targetLang, autoLangPair);
-          let original = "(이미지에서 추출)";
-          let translated = result;
-          const origMatch = result.match(/\[원문\]\s*\n([\s\S]*?)\n\n\[번역\]\s*\n([\s\S]*)/);
-          if (origMatch) {
-            original = origMatch[1].trim();
-            translated = origMatch[2].trim();
-          }
-          addEntry({ original, translated, isImage: true, imageBase64 });
-        } catch (e: any) {
+          addEntry({
+            original: "(이미지)",
+            translated: result.translatedText,
+            isImage: true,
+            imageBase64,
+            imageExtractedText: result.extractedText,
+          });
+        } catch (e) {
           removeLoading();
-          addEntry({ original: "(이미지)", translated: `[오류] ${e.message}`, isImage: true, imageBase64 });
+          addEntry({ original: "(이미지)", translated: `[오류] ${getErrorMessage(e)}`, isImage: true, imageBase64 });
         }
       }
       if (!imageBase64) {
@@ -227,8 +223,6 @@ listen("global-translate", async () => {
     }
   } catch (e) {
     console.error("Clipboard read error:", e);
-  } finally {
-    stopTrayAnim();
   }
 });
 

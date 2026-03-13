@@ -10,6 +10,7 @@ export interface ChatEntry {
   originalHtml?: string;
   isImage?: boolean;
   imageBase64?: string;
+  imageExtractedText?: string;
 }
 
 export let chatHistory: ChatEntry[] = [];
@@ -64,6 +65,7 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
   div.className = "entry";
 
   const origText = escapeHtml(entry.original.trim()).replace(/\n/g, "<br>");
+  const extractedText = escapeHtml((entry.imageExtractedText || "").trim()).replace(/\n/g, "<br>");
   const isError = entry.translated.startsWith("[오류]");
   const transText = entry.isTable
     ? `<div class="table-wrap">${sanitizeTableHtml(entry.translated)}</div>`
@@ -75,22 +77,35 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
     origContent = `<div class="table-wrap">${sanitizeTableHtml(entry.originalHtml)}</div>`;
   } else if (entry.isImage && entry.imageBase64) {
     origContent = `<img class="orig-img" src="data:image/png;base64,${entry.imageBase64}" />`;
-    if (entry.original && entry.original !== "(이미지에서 추출)") {
-      origContent += `<div style="margin-top:8px">${origText}</div>`;
-    }
   }
+
+  const imageExtractedSection = entry.isImage && entry.imageExtractedText
+    ? `
+      <div class="section extracted hidden">
+        <div class="label">OCR 추출 원문</div>
+        <div class="card orig image-detail-panel">
+          <div class="card-pills">
+            <span class="card-pill copy-btn copy-extracted">⧉ 복사</span>
+          </div>
+          ${extractedText}
+        </div>
+      </div>
+    `
+    : "";
 
   div.innerHTML = `
     <div class="section original">
       <div class="label">${origLabel}</div>
       <div class="card orig">
         <div class="card-pills">
-          ${entry.isImage ? "" : '<span class="card-pill pron-btn" data-target="orig">Aa 발음</span>'}
-          ${entry.isImage ? "" : '<span class="card-pill copy-btn copy-orig">⧉ 복사</span>'}
+          ${entry.isImage
+            ? (entry.imageExtractedText ? '<span class="card-pill image-detail-toggle" data-expanded="false">OCR 보기</span>' : "")
+            : '<span class="card-pill pron-btn" data-target="orig">Aa 발음</span><span class="card-pill copy-btn copy-orig">⧉ 복사</span>'}
         </div>
         ${origContent}
       </div>
     </div>
+    ${imageExtractedSection}
     <div class="section translated">
       <div class="label">번역 결과</div>
       <div class="card trans${isError ? " error" : ""}">
@@ -130,6 +145,31 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
       copyTransBtn.textContent = "✓ 복사됨";
       copyTransBtn.classList.add("active");
       setTimeout(() => { copyTransBtn.classList.remove("active"); setTimeout(() => { copyTransBtn.textContent = "⧉ 복사"; }, 300); }, COPY_FEEDBACK_MS);
+    });
+  }
+
+  const copyExtractedBtn = div.querySelector(".copy-extracted") as HTMLElement | null;
+  if (copyExtractedBtn && entry.imageExtractedText) {
+    copyExtractedBtn.addEventListener("click", async () => {
+      try { await writeTextToClipboard(entry.imageExtractedText || ""); } catch {
+        const ta = document.createElement("textarea");
+        ta.value = entry.imageExtractedText || "";
+        document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+      }
+      copyExtractedBtn.textContent = "✓ 복사됨";
+      copyExtractedBtn.classList.add("active");
+      setTimeout(() => { copyExtractedBtn.classList.remove("active"); setTimeout(() => { copyExtractedBtn.textContent = "⧉ 복사"; }, 300); }, COPY_FEEDBACK_MS);
+    });
+  }
+
+  const imageDetailToggle = div.querySelector(".image-detail-toggle") as HTMLButtonElement | null;
+  const imageDetailSection = div.querySelector(".section.extracted") as HTMLElement | null;
+  if (imageDetailToggle && imageDetailSection) {
+    imageDetailToggle.addEventListener("click", () => {
+      const expanded = imageDetailToggle.dataset.expanded === "true";
+      imageDetailToggle.dataset.expanded = String(!expanded);
+      imageDetailToggle.textContent = expanded ? "OCR 보기" : "OCR 숨기기";
+      imageDetailSection.classList.toggle("hidden", expanded);
     });
   }
 

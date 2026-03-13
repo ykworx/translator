@@ -166,6 +166,15 @@ body {
 .orig-img {
   max-width: 100%;
   border-radius: 8px;
+  display: block;
+}
+
+.section.extracted .card {
+  white-space: pre-wrap;
+}
+
+.section.extracted.hidden {
+  display: none;
 }
 
 /* Loading dots */
