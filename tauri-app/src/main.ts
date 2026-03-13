@@ -7,7 +7,7 @@ import { getSetting, setSetting } from "./store";
 import { readText, writeTextToClipboard } from "./clipboard";
 import { translate, translateTable, translateImage, suggestReplies, summarize } from "./api";
 import { chatHistory, chat, renderLoading, removeLoading, addEntry, clearChat } from "./ui";
-import { LANGUAGES, MODELS, DEFAULTS, MAX_TEXTAREA_HEIGHT } from "./constants";
+import { LANGUAGES, DEFAULTS, MAX_TEXTAREA_HEIGHT, SETTINGS_KEYS } from "./constants";
 
 // ─── DOM References ──────────────────────────────────
 const inputField = document.getElementById("input-field") as HTMLTextAreaElement;
@@ -23,8 +23,8 @@ async function resolveLangConfig(): Promise<LangConfig> {
   const selected = langSelect.value;
   if (selected !== "auto") return { targetLang: selected };
 
-  const myLang = await getSetting("myLang", DEFAULTS.myLang);
-  const pairLang = await getSetting("pairLang", DEFAULTS.pairLang);
+  const myLang = await getSetting(SETTINGS_KEYS.myLang, DEFAULTS.myLang);
+  const pairLang = await getSetting(SETTINGS_KEYS.pairLang, DEFAULTS.pairLang);
   return { targetLang: myLang, autoLangPair: { myLang, pairLang } };
 }
 
@@ -146,44 +146,7 @@ inputField.addEventListener("input", () => {
 });
 
 
-// ─── Settings modal ─────────────────────────────────
-const settingsModal = document.getElementById("settings-modal")!;
-const apiKeyInput = document.getElementById("api-key-input") as HTMLInputElement;
-const myLangSelect = document.getElementById("my-lang-select") as HTMLSelectElement;
-const pairLangSelect = document.getElementById("pair-lang-select") as HTMLSelectElement;
-const modelSelect = document.getElementById("model-select") as HTMLSelectElement;
-const btnSaveSettings = document.getElementById("btn-save-settings")!;
-const btnCancelSettings = document.getElementById("btn-cancel-settings")!;
-
-async function openSettings(): Promise<void> {
-  apiKeyInput.value = await getSetting("apiKey", "");
-  myLangSelect.value = await getSetting("myLang", DEFAULTS.myLang);
-  pairLangSelect.value = await getSetting("pairLang", DEFAULTS.pairLang);
-  modelSelect.value = await getSetting("model", DEFAULTS.model);
-  settingsModal.classList.remove("hidden");
-}
-
-btnSaveSettings.addEventListener("click", async () => {
-  await setSetting("apiKey", apiKeyInput.value.trim());
-  await setSetting("myLang", myLangSelect.value);
-  await setSetting("pairLang", pairLangSelect.value);
-  await setSetting("model", modelSelect.value);
-  settingsModal.classList.add("hidden");
-});
-
-btnCancelSettings.addEventListener("click", () => {
-  settingsModal.classList.add("hidden");
-});
-
-document.addEventListener("keydown", (e: KeyboardEvent) => {
-  if (e.key === "Escape") {
-    if (!settingsModal.classList.contains("hidden")) settingsModal.classList.add("hidden");
-  }
-});
-
 // ─── Event listeners ────────────────────────────────
-listen("open-settings", () => openSettings());
-
 listen("global-translate", async () => {
   startTrayAnim();
   try {
@@ -280,18 +243,15 @@ function populateSelect(select: HTMLSelectElement, items: { value: string; label
 }
 
 populateSelect(langSelect, LANGUAGES);
-populateSelect(myLangSelect, LANGUAGES);
-populateSelect(pairLangSelect, LANGUAGES);
-populateSelect(modelSelect, MODELS);
 
 // ─── Restore language preference ────────────────────
 (async () => {
-  const savedLang = await getSetting("targetLanguage", "auto");
+  const savedLang = await getSetting(SETTINGS_KEYS.targetLanguage, DEFAULTS.targetLanguage);
   langSelect.value = savedLang;
 })();
 
 langSelect.addEventListener("change", () => {
-  setSetting("targetLanguage", langSelect.value);
+  setSetting(SETTINGS_KEYS.targetLanguage, langSelect.value);
 });
 
 // ─── Titlebar drag ──────────────────────────────────

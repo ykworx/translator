@@ -38,7 +38,7 @@ src-tauri/     → Backend (Rust/Tauri 2)
 ### Frontend-Backend Communication
 
 - **Commands (invoke)**: `read_clipboard_html`, `read_clipboard_image`, `tray_anim_start`, `tray_anim_stop`
-- **Events (emit)**: `global-translate` (triggers translation), `open-settings` (opens settings modal)
+- **Events (emit)**: `global-translate` (triggers translation)
 - **Plugins**: clipboard-manager, global-shortcut, store (persistence), opener
 
 ### Translation Flow

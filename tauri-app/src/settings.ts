@@ -1,7 +1,7 @@
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
 
-import { LANGUAGES, MODELS, DEFAULTS } from "./constants";
+import { LANGUAGES, MODELS, DEFAULTS, SETTINGS_KEYS } from "./constants";
 import { getSetting, setSetting } from "./store";
 
 // ─── DOM ────────────────────────────────────────────
@@ -161,31 +161,31 @@ populateSelect(modelSelect, MODELS);
 
 // ─── Load settings ──────────────────────────────────
 (async () => {
-  apiKeyInput.value = await getSetting("apiKey", "");
-  myLangSelect.value = await getSetting("myLang", DEFAULTS.myLang);
-  pairLangSelect.value = await getSetting("pairLang", DEFAULTS.pairLang);
-  modelSelect.value = await getSetting("model", DEFAULTS.model);
+  apiKeyInput.value = await getSetting(SETTINGS_KEYS.apiKey, DEFAULTS.apiKey);
+  myLangSelect.value = await getSetting(SETTINGS_KEYS.myLang, DEFAULTS.myLang);
+  pairLangSelect.value = await getSetting(SETTINGS_KEYS.pairLang, DEFAULTS.pairLang);
+  modelSelect.value = await getSetting(SETTINGS_KEYS.model, DEFAULTS.model);
 
-  selectShortcutStr = await getSetting("selectShortcut", DEFAULTS.selectShortcut);
-  clipboardShortcutStr = await getSetting("clipboardShortcut", DEFAULTS.clipboardShortcut);
+  selectShortcutStr = await getSetting(SETTINGS_KEYS.selectShortcut, DEFAULTS.selectShortcut);
+  clipboardShortcutStr = await getSetting(SETTINGS_KEYS.clipboardShortcut, DEFAULTS.clipboardShortcut);
   shortcutSelectBtn.textContent = shortcutDisplay(selectShortcutStr);
   shortcutClipboardBtn.textContent = shortcutDisplay(clipboardShortcutStr);
 })();
 
 // ─── Save ───────────────────────────────────────────
 btnSave.addEventListener("click", async () => {
-  await setSetting("apiKey", apiKeyInput.value.trim());
-  await setSetting("myLang", myLangSelect.value);
-  await setSetting("pairLang", pairLangSelect.value);
-  await setSetting("model", modelSelect.value);
+  await setSetting(SETTINGS_KEYS.apiKey, apiKeyInput.value.trim());
+  await setSetting(SETTINGS_KEYS.myLang, myLangSelect.value);
+  await setSetting(SETTINGS_KEYS.pairLang, pairLangSelect.value);
+  await setSetting(SETTINGS_KEYS.model, modelSelect.value);
   // Validate shortcuts by registering them first; only persist on success
   try {
     await invoke("update_shortcuts", {
       selectShortcut: selectShortcutStr,
       clipboardShortcut: clipboardShortcutStr,
     });
-    await setSetting("selectShortcut", selectShortcutStr);
-    await setSetting("clipboardShortcut", clipboardShortcutStr);
+    await setSetting(SETTINGS_KEYS.selectShortcut, selectShortcutStr);
+    await setSetting(SETTINGS_KEYS.clipboardShortcut, clipboardShortcutStr);
   } catch (err) {
     alert(`단축키 등록 실패: ${err}\n이전 단축키가 유지됩니다.`);
     return;

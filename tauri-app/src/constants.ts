@@ -18,11 +18,24 @@ export const MODELS = [
   { value: "gemini-2.5-pro", label: "gemini-2.5-pro" },
 ];
 
+/** Store keys for persisted settings */
+export const SETTINGS_KEYS = {
+  apiKey: "apiKey",
+  myLang: "myLang",
+  pairLang: "pairLang",
+  model: "model",
+  targetLanguage: "targetLanguage",
+  selectShortcut: "selectShortcut",
+  clipboardShortcut: "clipboardShortcut",
+} as const;
+
 /** Default settings values */
 export const DEFAULTS = {
+  apiKey: "",
   myLang: "한국어",
   pairLang: "日本語",
   model: "gemini-2.0-flash",
+  targetLanguage: "auto",
   selectShortcut: "Super+Ctrl+KeyT",
   clipboardShortcut: "Super+Ctrl+Shift+KeyT",
 } as const;
