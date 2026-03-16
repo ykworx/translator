@@ -134,7 +134,7 @@ async function stopSpeechInput(): Promise<void> {
   try {
     const state = await invoke<SpeechRecognitionState>("stop_speech_recognition");
     applySpeechTranscript(state);
-    updateSpeechUi(state.error || (state.transcript ? "음성 입력이 완료되었습니다." : "음성 입력이 중지되었습니다."), false);
+    updateSpeechUi(state.error || "", false);
   } catch (e) {
     updateSpeechUi(getErrorMessage(e), false);
   }
@@ -169,7 +169,7 @@ async function pollSpeechState(): Promise<void> {
     if (isSpeechRecording) {
       isSpeechRecording = false;
       stopSpeechPolling();
-      updateSpeechUi(state.transcript ? "음성 입력이 완료되었습니다." : "음성 입력이 종료되었습니다.", false);
+      updateSpeechUi("", false);
     }
   } catch (e) {
     isSpeechRecording = false;
