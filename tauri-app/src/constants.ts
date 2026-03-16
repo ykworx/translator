@@ -10,6 +10,20 @@ export const LANGUAGES = [
   { value: "Deutsch", label: "Deutsch" },
 ];
 
+/** Supported locales for speech input */
+export const SPEECH_LOCALES = [
+  { value: "system", label: "시스템 기본값" },
+  { value: "ko-KR", label: "한국어 (대한민국)" },
+  { value: "ja-JP", label: "日本語 (日本)" },
+  { value: "en-US", label: "English (United States)" },
+  { value: "en-GB", label: "English (United Kingdom)" },
+  { value: "zh-CN", label: "中文 (简体)" },
+  { value: "zh-TW", label: "中文 (繁體)" },
+  { value: "es-ES", label: "Español" },
+  { value: "fr-FR", label: "Français" },
+  { value: "de-DE", label: "Deutsch" },
+] as const;
+
 /** Available Gemini models */
 export const MODELS = [
   { value: "gemini-2.0-flash", label: "gemini-2.0-flash" },
@@ -24,6 +38,7 @@ export const SETTINGS_KEYS = {
   myLang: "myLang",
   pairLang: "pairLang",
   model: "model",
+  speechLocale: "speechLocale",
   targetLanguage: "targetLanguage",
   selectShortcut: "selectShortcut",
   clipboardShortcut: "clipboardShortcut",
@@ -35,6 +50,7 @@ export const DEFAULTS = {
   myLang: "한국어",
   pairLang: "日本語",
   model: "gemini-2.0-flash",
+  speechLocale: "system",
   targetLanguage: "auto",
   selectShortcut: "Super+Ctrl+KeyT",
   clipboardShortcut: "Super+Ctrl+Shift+KeyT",

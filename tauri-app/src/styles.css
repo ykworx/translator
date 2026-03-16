@@ -270,6 +270,16 @@ body {
   transition: background 0.15s, color 0.15s;
 }
 .toolbar-btn:hover { color: var(--fg); background: rgba(128,128,128,0.12); }
+.toolbar-btn.recording {
+  color: #fff;
+  background: #111;
+}
+@media (prefers-color-scheme: dark) {
+  .toolbar-btn.recording {
+    background: #f3f3f3;
+    color: #111;
+  }
+}
 
 #lang-select {
   border: 1px solid var(--border);
@@ -289,6 +299,21 @@ body {
   background-position: right 6px center;
 }
 #lang-select:hover { background-color: rgba(128,128,128,0.16); }
+
+#speech-status {
+  min-height: 18px;
+  margin-top: 8px;
+  padding-left: 2px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#speech-status.recording {
+  color: var(--fg);
+}
 
 /* Quick reply suggestions */
 .suggest-section {

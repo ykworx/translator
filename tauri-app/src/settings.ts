@@ -1,13 +1,14 @@
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
 
-import { LANGUAGES, MODELS, DEFAULTS, SETTINGS_KEYS } from "./constants";
+import { LANGUAGES, MODELS, DEFAULTS, SETTINGS_KEYS, SPEECH_LOCALES } from "./constants";
 import { getSetting, setSetting } from "./store";
 
 // ─── DOM ────────────────────────────────────────────
 const apiKeyInput = document.getElementById("api-key") as HTMLInputElement;
 const myLangSelect = document.getElementById("my-lang") as HTMLSelectElement;
 const pairLangSelect = document.getElementById("pair-lang") as HTMLSelectElement;
+const speechLocaleSelect = document.getElementById("speech-locale") as HTMLSelectElement;
 const modelSelect = document.getElementById("model") as HTMLSelectElement;
 const btnSave = document.getElementById("btn-save") as HTMLButtonElement;
 const btnCancel = document.getElementById("btn-cancel") as HTMLButtonElement;
@@ -157,6 +158,7 @@ function populateSelect(select: HTMLSelectElement, items: { value: string; label
 
 populateSelect(myLangSelect, LANGUAGES);
 populateSelect(pairLangSelect, LANGUAGES);
+populateSelect(speechLocaleSelect, [...SPEECH_LOCALES]);
 populateSelect(modelSelect, MODELS);
 
 // ─── Load settings ──────────────────────────────────
@@ -164,6 +166,7 @@ populateSelect(modelSelect, MODELS);
   apiKeyInput.value = await getSetting(SETTINGS_KEYS.apiKey, DEFAULTS.apiKey);
   myLangSelect.value = await getSetting(SETTINGS_KEYS.myLang, DEFAULTS.myLang);
   pairLangSelect.value = await getSetting(SETTINGS_KEYS.pairLang, DEFAULTS.pairLang);
+  speechLocaleSelect.value = await getSetting(SETTINGS_KEYS.speechLocale, DEFAULTS.speechLocale);
   modelSelect.value = await getSetting(SETTINGS_KEYS.model, DEFAULTS.model);
 
   selectShortcutStr = await getSetting(SETTINGS_KEYS.selectShortcut, DEFAULTS.selectShortcut);
@@ -178,6 +181,7 @@ btnSave.addEventListener("click", async () => {
     await setSetting(SETTINGS_KEYS.apiKey, apiKeyInput.value.trim());
     await setSetting(SETTINGS_KEYS.myLang, myLangSelect.value);
     await setSetting(SETTINGS_KEYS.pairLang, pairLangSelect.value);
+    await setSetting(SETTINGS_KEYS.speechLocale, speechLocaleSelect.value);
     await setSetting(SETTINGS_KEYS.model, modelSelect.value);
 
     // Validate shortcuts by registering them first; only persist on success

@@ -283,6 +283,11 @@
         <select id="pair-lang">
         </select>
       </div>
+      <div class="field">
+        <label>음성 입력 언어</label>
+        <select id="speech-locale">
+        </select>
+      </div>
     </div>
 
     <!-- API -->
@@ -308,7 +313,7 @@
         </div>
       </div>
       <div class="shortcut-row">
-        <span class="shortcut-label">클립보드 번역:</span>
+        <span class="shortcut-label" id="shortcut-clipboard-label">클립보드 번역:</span>
         <div class="shortcut-right">
           <button class="shortcut-key" id="shortcut-clipboard"></button>
           <button class="shortcut-reset" id="reset-clipboard" title="기본값으로 초기화">✕</button>

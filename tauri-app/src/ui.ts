@@ -65,7 +65,8 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
   div.className = "entry";
 
   const origText = escapeHtml(entry.original.trim()).replace(/\n/g, "<br>");
-  const extractedText = escapeHtml((entry.imageExtractedText || "").trim()).replace(/\n/g, "<br>");
+  const extractedTextRaw = (entry.imageExtractedText || "").trim();
+  const extractedText = escapeHtml(extractedTextRaw).replace(/\n/g, "<br>");
   const isError = entry.translated.startsWith("[오류]");
   const transText = entry.isTable
     ? `<div class="table-wrap">${sanitizeTableHtml(entry.translated)}</div>`
@@ -149,11 +150,11 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
   }
 
   const copyExtractedBtn = div.querySelector(".copy-extracted") as HTMLElement | null;
-  if (copyExtractedBtn && entry.imageExtractedText) {
+  if (copyExtractedBtn && extractedTextRaw) {
     copyExtractedBtn.addEventListener("click", async () => {
-      try { await writeTextToClipboard(entry.imageExtractedText || ""); } catch {
+      try { await writeTextToClipboard(extractedTextRaw); } catch {
         const ta = document.createElement("textarea");
-        ta.value = entry.imageExtractedText || "";
+        ta.value = extractedTextRaw;
         document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
       }
       copyExtractedBtn.textContent = "✓ 복사됨";

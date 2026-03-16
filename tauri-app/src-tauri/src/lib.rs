@@ -1,5 +1,6 @@
 mod clipboard;
 mod shortcut;
+mod speech;
 mod window;
 
 use log::{error, warn};
@@ -27,6 +28,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             clipboard::read_clipboard_image,
             clipboard::read_clipboard_html,
+            speech::request_speech_permissions,
+            speech::start_speech_recognition,
+            speech::stop_speech_recognition,
+            speech::get_speech_recognition_state,
             shortcut::update_shortcuts,
             shortcut::suspend_shortcuts,
             shortcut::resume_shortcuts
@@ -39,6 +44,10 @@ pub fn run() {
             // Tray menu
             let about_item = MenuItem::with_id(app, "about", "Transrator에 관하여…", true, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
+            #[cfg(target_os = "macos")]
+            let shortcut_hint =
+                MenuItem::with_id(app, "shortcut-hint", "⌘+Ctrl+T: 선택 번역 | +Shift: 영역 캡처 번역", false, None::<&str>)?;
+            #[cfg(not(target_os = "macos"))]
             let shortcut_hint =
                 MenuItem::with_id(app, "shortcut-hint", "⌘+Ctrl+T: 선택 번역 | +Shift: 클립보드 번역", false, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "설정…", true, None::<&str>)?;
@@ -109,7 +118,7 @@ pub fn run() {
                         if let Some(mtm) = MainThreadMarker::new() {
                             let app_instance = NSApplication::sharedApplication(mtm);
                             let credits_str = NSString::from_str(
-                                "AI 기반 팝업 번역기\nPowered by Google Gemini\n\n⌘+Ctrl+T: 선택 번역\n⌘+Ctrl+Shift+T: 클립보드 번역\n\n© 2026 ykworx"
+                                "AI 기반 팝업 번역기\nPowered by Google Gemini\n\n⌘+Ctrl+T: 선택 번역\n⌘+Ctrl+Shift+T: 영역 캡처 번역\n\n© 2026 ykworx"
                             );
                             let credits = NSAttributedString::from_nsstring(&credits_str);
                             let credits_obj: objc2::rc::Retained<AnyObject> = objc2::rc::Retained::into_super(objc2::rc::Retained::into_super(credits));

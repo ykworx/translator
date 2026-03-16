@@ -45,7 +45,7 @@ pub fn center_window_on_cursor(_window: &tauri::WebviewWindow, _win_w: f64, _win
 
 /// Center and show window on the monitor where the cursor is.
 pub fn show_window_centered(window: &tauri::WebviewWindow) {
-    center_window_on_cursor(window, 520.0, 520.0);
+    center_window_on_cursor(window, 620.0, 520.0);
     // Move window to the active Space before showing
     #[cfg(target_os = "macos")]
     {

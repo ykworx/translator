@@ -5,16 +5,39 @@ const { invoke } = window.__TAURI__.core;
 // ─── Module imports ──────────────────────────────────
 import { getSetting, setSetting } from "./store";
 import { readText, writeTextToClipboard } from "./clipboard";
-import { translate, translateTable, translateImage, suggestReplies, summarize } from "./api";
+import {
+  translate,
+  translateTable,
+  translateImage,
+  suggestReplies,
+  summarize,
+} from "./api";
 import { chatHistory, chat, renderLoading, removeLoading, addEntry, clearChat } from "./ui";
 import { LANGUAGES, DEFAULTS, MAX_TEXTAREA_HEIGHT, SETTINGS_KEYS } from "./constants";
 
 // ─── DOM References ──────────────────────────────────
 const inputField = document.getElementById("input-field") as HTMLTextAreaElement;
 const langSelect = document.getElementById("lang-select") as HTMLSelectElement;
+const btnMic = document.getElementById("btn-mic") as HTMLButtonElement;
 const btnSuggest = document.getElementById("btn-suggest") as HTMLButtonElement;
 const btnSummarize = document.getElementById("btn-summarize") as HTMLButtonElement;
 const btnClear = document.getElementById("btn-clear") as HTMLButtonElement;
+const speechStatus = document.getElementById("speech-status") as HTMLDivElement;
+
+type SpeechRecognitionState = {
+  transcript: string;
+  isRunning: boolean;
+  isFinal: boolean;
+  error?: string;
+  authorized?: boolean;
+  speechAuthorized?: boolean;
+  microphoneAuthorized?: boolean;
+  permissionPromptPending?: boolean;
+};
+
+let speechPollTimer: number | null = null;
+let isSpeechRecording = false;
+let isSpeechPolling = false;
 
 // ─── Auto-detect helper ─────────────────────────────
 type LangConfig = { targetLang: string; autoLangPair?: { myLang: string; pairLang: string } };
@@ -38,6 +61,146 @@ async function resolveLangConfig(): Promise<LangConfig> {
   return { targetLang: myLang, autoLangPair: { myLang, pairLang } };
 }
 
+async function handleImageTranslateFromClipboard(emptyMessage: string): Promise<void> {
+  try {
+    const imageBase64 = await invoke<string | null>("read_clipboard_image");
+    if (!imageBase64) {
+      addEntry({ original: "(이미지 없음)", translated: emptyMessage });
+      return;
+    }
+
+    chat.appendChild(renderLoading("(이미지 번역 중…)"));
+    chat.scrollTop = chat.scrollHeight;
+
+    try {
+      const { targetLang, autoLangPair } = await resolveLangConfig();
+      const translationResult = await translateImage(imageBase64, targetLang, autoLangPair);
+
+      addEntry({
+        original: "(이미지)",
+        translated: translationResult.translatedText,
+        isImage: true,
+        imageBase64,
+        imageExtractedText: translationResult.extractedText,
+      });
+    } catch (e) {
+      removeLoading();
+      addEntry({ original: "(이미지)", translated: `[오류] ${getErrorMessage(e)}`, isImage: true, imageBase64 });
+    }
+  } catch (e) {
+    console.error("Image clipboard read error:", e);
+  }
+}
+
+function syncInputHeight(): void {
+  inputField.style.height = "auto";
+  inputField.style.height = Math.min(inputField.scrollHeight, MAX_TEXTAREA_HEIGHT) + "px";
+}
+
+function updateSpeechUi(statusText: string, recording: boolean): void {
+  speechStatus.textContent = statusText;
+  speechStatus.classList.toggle("recording", recording);
+  btnMic.classList.toggle("recording", recording);
+  btnMic.textContent = recording ? "⏹ 음성 중지" : "🎙 음성 입력";
+}
+
+function applySpeechTranscript(state: SpeechRecognitionState): void {
+  inputField.value = state.transcript;
+  syncInputHeight();
+  if (state.transcript) {
+    inputField.focus();
+  }
+}
+
+function stopSpeechPolling(): void {
+  if (speechPollTimer !== null) {
+    window.clearTimeout(speechPollTimer);
+    speechPollTimer = null;
+  }
+  isSpeechPolling = false;
+}
+
+function scheduleSpeechPoll(delayMs = 350): void {
+  stopSpeechPolling();
+  speechPollTimer = window.setTimeout(() => {
+    void pollSpeechState();
+  }, delayMs);
+}
+
+async function stopSpeechInput(): Promise<void> {
+  stopSpeechPolling();
+  isSpeechRecording = false;
+
+  try {
+    const state = await invoke<SpeechRecognitionState>("stop_speech_recognition");
+    applySpeechTranscript(state);
+    updateSpeechUi(state.error || (state.transcript ? "음성 입력이 완료되었습니다." : "음성 입력이 중지되었습니다."), false);
+  } catch (e) {
+    updateSpeechUi(getErrorMessage(e), false);
+  }
+}
+
+async function pollSpeechState(): Promise<void> {
+  if (isSpeechPolling) {
+    return;
+  }
+
+  isSpeechPolling = true;
+
+  try {
+    const state = await invoke<SpeechRecognitionState>("get_speech_recognition_state");
+    applySpeechTranscript(state);
+
+    if (state.error) {
+      updateSpeechUi(state.error, false);
+      isSpeechRecording = false;
+      stopSpeechPolling();
+      return;
+    }
+
+    if (state.isRunning) {
+      updateSpeechUi(state.transcript ? `듣는 중: ${state.transcript}` : "듣는 중…", true);
+      if (isSpeechRecording) {
+        scheduleSpeechPoll();
+      }
+      return;
+    }
+
+    if (isSpeechRecording) {
+      isSpeechRecording = false;
+      stopSpeechPolling();
+      updateSpeechUi(state.transcript ? "음성 입력이 완료되었습니다." : "음성 입력이 종료되었습니다.", false);
+    }
+  } catch (e) {
+    isSpeechRecording = false;
+    stopSpeechPolling();
+    updateSpeechUi(getErrorMessage(e), false);
+  } finally {
+    isSpeechPolling = false;
+  }
+}
+
+async function startSpeechInput(): Promise<void> {
+  const permissions = await invoke<SpeechRecognitionState>("request_speech_permissions");
+  if (!permissions.authorized) {
+    throw new Error(permissions.error || "음성 입력 권한이 필요합니다.");
+  }
+
+  const savedSpeechLocale = await getSetting(SETTINGS_KEYS.speechLocale, DEFAULTS.speechLocale);
+  const localeIdentifier = savedSpeechLocale === "system"
+    ? (navigator.language || "ko-KR")
+    : savedSpeechLocale;
+  const state = await invoke<SpeechRecognitionState>("start_speech_recognition", { localeIdentifier });
+  if (state.error) {
+    throw new Error(state.error);
+  }
+
+  isSpeechRecording = true;
+  applySpeechTranscript(state);
+  updateSpeechUi("듣는 중…", true);
+  scheduleSpeechPoll();
+}
+
 // ─── Translation submit ─────────────────────────────
 async function handleSubmit(): Promise<void> {
   const text = inputField.value.trim();
@@ -58,6 +221,23 @@ async function handleSubmit(): Promise<void> {
 }
 
 // ─── Quick reply ────────────────────────────────────
+btnMic.addEventListener("click", async () => {
+  btnMic.disabled = true;
+  try {
+    if (isSpeechRecording) {
+      await stopSpeechInput();
+    } else {
+      await startSpeechInput();
+    }
+  } catch (e) {
+    isSpeechRecording = false;
+    stopSpeechPolling();
+    updateSpeechUi(getErrorMessage(e), false);
+  } finally {
+    btnMic.disabled = false;
+  }
+});
+
 btnSuggest.addEventListener("click", async () => {
   if (chatHistory.length === 0) return;
   const last = chatHistory[chatHistory.length - 1];
@@ -140,8 +320,7 @@ inputField.addEventListener("keydown", (e: KeyboardEvent) => {
 
 // Auto-resize textarea
 inputField.addEventListener("input", () => {
-  inputField.style.height = "auto";
-  inputField.style.height = Math.min(inputField.scrollHeight, MAX_TEXTAREA_HEIGHT) + "px";
+  syncInputHeight();
 });
 
 
@@ -195,35 +374,14 @@ listen("global-translate", async () => {
     }
 
     // 3. Check for image (이미지는 언어 감지 불가 → 설정 기반)
-    try {
-      const imageBase64 = await invoke<string | null>("read_clipboard_image");
-      if (imageBase64) {
-        chat.appendChild(renderLoading("(이미지 번역 중…)"));
-        chat.scrollTop = chat.scrollHeight;
-        try {
-          const { targetLang, autoLangPair } = await resolveLangConfig();
-          const result = await translateImage(imageBase64, targetLang, autoLangPair);
-          addEntry({
-            original: "(이미지)",
-            translated: result.translatedText,
-            isImage: true,
-            imageBase64,
-            imageExtractedText: result.extractedText,
-          });
-        } catch (e) {
-          removeLoading();
-          addEntry({ original: "(이미지)", translated: `[오류] ${getErrorMessage(e)}`, isImage: true, imageBase64 });
-        }
-      }
-      if (!imageBase64) {
-        addEntry({ original: "(클립보드 비어있음)", translated: "번역할 텍스트, 테이블, 또는 이미지를 복사한 후 다시 시도해주세요." });
-      }
-    } catch (e) {
-      console.error("Image clipboard read error:", e);
-    }
+    await handleImageTranslateFromClipboard("번역할 텍스트, 테이블, 또는 이미지를 복사한 후 다시 시도해주세요.");
   } catch (e) {
     console.error("Clipboard read error:", e);
   }
+});
+
+listen("global-translate-image", async () => {
+  await handleImageTranslateFromClipboard("영역 캡처가 취소되었거나 이미지가 클립보드에 없습니다.");
 });
 
 // ─── Populate select elements ───────────────────────

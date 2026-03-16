@@ -132,17 +132,49 @@ fn handle_select_shortcut(app: tauri::AppHandle) {
 
 /// Handle clipboard-translate shortcut: translate clipboard as-is.
 fn handle_clipboard_shortcut(app: tauri::AppHandle) {
-    // Window/AppKit operations must run on the main thread
-    let app_main = app.clone();
-    if let Err(e) = app.run_on_main_thread(move || {
-        if let Some(window) = app_main.get_webview_window("main") {
-            show_window_centered(&window);
-            if let Err(e) = window.emit("global-translate", ()) {
-                error!("Failed to emit global-translate event: {e}");
+    #[cfg(target_os = "macos")]
+    {
+        std::thread::spawn(move || {
+            let capture = std::process::Command::new("screencapture")
+                .args(["-i", "-c", "-x"])
+                .status();
+
+            match capture {
+                Ok(status) if status.success() => {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    let app_main = app.clone();
+                    if let Err(e) = app.run_on_main_thread(move || {
+                        if let Some(window) = app_main.get_webview_window("main") {
+                            show_window_centered(&window);
+                            if let Err(e) = window.emit("global-translate-image", ()) {
+                                error!("Failed to emit global-translate-image event: {e}");
+                            }
+                        }
+                    }) {
+                        error!("Failed to dispatch image translate to main thread: {e}");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => error!("Failed to run screencapture for area capture translate: {e}"),
             }
+        });
+        return;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    // Window/AppKit operations must run on the main thread
+    {
+        let app_main = app.clone();
+        if let Err(e) = app.run_on_main_thread(move || {
+            if let Some(window) = app_main.get_webview_window("main") {
+                show_window_centered(&window);
+                if let Err(e) = window.emit("global-translate", ()) {
+                    error!("Failed to emit global-translate event: {e}");
+                }
+            }
+        }) {
+            error!("Failed to dispatch to main thread: {e}");
         }
-    }) {
-        error!("Failed to dispatch to main thread: {e}");
     }
 }
 
