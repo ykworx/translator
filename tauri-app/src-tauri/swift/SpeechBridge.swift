@@ -306,28 +306,15 @@ private final class ZoomAudioOutput: NSObject, SCStreamOutput {
 }
 
 @available(macOS 13.0, *)
-private final class AudioDeviceCaptureOutput: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
-    weak var owner: AppCaptionBridgeState?
-
-    init(owner: AppCaptionBridgeState) {
-        self.owner = owner
-    }
-
-    func captureOutput(
-        _ output: AVCaptureOutput,
-        didOutput sampleBuffer: CMSampleBuffer,
-        from connection: AVCaptureConnection
-    ) {
-        owner?.appendAudioSampleBuffer(sampleBuffer)
-    }
-}
-
-@available(macOS 13.0, *)
 private struct CaptureWindowInfo {
     let id: String
     let name: String
     let window: SCWindow
 }
+
+// Rust callback for push-based state updates
+@_silgen_name("caption_state_changed")
+func rustCaptionStateChanged(_ jsonPtr: UnsafePointer<CChar>?)
 
 @available(macOS 13.0, *)
 private final class AppCaptionBridgeState {
@@ -338,8 +325,6 @@ private final class AppCaptionBridgeState {
 
     private var stream: SCStream?
     private var output: ZoomAudioOutput?
-    private var captureSession: AVCaptureSession?
-    private var deviceOutput: AudioDeviceCaptureOutput?
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -359,6 +344,9 @@ private final class AppCaptionBridgeState {
     private var lastPartialText = ""
     private var lastPartialTime: Date = .distantPast
     private var stableTimer: DispatchWorkItem?
+    private var silenceStartMs: UInt64 = 0
+    private let silenceThreshold: Float = 0.01
+    private let silenceDurationMs: UInt64 = 700
     private var lastAudioAtMs: UInt64 = 0
     private var audioLevel: Float = 0
 
@@ -382,26 +370,11 @@ private final class AppCaptionBridgeState {
         return items
     }
 
-    func listAudioDevices() -> [[String: Any]] {
-        AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInMicrophone, .externalUnknown],
-            mediaType: .audio,
-            position: .unspecified
-        ).devices.map { device in
-            [
-                "id": device.uniqueID,
-                "name": device.localizedName
-            ]
-        }
-    }
-
     func permissionsSnapshot() -> [String: Any] {
         let speechAuthorized = SFSpeechRecognizer.authorizationStatus() == .authorized
-        let audioAuthorized = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         let screenAuthorized = CGPreflightScreenCaptureAccess()
-        let requiresScreenCapture = captureMode != "audio-device"
         return [
-            "authorized": speechAuthorized && audioAuthorized && (!requiresScreenCapture || screenAuthorized),
+            "authorized": speechAuthorized && screenAuthorized,
             "speechAuthorized": speechAuthorized,
             "screenAuthorized": screenAuthorized,
             "permissionPromptPending": permissionPromptPending,
@@ -410,7 +383,7 @@ private final class AppCaptionBridgeState {
         ]
     }
 
-    func requestPermissions(captureMode: String?) -> [String: Any] {
+    func requestPermissions() -> [String: Any] {
         let currentSpeechStatus = SFSpeechRecognizer.authorizationStatus()
         if currentSpeechStatus == .notDetermined {
             updateState { permissionPromptPending = true }
@@ -438,25 +411,8 @@ private final class AppCaptionBridgeState {
             ])
         }
 
-        let audioAuthorized = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        if !audioAuthorized {
-            updateState { permissionPromptPending = true }
-            let semaphore = DispatchSemaphore(value: 0)
-            AVCaptureDevice.requestAccess(for: .audio) { granted in
-                self.updateState {
-                    self.permissionPromptPending = false
-                    if !granted && self.lastError.isEmpty {
-                        self.lastError = "오디오 입력 권한이 필요합니다."
-                    }
-                }
-                semaphore.signal()
-            }
-            semaphore.wait()
-        }
-
-        let requiresScreenCapture = captureMode != "audio-device"
         let screenAuthorized = CGPreflightScreenCaptureAccess()
-        if requiresScreenCapture && !screenAuthorized {
+        if !screenAuthorized {
             updateState { permissionPromptPending = true }
             let granted = CGRequestScreenCaptureAccess()
             updateState {
@@ -476,21 +432,10 @@ private final class AppCaptionBridgeState {
             }
         }
 
-        let hasAudioAuthorization = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        if !hasAudioAuthorization {
-            return mergeCurrentState(extra: [
-                "authorized": false,
-                "speechAuthorized": true,
-                "screenAuthorized": requiresScreenCapture ? screenAuthorized : true,
-                "permissionPromptPending": false,
-                "error": "오디오 입력 권한이 필요합니다."
-            ])
-        }
-
         return mergeCurrentState(extra: [
             "authorized": true,
             "speechAuthorized": true,
-            "screenAuthorized": requiresScreenCapture ? screenAuthorized : true,
+            "screenAuthorized": true,
             "permissionPromptPending": false
         ])
     }
@@ -498,11 +443,10 @@ private final class AppCaptionBridgeState {
     func start(
         localeIdentifier: String?,
         captureMode: String?,
-        windowIdentifier: String?,
-        audioDeviceIdentifier: String?
+        windowIdentifier: String?
     ) -> [String: Any] {
         let normalizedCaptureMode = captureMode ?? "window"
-        let permissions = requestPermissions(captureMode: normalizedCaptureMode)
+        let permissions = requestPermissions()
         guard (permissions["authorized"] as? Bool) == true else {
             return permissions
         }
@@ -521,9 +465,6 @@ private final class AppCaptionBridgeState {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = false
-        if #available(macOS 13.0, *) {
-            request.addsPunctuation = true
-        }
 
         self.recognizer = recognizer
         self.request = request
@@ -537,15 +478,29 @@ private final class AppCaptionBridgeState {
                 if fullText.count > self.committedLength {
                     delta = String(fullText.suffix(fullText.count - self.committedLength)).trimmingCharacters(in: .whitespaces)
                 } else {
+                    // Apple rewrote text shorter — adjust so next new text is immediately visible
+                    self.committedLength = fullText.count
                     delta = ""
                 }
 
-                self.updateState {
+                // Debug: time since last audio buffer
+                let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
+                let audioLag = self.lastAudioAtMs > 0 ? nowMs - self.lastAudioAtMs : 0
+
+                if !delta.isEmpty && !result.isFinal {
+                    let truncated = delta.count > 80 ? String(delta.prefix(80)) + "…" : delta
+                    let info = "lag=\(audioLag)ms samples=\(self.audioSampleCount)"
+                    let padded = "\(truncated) [\(info)]".padding(toLength: 120, withPad: " ", startingAt: 0)
+                    fputs("\r[partial] \(padded)", stderr)
+                    fflush(stderr)
+                }
+
+                self.updateState({
                     self.transcript = delta
                     if result.isFinal {
                         self.promoteToFinal(fullText)
                     }
-                }
+                }, notify: true)
 
                 if !result.isFinal {
                     self.scheduleStableCheck(text: fullText)
@@ -555,24 +510,11 @@ private final class AppCaptionBridgeState {
             if let error {
                 NSLog("[Transrator] Recognition error: %@", error.localizedDescription)
                 self.flushPartialAsFinal()
-                self.updateState {
+                self.updateState({
                     self.lastError = error.localizedDescription
                     self.isRunning = false
-                }
+                }, notify: true)
             }
-        }
-
-        if normalizedCaptureMode == "audio-device" {
-            do {
-                try startAudioDeviceCapture(audioDeviceIdentifier: audioDeviceIdentifier)
-            } catch {
-                updateState {
-                    self.lastError = "오디오 입력 장치 캡처를 시작할 수 없습니다: \(error.localizedDescription)"
-                    self.isRunning = false
-                }
-                _ = stop(clearTranscript: false)
-            }
-            return currentState()
         }
 
         let semaphore = DispatchSemaphore(value: 0)
@@ -612,7 +554,7 @@ private final class AppCaptionBridgeState {
                 try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: self.audioQueue)
                 try await stream.startCapture()
 
-                self.updateState {
+                self.updateState({
                     self.stream = stream
                     self.output = output
                     self.isRunning = true
@@ -625,7 +567,7 @@ private final class AppCaptionBridgeState {
                     self.audioSampleCount = 0
                     self.lastAudioAtMs = 0
                     self.audioLevel = 0
-                }
+                }, notify: true)
             } catch {
                 startError = "앱 오디오 캡처를 시작할 수 없습니다: \(error.localizedDescription)"
             }
@@ -635,10 +577,10 @@ private final class AppCaptionBridgeState {
         semaphore.wait()
 
         if !startError.isEmpty {
-            updateState {
+            updateState({
                 self.lastError = startError
                 self.isRunning = false
-            }
+            }, notify: true)
             _ = stop(clearTranscript: false)
         }
 
@@ -659,15 +601,13 @@ private final class AppCaptionBridgeState {
         }
         self.stream = nil
         self.output = nil
-        self.captureSession?.stopRunning()
-        self.captureSession = nil
-        self.deviceOutput = nil
         self.audioConverter = nil
         self.stableTimer?.cancel()
         self.stableTimer = nil
         self.committedLength = 0
+        self.silenceStartMs = 0
 
-        updateState {
+        updateState({
             self.isRunning = false
             if clearTranscript {
                 self.transcript = ""
@@ -680,7 +620,7 @@ private final class AppCaptionBridgeState {
             self.audioSampleCount = 0
             self.lastAudioAtMs = 0
             self.audioLevel = 0
-        }
+        }, notify: true)
 
         return currentState()
     }
@@ -742,14 +682,13 @@ private final class AppCaptionBridgeState {
     /// Character count already committed — used to extract delta from cumulative transcript
     private var committedLength = 0
 
+    // MARK: - Commit judgment (simple 1s stable timer)
+
     private func promoteToFinal(_ fullText: String) {
         stableTimer?.cancel()
         stableTimer = nil
 
-        // Use the current transcript (already computed delta) instead of re-extracting
         let delta = transcript.trimmingCharacters(in: .whitespaces)
-
-        // Always update committed length to track position
         committedLength = fullText.count
 
         guard !delta.isEmpty else { return }
@@ -759,6 +698,7 @@ private final class AppCaptionBridgeState {
         lastFinalSegmentId = "app-\(finalCounter)"
         lastPartialText = ""
         transcript = ""
+        fputs("\r\u{1B}[2K", stderr)
         NSLog("[Transrator] Promoted to final #%d: %@", finalCounter, delta)
     }
 
@@ -773,13 +713,13 @@ private final class AppCaptionBridgeState {
             let shouldPromote = !current.isEmpty && current == text
             self.lock.unlock()
             if shouldPromote {
-                self.updateState {
+                self.updateState({
                     self.promoteToFinal(current)
-                }
+                }, notify: true)
             }
         }
         stableTimer = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
     }
 
     private func flushPartialAsFinal() {
@@ -789,9 +729,9 @@ private final class AppCaptionBridgeState {
         let text = lastPartialText
         lock.unlock()
         if !text.isEmpty {
-            updateState {
+            updateState({
                 self.promoteToFinal(text)
-            }
+            }, notify: true)
         }
     }
 
@@ -839,10 +779,20 @@ private final class AppCaptionBridgeState {
         return merged
     }
 
-    private func updateState(_ update: () -> Void) {
+    private func updateState(_ update: () -> Void, notify: Bool = false) {
         lock.lock()
         update()
         lock.unlock()
+        if notify { notifyRust() }
+    }
+
+    private func notifyRust() {
+        let payload = currentStateBase()
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+        json.withCString { ptr in
+            rustCaptionStateChanged(ptr)
+        }
     }
 
     private func updateAudioDebug(with buffer: AVAudioPCMBuffer) {
@@ -852,6 +802,27 @@ private final class AppCaptionBridgeState {
             self.audioSampleCount += 1
             self.lastAudioAtMs = now
             self.audioLevel = level
+        }
+
+        // Silence detection: 700ms of silence → commit pending partial
+        if level < silenceThreshold {
+            if silenceStartMs == 0 { silenceStartMs = now }
+            if now - silenceStartMs >= silenceDurationMs {
+                silenceStartMs = 0
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.isRunning else { return }
+                    self.lock.lock()
+                    let hasPartial = !self.transcript.isEmpty
+                    self.lock.unlock()
+                    if hasPartial {
+                        self.updateState({
+                            self.promoteToFinal(self.lastPartialText)
+                        }, notify: true)
+                    }
+                }
+            }
+        } else {
+            silenceStartMs = 0
         }
     }
 
@@ -887,49 +858,6 @@ private final class AppCaptionBridgeState {
 
     private static func bundleIdLikeInternal(_ lowerName: String) -> Bool {
         lowerName.contains("window server")
-    }
-
-    private func startAudioDeviceCapture(audioDeviceIdentifier: String?) throws {
-        let session = AVCaptureSession()
-        session.beginConfiguration()
-
-        let device = audioDeviceIdentifier
-            .flatMap { AVCaptureDevice(uniqueID: $0) } ?? AVCaptureDevice.default(for: .audio)
-        guard let device else {
-            throw NSError(domain: "transrator", code: -1001, userInfo: [NSLocalizedDescriptionKey: "오디오 입력 장치를 찾을 수 없습니다."])
-        }
-
-        let input = try AVCaptureDeviceInput(device: device)
-        guard session.canAddInput(input) else {
-            throw NSError(domain: "transrator", code: -1002, userInfo: [NSLocalizedDescriptionKey: "오디오 입력 장치를 세션에 추가할 수 없습니다."])
-        }
-        session.addInput(input)
-
-        let audioOutput = AVCaptureAudioDataOutput()
-        let delegate = AudioDeviceCaptureOutput(owner: self)
-        audioOutput.setSampleBufferDelegate(delegate, queue: audioQueue)
-        guard session.canAddOutput(audioOutput) else {
-            throw NSError(domain: "transrator", code: -1003, userInfo: [NSLocalizedDescriptionKey: "오디오 출력 스트림을 세션에 추가할 수 없습니다."])
-        }
-        session.addOutput(audioOutput)
-
-        session.commitConfiguration()
-        session.startRunning()
-
-        updateState {
-            self.captureSession = session
-            self.deviceOutput = delegate
-            self.isRunning = true
-            self.lastError = ""
-            self.sourceApp = device.localizedName
-            self.captureMode = "audio-device"
-            self.transcript = ""
-            self.lastFinalTranscript = ""
-            self.lastFinalSegmentId = ""
-            self.audioSampleCount = 0
-            self.lastAudioAtMs = 0
-            self.audioLevel = 0
-        }
     }
 
     private func calculateAudioLevel(_ buffer: AVAudioPCMBuffer) -> Float {
@@ -1052,22 +980,11 @@ public func caption_capture_list_windows() -> UnsafeMutablePointer<CChar>? {
     }
 }
 
-@_cdecl("caption_capture_list_audio_devices")
-public func caption_capture_list_audio_devices() -> UnsafeMutablePointer<CChar>? {
-    runOnMain {
-        if #available(macOS 13.0, *) {
-            return jsonCString(AppCaptionBridgeState.shared.listAudioDevices())
-        }
-        return jsonCString([])
-    }
-}
-
 @_cdecl("app_caption_request_permissions")
-public func app_caption_request_permissions(captureMode: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
+public func app_caption_request_permissions() -> UnsafeMutablePointer<CChar>? {
     runOnMain {
         if #available(macOS 13.0, *) {
-            let captureMode = captureMode.map { String(cString: $0) }
-            return jsonCString(AppCaptionBridgeState.shared.requestPermissions(captureMode: captureMode))
+            return jsonCString(AppCaptionBridgeState.shared.requestPermissions())
         }
         return jsonCString([
             "authorized": false,
@@ -1087,20 +1004,17 @@ public func app_caption_request_permissions(captureMode: UnsafePointer<CChar>?) 
 public func app_caption_start(
     localeIdentifier: UnsafePointer<CChar>?,
     captureMode: UnsafePointer<CChar>?,
-    windowIdentifier: UnsafePointer<CChar>?,
-    audioDeviceIdentifier: UnsafePointer<CChar>?
+    windowIdentifier: UnsafePointer<CChar>?
 ) -> UnsafeMutablePointer<CChar>? {
     runOnMain {
         if #available(macOS 13.0, *) {
             let locale = localeIdentifier.map { String(cString: $0) }
             let captureMode = captureMode.map { String(cString: $0) }
             let windowIdentifier = windowIdentifier.map { String(cString: $0) }
-            let audioDeviceIdentifier = audioDeviceIdentifier.map { String(cString: $0) }
             return jsonCString(AppCaptionBridgeState.shared.start(
                 localeIdentifier: locale,
                 captureMode: captureMode,
-                windowIdentifier: windowIdentifier,
-                audioDeviceIdentifier: audioDeviceIdentifier
+                windowIdentifier: windowIdentifier
             ))
         }
         return jsonCString([
@@ -1157,3 +1071,4 @@ public func speech_free_string(pointer: UnsafeMutablePointer<CChar>?) {
     guard let pointer else { return }
     free(pointer)
 }
+

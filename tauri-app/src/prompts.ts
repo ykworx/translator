@@ -3,7 +3,7 @@ export interface AutoLangPair {
   pairLang: string;
 }
 
-export function buildTranslatePrompt(text: string, targetLang: string, autoLangPair?: AutoLangPair): string {
+export function buildTranslatePrompt(text: string, targetLang: string, autoLangPair?: AutoLangPair, context?: string): string {
   const langInstruction = autoLangPair
     ? `You are a translator. Detect the language of the text and translate it.\n` +
       `- If the text is written in ${autoLangPair.myLang} → translate to ${autoLangPair.pairLang}\n` +
@@ -12,8 +12,13 @@ export function buildTranslatePrompt(text: string, targetLang: string, autoLangP
       `IMPORTANT: You MUST translate. Never return the original text as-is.\n`
     : `Translate the following text to ${targetLang}.\n`;
 
+  const contextBlock = context
+    ? `Previous context (for reference only, do NOT translate this):\n${context}\n\nText to translate:\n`
+    : "";
+
   return langInstruction +
     `Output ONLY the translation, no explanations.\n\n` +
+    contextBlock +
     text;
 }
 

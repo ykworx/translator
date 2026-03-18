@@ -1,6 +1,29 @@
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use std::sync::OnceLock;
+use tauri::{Emitter, Manager};
+
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+pub fn init_app_handle(handle: tauri::AppHandle) {
+    APP_HANDLE.set(handle).ok();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn caption_state_changed(json_ptr: *const c_char) {
+    let Some(handle) = APP_HANDLE.get() else { return };
+    let Some(window) = handle.get_webview_window("main") else { return };
+
+    if json_ptr.is_null() { return; }
+    let json_str = unsafe { CStr::from_ptr(json_ptr) }
+        .to_str()
+        .unwrap_or("");
+
+    if let Ok(state) = serde_json::from_str::<AppCaptionStatus>(json_str) {
+        window.emit("app-caption-update", state).ok();
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -9,14 +32,7 @@ pub struct CaptureWindow {
     name: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AudioInputDevice {
-    id: String,
-    name: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppCaptionStatus {
     transcript: String,
@@ -41,13 +57,11 @@ mod platform {
 
     unsafe extern "C" {
         fn caption_capture_list_windows() -> *mut c_char;
-        fn caption_capture_list_audio_devices() -> *mut c_char;
-        fn app_caption_request_permissions(capture_mode: *const c_char) -> *mut c_char;
+        fn app_caption_request_permissions() -> *mut c_char;
         fn app_caption_start(
             locale_identifier: *const c_char,
             capture_mode: *const c_char,
             window_identifier: *const c_char,
-            audio_device_identifier: *const c_char,
         ) -> *mut c_char;
         fn app_caption_stop() -> *mut c_char;
         fn app_caption_get_state() -> *mut c_char;
@@ -86,41 +100,18 @@ mod platform {
             .map_err(|e| format!("Caption capture window list parse error: {e}"))
     }
 
-    fn decode_audio_device_list(pointer: *mut c_char) -> Result<Vec<AudioInputDevice>, String> {
-        if pointer.is_null() {
-            return Err("Audio device bridge returned no device data.".into());
-        }
-
-        let raw = unsafe { CStr::from_ptr(pointer) }
-            .to_str()
-            .map(str::to_owned)
-            .map_err(|_| "Audio device bridge returned invalid UTF-8.".to_string());
-        unsafe { speech_free_string(pointer) };
-
-        let raw = raw?;
-        serde_json::from_str::<Vec<AudioInputDevice>>(&raw)
-            .map_err(|e| format!("Audio device list parse error: {e}"))
-    }
-
     pub fn list_windows() -> Result<Vec<CaptureWindow>, String> {
         decode_window_list(unsafe { caption_capture_list_windows() })
     }
 
-    pub fn list_audio_devices() -> Result<Vec<AudioInputDevice>, String> {
-        decode_audio_device_list(unsafe { caption_capture_list_audio_devices() })
-    }
-
-    pub fn request_permissions(capture_mode: Option<&str>) -> Result<AppCaptionStatus, String> {
-        let capture_mode = CString::new(capture_mode.unwrap_or_default())
-            .map_err(|_| "Capture mode contains an unsupported null byte.".to_string())?;
-        decode_json(unsafe { app_caption_request_permissions(capture_mode.as_ptr()) })
+    pub fn request_permissions() -> Result<AppCaptionStatus, String> {
+        decode_json(unsafe { app_caption_request_permissions() })
     }
 
     pub fn start(
         locale_identifier: Option<&str>,
         capture_mode: Option<&str>,
         window_identifier: Option<&str>,
-        audio_device_identifier: Option<&str>,
     ) -> Result<AppCaptionStatus, String> {
         let locale = CString::new(locale_identifier.unwrap_or_default())
             .map_err(|_| "Locale identifier contains an unsupported null byte.".to_string())?;
@@ -128,14 +119,11 @@ mod platform {
             .map_err(|_| "Capture mode contains an unsupported null byte.".to_string())?;
         let window_identifier = CString::new(window_identifier.unwrap_or_default())
             .map_err(|_| "Window identifier contains an unsupported null byte.".to_string())?;
-        let audio_device_identifier = CString::new(audio_device_identifier.unwrap_or_default())
-            .map_err(|_| "Audio device identifier contains an unsupported null byte.".to_string())?;
         decode_json(unsafe {
             app_caption_start(
                 locale.as_ptr(),
                 capture_mode.as_ptr(),
                 window_identifier.as_ptr(),
-                audio_device_identifier.as_ptr(),
             )
         })
     }
@@ -161,11 +149,7 @@ mod platform {
         Err("창 오디오 캡처는 macOS에서만 지원됩니다.".into())
     }
 
-    pub fn list_audio_devices() -> Result<Vec<AudioInputDevice>, String> {
-        Err("오디오 입력 장치 조회는 macOS에서만 지원됩니다.".into())
-    }
-
-    pub fn request_permissions(_capture_mode: Option<&str>) -> Result<AppCaptionStatus, String> {
+    pub fn request_permissions() -> Result<AppCaptionStatus, String> {
         unsupported()
     }
 
@@ -173,7 +157,6 @@ mod platform {
         _locale_identifier: Option<&str>,
         _capture_mode: Option<&str>,
         _window_identifier: Option<&str>,
-        _audio_device_identifier: Option<&str>,
     ) -> Result<AppCaptionStatus, String> {
         unsupported()
     }
@@ -193,13 +176,8 @@ pub fn list_caption_capture_windows() -> Result<Vec<CaptureWindow>, String> {
 }
 
 #[tauri::command]
-pub fn list_audio_input_devices() -> Result<Vec<AudioInputDevice>, String> {
-    platform::list_audio_devices()
-}
-
-#[tauri::command]
-pub fn request_caption_capture_permissions(capture_mode: Option<String>) -> Result<AppCaptionStatus, String> {
-    platform::request_permissions(capture_mode.as_deref())
+pub fn request_caption_capture_permissions() -> Result<AppCaptionStatus, String> {
+    platform::request_permissions()
 }
 
 #[tauri::command]
@@ -207,13 +185,11 @@ pub fn start_app_captions(
     locale_identifier: Option<String>,
     capture_mode: Option<String>,
     window_identifier: Option<String>,
-    audio_device_identifier: Option<String>,
 ) -> Result<AppCaptionStatus, String> {
     platform::start(
         locale_identifier.as_deref(),
         capture_mode.as_deref(),
         window_identifier.as_deref(),
-        audio_device_identifier.as_deref(),
     )
 }
 

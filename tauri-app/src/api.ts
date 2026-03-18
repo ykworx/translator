@@ -73,7 +73,10 @@ function parseImageTranslationResult(raw: string): ImageTranslationResult {
   };
 }
 
-export async function translate(text: string, targetLang: string, autoLangPair?: AutoLangPair): Promise<string> {
+export async function translate(text: string, targetLang: string, autoLangPair?: AutoLangPair, context?: string): Promise<string> {
+  if (context) {
+    return callGemini(buildTranslatePrompt(text, targetLang, autoLangPair, context));
+  }
   return callGemini(buildTranslatePrompt(text, targetLang, autoLangPair));
 }
 

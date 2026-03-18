@@ -13,9 +13,6 @@ const captureModeSelect = document.getElementById("capture-mode") as HTMLSelectE
 const captureWindowField = document.getElementById("capture-window-field") as HTMLDivElement;
 const captureWindowSelect = document.getElementById("capture-window") as HTMLSelectElement;
 const captureWindowRefreshBtn = document.getElementById("capture-window-refresh") as HTMLButtonElement;
-const captureAudioDeviceField = document.getElementById("capture-audio-device-field") as HTMLDivElement;
-const captureAudioDeviceSelect = document.getElementById("capture-audio-device") as HTMLSelectElement;
-const captureAudioDeviceRefreshBtn = document.getElementById("capture-audio-device-refresh") as HTMLButtonElement;
 const modelSelect = document.getElementById("model") as HTMLSelectElement;
 const btnSave = document.getElementById("btn-save") as HTMLButtonElement;
 const btnCancel = document.getElementById("btn-cancel") as HTMLButtonElement;
@@ -182,25 +179,6 @@ async function loadCaptureWindows(selectedValue = ""): Promise<void> {
   }
 }
 
-async function loadAudioDevices(selectedValue = ""): Promise<void> {
-  try {
-    const devices = await invoke<Array<{ id: string; name: string }>>("list_audio_input_devices");
-    replaceOptions(captureAudioDeviceSelect, [
-      { value: "", label: "기본 입력 장치" },
-      ...devices.map(device => ({ value: device.id, label: device.name })),
-    ]);
-    captureAudioDeviceSelect.value = devices.some(device => device.id === selectedValue) ? selectedValue : "";
-  } catch {
-    replaceOptions(captureAudioDeviceSelect, [{ value: "", label: "기본 입력 장치" }]);
-    captureAudioDeviceSelect.value = "";
-  }
-}
-
-function syncCaptureModeUi(): void {
-  const isAudioDeviceMode = captureModeSelect.value === "audio-device";
-  captureWindowField.hidden = isAudioDeviceMode;
-  captureAudioDeviceField.hidden = !isAudioDeviceMode;
-}
 
 populateSelect(myLangSelect, LANGUAGES);
 populateSelect(pairLangSelect, LANGUAGES);
@@ -212,16 +190,13 @@ populateSelect(modelSelect, MODELS);
 (async () => {
   const savedCaptureMode = await getSetting(SETTINGS_KEYS.captureMode, DEFAULTS.captureMode);
   const savedCaptureWindow = await getSetting(SETTINGS_KEYS.captureWindow, DEFAULTS.captureWindow);
-  const savedCaptureAudioDevice = await getSetting(SETTINGS_KEYS.captureAudioDevice, DEFAULTS.captureAudioDevice);
   await loadCaptureWindows(savedCaptureWindow);
-  await loadAudioDevices(savedCaptureAudioDevice);
 
   apiKeyInput.value = await getSetting(SETTINGS_KEYS.apiKey, DEFAULTS.apiKey);
   myLangSelect.value = await getSetting(SETTINGS_KEYS.myLang, DEFAULTS.myLang);
   pairLangSelect.value = await getSetting(SETTINGS_KEYS.pairLang, DEFAULTS.pairLang);
   speechLocaleSelect.value = await getSetting(SETTINGS_KEYS.speechLocale, DEFAULTS.speechLocale);
   captureModeSelect.value = savedCaptureMode;
-  syncCaptureModeUi();
   modelSelect.value = await getSetting(SETTINGS_KEYS.model, DEFAULTS.model);
 
   selectShortcutStr = await getSetting(SETTINGS_KEYS.selectShortcut, DEFAULTS.selectShortcut);
@@ -230,25 +205,12 @@ populateSelect(modelSelect, MODELS);
   shortcutClipboardBtn.textContent = shortcutDisplay(clipboardShortcutStr);
 })();
 
-captureModeSelect.addEventListener("change", () => {
-  syncCaptureModeUi();
-});
-
 captureWindowRefreshBtn.addEventListener("click", async () => {
   captureWindowRefreshBtn.disabled = true;
   try {
     await loadCaptureWindows(captureWindowSelect.value);
   } finally {
     captureWindowRefreshBtn.disabled = false;
-  }
-});
-
-captureAudioDeviceRefreshBtn.addEventListener("click", async () => {
-  captureAudioDeviceRefreshBtn.disabled = true;
-  try {
-    await loadAudioDevices(captureAudioDeviceSelect.value);
-  } finally {
-    captureAudioDeviceRefreshBtn.disabled = false;
   }
 });
 
@@ -261,7 +223,6 @@ btnSave.addEventListener("click", async () => {
     await setSetting(SETTINGS_KEYS.speechLocale, speechLocaleSelect.value);
     await setSetting(SETTINGS_KEYS.captureMode, captureModeSelect.value);
     await setSetting(SETTINGS_KEYS.captureWindow, captureWindowSelect.value);
-    await setSetting(SETTINGS_KEYS.captureAudioDevice, captureAudioDeviceSelect.value);
     await setSetting(SETTINGS_KEYS.model, modelSelect.value);
 
     // Validate shortcuts by registering them first; only persist on success

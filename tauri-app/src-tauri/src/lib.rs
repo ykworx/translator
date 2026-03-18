@@ -34,7 +34,6 @@ pub fn run() {
             speech::stop_speech_recognition,
             speech::get_speech_recognition_state,
             caption_capture::list_caption_capture_windows,
-            caption_capture::list_audio_input_devices,
             caption_capture::request_caption_capture_permissions,
             caption_capture::start_app_captions,
             caption_capture::stop_app_captions,
@@ -161,6 +160,8 @@ pub fn run() {
             }
 
             register_shortcut_handlers(app.handle(), select_shortcut, clipboard_shortcut)?;
+
+            caption_capture::init_app_handle(app.handle().clone());
 
             Ok(())
         })
