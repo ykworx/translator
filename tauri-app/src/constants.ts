@@ -24,6 +24,12 @@ export const SPEECH_LOCALES = [
   { value: "de-DE", label: "Deutsch" },
 ] as const;
 
+export const CAPTURE_MODES = [
+  { value: "window", label: "창 캡처" },
+  { value: "app", label: "앱 캡처" },
+  { value: "audio-device", label: "오디오 입력 장치" },
+] as const;
+
 /** Available Gemini models */
 export const MODELS = [
   { value: "gemini-2.0-flash", label: "gemini-2.0-flash" },
@@ -39,6 +45,9 @@ export const SETTINGS_KEYS = {
   pairLang: "pairLang",
   model: "model",
   speechLocale: "speechLocale",
+  captureMode: "captureMode",
+  captureWindow: "captureWindow",
+  captureAudioDevice: "captureAudioDevice",
   targetLanguage: "targetLanguage",
   selectShortcut: "selectShortcut",
   clipboardShortcut: "clipboardShortcut",
@@ -51,6 +60,9 @@ export const DEFAULTS = {
   pairLang: "日本語",
   model: "gemini-2.0-flash",
   speechLocale: "system",
+  captureMode: "window",
+  captureWindow: "",
+  captureAudioDevice: "",
   targetLanguage: "auto",
   selectShortcut: "Super+Ctrl+KeyT",
   clipboardShortcut: "Super+Ctrl+Shift+KeyT",

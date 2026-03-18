@@ -1,4 +1,5 @@
 mod clipboard;
+mod caption_capture;
 mod shortcut;
 mod speech;
 mod window;
@@ -32,6 +33,12 @@ pub fn run() {
             speech::start_speech_recognition,
             speech::stop_speech_recognition,
             speech::get_speech_recognition_state,
+            caption_capture::list_caption_capture_windows,
+            caption_capture::list_audio_input_devices,
+            caption_capture::request_caption_capture_permissions,
+            caption_capture::start_app_captions,
+            caption_capture::stop_app_captions,
+            caption_capture::get_app_caption_state,
             shortcut::update_shortcuts,
             shortcut::suspend_shortcuts,
             shortcut::resume_shortcuts

@@ -274,10 +274,18 @@ body {
   color: #fff;
   background: #111;
 }
+.toolbar-btn.streaming {
+  color: #fff;
+  background: #0f766e;
+}
 @media (prefers-color-scheme: dark) {
   .toolbar-btn.recording {
     background: #f3f3f3;
     color: #111;
+  }
+  .toolbar-btn.streaming {
+    background: #99f6e4;
+    color: #0f172a;
   }
 }
 
@@ -315,6 +323,20 @@ body {
   color: var(--fg);
 }
 
+#zoom-status {
+  min-height: 18px;
+  padding-left: 2px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#zoom-status.streaming {
+  color: var(--fg);
+}
+
 /* Quick reply suggestions */
 .suggest-section {
   margin-top: -8px;
@@ -341,6 +363,30 @@ body {
   color: var(--fg);
 }
 .suggest-btn:hover { background: rgba(128,128,128,0.15); }
+
+/* Live captions in chat */
+.caption-section {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+}
+.caption-original {
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin-bottom: 4px;
+}
+.caption-translation {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.caption-partial {
+  color: var(--fg-dim);
+  font-weight: 400;
+  font-style: italic;
+}
 
 /* Summary content */
 .summary-content {
