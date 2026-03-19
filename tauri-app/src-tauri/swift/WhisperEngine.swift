@@ -28,10 +28,19 @@ private let whisperNewSegmentCallback: @convention(c) (
         .takeUnretainedValue()
     guard let engine = callbackCtx.engine else { return }
 
-    // Read the newly decoded segments using _from_state variants
     let totalSegments = whisper_full_n_segments_from_state(state)
-    let startIdx = totalSegments - nNew
-    guard startIdx >= 0 else { return }
+    guard totalSegments > 0 else { return }
+
+    // In streaming mode: result_all contains the FULL confirmed text as a single segment.
+    // Read ALL segments to get cumulative text (not just the new ones).
+    // In legacy mode: read only new segments (incremental).
+    let startIdx: Int32
+    if engine.inferenceMode == .streaming {
+        startIdx = 0  // read all — C side puts full confirmed text in result_all
+    } else {
+        startIdx = totalSegments - nNew
+        guard startIdx >= 0 else { return }
+    }
 
     var partialText = ""
     for i in startIdx..<totalSegments {
@@ -220,6 +229,17 @@ final class WhisperEngine {
     }
 
     func release(owner: Owner) {
+        // Wait for any pending finalize to complete before clearing callbacks
+        if inferenceMode == .streaming {
+            lock.lock()
+            let pending = isFinalizePending || isInferenceRunning
+            lock.unlock()
+            if pending {
+                // Block until inference queue drains
+                inferenceQueue.sync {}
+            }
+        }
+
         lock.lock()
         defer { lock.unlock() }
         if currentOwner == owner {
