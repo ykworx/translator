@@ -395,16 +395,28 @@ final class WhisperEngine {
         return true
     }
 
-    /// Check VAD on accumulated buffer. Returns true if non-speech detected long enough to finalize.
+    /// Check silence on accumulated buffer. Uses RMS as fast pre-filter, VAD as confirmation.
+    /// Returns true if non-speech detected long enough to finalize.
     private func checkVadSilence(_ samples: [Float]) -> Bool {
-        vadBuffer.append(contentsOf: samples)
+        // Fast RMS pre-filter on incoming chunk
+        let rms = computeRMS(samples)
+        let isLoud = rms >= silenceThreshold
 
-        // Need at least vadChunkSize samples for reliable detection
+        if isLoud {
+            // Audio has energy → reset silence counter, skip VAD
+            vadSilentCount = 0
+            vadBuffer.removeAll(keepingCapacity: true)
+            return false
+        }
+
+        // RMS says quiet → accumulate for VAD confirmation
+        vadBuffer.append(contentsOf: samples)
         guard vadBuffer.count >= vadChunkSize else { return false }
 
         let chunk = Array(vadBuffer.prefix(vadChunkSize))
         vadBuffer.removeFirst(vadChunkSize)
 
+        // Try Silero VAD for accurate speech/non-speech
         if let vctx = ensureVadCtx() {
             let isSpeech = chunk.withUnsafeBufferPointer { buf in
                 whisper_vad_detect_speech(vctx, buf.baseAddress, Int32(buf.count))
@@ -413,7 +425,7 @@ final class WhisperEngine {
                 vadSilentCount += 1
                 if vadSilentCount >= vadSilentForFinalize {
                     vadSilentCount = 0
-                    return true  // non-speech long enough → finalize
+                    return true
                 }
             } else {
                 vadSilentCount = 0
@@ -421,16 +433,11 @@ final class WhisperEngine {
             return false
         }
 
-        // Fallback: no VAD model → use RMS
-        let rms = computeRMS(chunk)
-        if rms < silenceThreshold {
-            vadSilentCount += 1
-            if vadSilentCount >= vadSilentForFinalize {
-                vadSilentCount = 0
-                return true
-            }
-        } else {
+        // Fallback: no VAD model → RMS already says quiet
+        vadSilentCount += 1
+        if vadSilentCount >= vadSilentForFinalize {
             vadSilentCount = 0
+            return true
         }
         return false
     }
