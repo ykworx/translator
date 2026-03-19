@@ -21,6 +21,7 @@ fn main() {
         swift_dir.join("MicSpeechBridge.swift"),
         swift_dir.join("AppCaptionBridge.swift"),
         swift_dir.join("WhisperEngine.swift"),
+        swift_dir.join("CoreMLVad.swift"),
     ];
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("missing out dir"));
     let library_path = out_dir.join("libspeech_bridge.a");

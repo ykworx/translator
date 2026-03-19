@@ -109,16 +109,18 @@ final class WhisperEngine {
     /// Prompt tokens carried from last finalized streaming segment
     private var streamPromptTokens: [Int32] = []
 
-    // MARK: - Silero VAD for streaming
+    // MARK: - CoreML VAD for streaming (ANE-accelerated)
 
-    /// Silero VAD context (lazy, reused across segments)
-    private var vadCtx: OpaquePointer?  // whisper_vad_context *
-    /// Buffer for VAD speech detection (~0.5s chunks)
+    /// CoreML Silero VAD (runs on Apple Neural Engine, ~5ms per 256ms chunk)
+    private let coremlVad = CoreMLVad()
+    private var coremlVadLoaded = false
+    /// Buffer to accumulate samples for VAD chunk processing (4096 = 256ms)
     private var vadBuffer: [Float] = []
-    private let vadChunkSize = 8_000  // 0.5s at 16kHz — minimum for reliable VAD
     /// Consecutive non-speech VAD chunks before finalize
     private var vadSilentCount = 0
-    private let vadSilentForFinalize = 2  // 2 × 0.5s = 1s non-speech → finalize
+    private let vadSilentForFinalize = 4  // 4 × 256ms = ~1s non-speech → finalize
+    /// Speech probability threshold
+    private let vadSpeechThreshold: Float = 0.5
 
     // MARK: - Accumulate + Finalize Parameters (legacy mode)
 
@@ -219,7 +221,7 @@ final class WhisperEngine {
     func unloadModel() {
         lock.lock()
         defer { lock.unlock() }
-        if vadCtx != nil { whisper_vad_free(vadCtx); vadCtx = nil }
+        coremlVadLoaded = false
         if streamState != nil { whisper_free_state(streamState); streamState = nil }
         streamInitialized = false
         if ctx != nil { whisper_free(ctx); ctx = nil }
@@ -339,20 +341,28 @@ final class WhisperEngine {
 
     // MARK: - Streaming AlignAtt Mode
 
-    /// Create Silero VAD context lazily
-    private func ensureVadCtx() -> OpaquePointer? {
-        if vadCtx != nil { return vadCtx }
-        guard let path = vadModelPath else { return nil }
-        var params = whisper_vad_default_context_params()
-        params.n_threads = 1
-        params.use_gpu = false  // VAD is tiny, CPU is fine
-        vadCtx = path.withCString { cPath in
-            whisper_vad_init_from_file_with_params(cPath, params)
+    /// Load CoreML VAD model lazily
+    private func ensureCoreMLVad() -> Bool {
+        if coremlVadLoaded { return true }
+        // Look for the .mlmodelc next to the whisper model or in vendor
+        let candidates = [
+            Bundle.main.resourceURL?.appendingPathComponent("silero-vad-coreml.mlmodelc").path,
+            Bundle.main.bundlePath + "/silero-vad-coreml.mlmodelc",
+            // Dev mode: relative to source
+            ProcessInfo.processInfo.arguments.first
+                .flatMap { ($0 as NSString).deletingLastPathComponent }
+                .map { (($0 as NSString).appendingPathComponent("../../../vendor/silero-vad-coreml.mlmodelc") as NSString).standardizingPath },
+            NSHomeDirectory() + "/transrator/tauri-app/src-tauri/vendor/silero-vad-coreml.mlmodelc",
+        ].compactMap { $0 }
+
+        for path in candidates {
+            if FileManager.default.fileExists(atPath: path) {
+                coremlVadLoaded = coremlVad.load(path: path)
+                if coremlVadLoaded { return true }
+            }
         }
-        if vadCtx != nil {
-            NSLog("[WhisperEngine] Silero VAD context created for streaming")
-        }
-        return vadCtx
+        NSLog("[WhisperEngine] CoreML VAD model not found, falling back to RMS")
+        return false
     }
 
     /// Create streaming state lazily — MUST be called after DTW is enabled on ctx
@@ -395,49 +405,41 @@ final class WhisperEngine {
         return true
     }
 
-    /// Check silence on accumulated buffer. Uses RMS as fast pre-filter, VAD as confirmation.
+    /// Check silence using CoreML VAD on every audio chunk (no RMS pre-filter).
+    /// Runs on ANE (~5ms per 256ms chunk). Music/noise correctly classified as non-speech.
     /// Returns true if non-speech detected long enough to finalize.
     private func checkVadSilence(_ samples: [Float]) -> Bool {
-        // Fast RMS pre-filter on incoming chunk
-        let rms = computeRMS(samples)
-        let isLoud = rms >= silenceThreshold
-
-        if isLoud {
-            // Audio has energy → reset silence counter, skip VAD
-            vadSilentCount = 0
-            vadBuffer.removeAll(keepingCapacity: true)
-            return false
-        }
-
-        // RMS says quiet → accumulate for VAD confirmation
         vadBuffer.append(contentsOf: samples)
-        guard vadBuffer.count >= vadChunkSize else { return false }
 
-        let chunk = Array(vadBuffer.prefix(vadChunkSize))
-        vadBuffer.removeFirst(vadChunkSize)
+        // Process in 4096-sample chunks (256ms) — model's native chunk size
+        while vadBuffer.count >= CoreMLVad.chunkSize {
+            let chunk = Array(vadBuffer.prefix(CoreMLVad.chunkSize))
+            vadBuffer.removeFirst(CoreMLVad.chunkSize)
 
-        // Try Silero VAD for accurate speech/non-speech
-        if let vctx = ensureVadCtx() {
-            let isSpeech = chunk.withUnsafeBufferPointer { buf in
-                whisper_vad_detect_speech(vctx, buf.baseAddress, Int32(buf.count))
-            }
-            if !isSpeech {
-                vadSilentCount += 1
-                if vadSilentCount >= vadSilentForFinalize {
+            if ensureCoreMLVad() {
+                let prob = coremlVad.process(samples: chunk)
+                if prob < vadSpeechThreshold {
+                    vadSilentCount += 1
+                    if vadSilentCount >= vadSilentForFinalize {
+                        vadSilentCount = 0
+                        return true  // non-speech for ~1s → finalize
+                    }
+                } else {
                     vadSilentCount = 0
-                    return true
                 }
             } else {
-                vadSilentCount = 0
+                // Fallback: no CoreML model → use RMS
+                let rms = computeRMS(chunk)
+                if rms < silenceThreshold {
+                    vadSilentCount += 1
+                    if vadSilentCount >= vadSilentForFinalize {
+                        vadSilentCount = 0
+                        return true
+                    }
+                } else {
+                    vadSilentCount = 0
+                }
             }
-            return false
-        }
-
-        // Fallback: no VAD model → RMS already says quiet
-        vadSilentCount += 1
-        if vadSilentCount >= vadSilentForFinalize {
-            vadSilentCount = 0
-            return true
         }
         return false
     }
