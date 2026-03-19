@@ -5,292 +5,6 @@ import Foundation
 import ScreenCaptureKit
 import Speech
 
-private final class SpeechBridgeState {
-    static let shared = SpeechBridgeState()
-
-    private let lock = NSLock()
-    private var recognizer: SFSpeechRecognizer?
-    private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var task: SFSpeechRecognitionTask?
-    private let audioEngine = AVAudioEngine()
-
-    private var transcript = ""
-    private var isRunning = false
-    private var isFinal = false
-    private var lastError = ""
-    private var permissionPromptPending = false
-    private var isStopping = false
-
-    func permissionsSnapshot() -> [String: Any] {
-        let speechAuthorized = speechAuthorizationStatus() == .authorized
-        let micAuthorized = microphoneAuthorizationStatus() == .authorized
-        return [
-            "authorized": speechAuthorized && micAuthorized,
-            "speechAuthorized": speechAuthorized,
-            "microphoneAuthorized": micAuthorized,
-            "permissionPromptPending": permissionPromptPending
-        ]
-    }
-
-    func requestPermissions() -> [String: Any] {
-        let currentSpeechStatus = speechAuthorizationStatus()
-        if currentSpeechStatus == .notDetermined {
-            requestSpeechAuthorizationIfNeeded()
-            return [
-                "authorized": false,
-                "speechAuthorized": false,
-                "microphoneAuthorized": microphoneAuthorizationStatus() == .authorized,
-                "permissionPromptPending": true,
-                "error": "음성 인식 권한 팝업을 확인한 뒤 다시 눌러주세요."
-            ]
-        }
-        guard currentSpeechStatus == .authorized else {
-            return [
-                "authorized": false,
-                "speechAuthorized": false,
-                "microphoneAuthorized": microphoneAuthorizationStatus() == .authorized,
-                "permissionPromptPending": false,
-                "error": "음성 인식 권한이 허용되지 않았습니다."
-            ]
-        }
-
-        let micStatus = microphoneAuthorizationStatus()
-        if micStatus == .notDetermined {
-            requestMicrophoneAuthorizationIfNeeded()
-            return [
-                "authorized": false,
-                "speechAuthorized": true,
-                "microphoneAuthorized": false,
-                "permissionPromptPending": true,
-                "error": "마이크 권한 팝업을 확인한 뒤 다시 눌러주세요."
-            ]
-        }
-
-        guard micStatus == .authorized else {
-            return [
-                "authorized": false,
-                "speechAuthorized": true,
-                "microphoneAuthorized": false,
-                "permissionPromptPending": false,
-                "error": "마이크 권한이 허용되지 않았습니다."
-            ]
-        }
-
-        return [
-            "authorized": true,
-            "speechAuthorized": true,
-            "microphoneAuthorized": true,
-            "permissionPromptPending": false
-        ]
-    }
-
-    func start(localeIdentifier: String?) -> [String: Any] {
-        let permissions = requestPermissions()
-        guard (permissions["authorized"] as? Bool) == true else {
-            return mergeCurrentState(extra: permissions)
-        }
-
-        stopRecognition(clearTranscript: false)
-
-        let preferredLocale = (localeIdentifier?.isEmpty == false ? localeIdentifier! : Locale.preferredLanguages.first)
-            ?? Locale.current.identifier
-        let locale = Locale(identifier: preferredLocale)
-        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
-            return mergeCurrentState(extra: [
-                "error": "선택한 언어의 Apple Speech 인식을 사용할 수 없습니다."
-            ])
-        }
-
-        self.recognizer = recognizer
-        self.request = SFSpeechAudioBufferRecognitionRequest()
-        guard let request else {
-            return mergeCurrentState(extra: ["error": "음성 인식 요청을 만들 수 없습니다."])
-        }
-
-        request.shouldReportPartialResults = true
-        request.requiresOnDeviceRecognition = false
-
-        do {
-            let inputNode = audioEngine.inputNode
-            let format = inputNode.outputFormat(forBus: 0)
-            inputNode.removeTap(onBus: 0)
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-                self?.request?.append(buffer)
-            }
-
-            audioEngine.prepare()
-            try audioEngine.start()
-        } catch {
-            stopRecognition(clearTranscript: false)
-            return mergeCurrentState(extra: [
-                "error": "마이크를 시작할 수 없습니다: \(error.localizedDescription)"
-            ])
-        }
-
-        updateState {
-            transcript = ""
-            isRunning = true
-            isFinal = false
-            lastError = ""
-            permissionPromptPending = false
-        }
-
-        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            guard let self else { return }
-
-            if let result {
-                self.updateState {
-                    self.transcript = result.bestTranscription.formattedString
-                    self.isFinal = result.isFinal
-                }
-            }
-
-            if let error {
-                self.updateState {
-                    self.lastError = error.localizedDescription
-                    self.isRunning = false
-                }
-                self.stopRecognition(clearTranscript: false)
-                return
-            }
-
-            if let result, result.isFinal {
-                self.updateState { self.isRunning = false }
-                self.stopRecognition(clearTranscript: false)
-            }
-        }
-
-        return snapshot()
-    }
-
-    func stop() -> [String: Any] {
-        stopRecognition(clearTranscript: false)
-        return snapshot()
-    }
-
-    func currentState() -> [String: Any] {
-        mergeCurrentState(extra: permissionsSnapshot())
-    }
-
-    private func stopRecognition(clearTranscript: Bool) {
-        let taskToCancel: SFSpeechRecognitionTask?
-
-        lock.lock()
-        if isStopping {
-            lock.unlock()
-            return
-        }
-        isStopping = true
-        taskToCancel = task
-        task = nil
-        let shouldClearTranscript = clearTranscript
-        lock.unlock()
-
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
-        request?.endAudio()
-        taskToCancel?.cancel()
-        request = nil
-        recognizer = nil
-
-        updateState {
-            isRunning = false
-            if shouldClearTranscript {
-                transcript = ""
-                isFinal = false
-                lastError = ""
-                permissionPromptPending = false
-            }
-            isStopping = false
-        }
-    }
-
-    private func snapshot() -> [String: Any] {
-        lock.lock()
-        let transcript = self.transcript
-        let isRunning = self.isRunning
-        let isFinal = self.isFinal
-        let lastError = self.lastError
-        lock.unlock()
-
-        var state: [String: Any] = [
-            "transcript": transcript,
-            "isRunning": isRunning,
-            "isFinal": isFinal
-        ]
-        if !lastError.isEmpty {
-            state["error"] = lastError
-        }
-        return mergeCurrentState(extra: state)
-    }
-
-    private func mergeCurrentState(extra: [String: Any]) -> [String: Any] {
-        var merged = currentStateBase()
-        for (key, value) in extra {
-            merged[key] = value
-        }
-        return merged
-    }
-
-    private func currentStateBase() -> [String: Any] {
-        lock.lock()
-        let transcript = self.transcript
-        let isRunning = self.isRunning
-        let isFinal = self.isFinal
-        let lastError = self.lastError
-        lock.unlock()
-
-        var state: [String: Any] = [
-            "transcript": transcript,
-            "isRunning": isRunning,
-            "isFinal": isFinal
-        ]
-        if !lastError.isEmpty {
-            state["error"] = lastError
-        }
-        return state
-    }
-
-    private func updateState(_ update: () -> Void) {
-        lock.lock()
-        update()
-        lock.unlock()
-    }
-
-    private func speechAuthorizationStatus() -> SFSpeechRecognizerAuthorizationStatus {
-        SFSpeechRecognizer.authorizationStatus()
-    }
-
-    private func requestSpeechAuthorizationIfNeeded() {
-        updateState { permissionPromptPending = true }
-        SFSpeechRecognizer.requestAuthorization { status in
-            self.updateState {
-                self.permissionPromptPending = false
-                if status != .authorized && self.lastError.isEmpty {
-                    self.lastError = "음성 인식 권한이 허용되지 않았습니다."
-                }
-            }
-        }
-    }
-
-    private func microphoneAuthorizationStatus() -> AVAuthorizationStatus {
-        AVCaptureDevice.authorizationStatus(for: .audio)
-    }
-
-    private func requestMicrophoneAuthorizationIfNeeded() {
-        updateState { permissionPromptPending = true }
-        AVCaptureDevice.requestAccess(for: .audio) { value in
-            self.updateState {
-                self.permissionPromptPending = false
-                if !value && self.lastError.isEmpty {
-                    self.lastError = "마이크 권한이 허용되지 않았습니다."
-                }
-            }
-        }
-    }
-
-}
-
 @available(macOS 13.0, *)
 private final class ZoomAudioOutput: NSObject, SCStreamOutput {
     weak var owner: AppCaptionBridgeState?
@@ -317,7 +31,7 @@ private struct CaptureWindowInfo {
 func rustCaptionStateChanged(_ jsonPtr: UnsafePointer<CChar>?)
 
 @available(macOS 13.0, *)
-private final class AppCaptionBridgeState {
+final class AppCaptionBridgeState {
     static let shared = AppCaptionBridgeState()
 
     private let lock = NSLock()
@@ -328,6 +42,7 @@ private final class AppCaptionBridgeState {
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
+    private var taskGeneration: Int = 0
     private var audioConverter: AVAudioConverter?
     private let speechFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
 
@@ -339,6 +54,7 @@ private final class AppCaptionBridgeState {
     private var permissionPromptPending = false
     private var sourceApp = "회의 창"
     private var captureMode = "window"
+    private var savedLocale = "ko-KR"
     private var finalCounter = 0
     private var audioSampleCount: UInt64 = 0
     private var lastPartialText = ""
@@ -347,8 +63,14 @@ private final class AppCaptionBridgeState {
     private var silenceStartMs: UInt64 = 0
     private let silenceThreshold: Float = 0.01
     private let silenceDurationMs: UInt64 = 700
+    private let silenceResetMs: UInt64 = 3000
     private var lastAudioAtMs: UInt64 = 0
     private var audioLevel: Float = 0
+    private var sessionStartMs: UInt64 = 0
+    private let maxSessionMs: UInt64 = 45000
+    private var committedLength = 0
+
+    // MARK: - Public API
 
     func listWindows() -> [[String: Any]] {
         let semaphore = DispatchSemaphore(value: 0)
@@ -455,6 +177,7 @@ private final class AppCaptionBridgeState {
 
         let preferredLocale = (localeIdentifier?.isEmpty == false ? localeIdentifier! : Locale.preferredLanguages.first)
             ?? Locale.current.identifier
+        self.savedLocale = preferredLocale
         let locale = Locale(identifier: preferredLocale)
         guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
             return mergeCurrentState(extra: [
@@ -465,56 +188,17 @@ private final class AppCaptionBridgeState {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = false
+        request.addsPunctuation = true
 
         self.recognizer = recognizer
         self.request = request
+        self.sessionStartMs = UInt64(Date().timeIntervalSince1970 * 1000)
         NSLog("[Transrator] Starting recognition task, locale=%@, recognizer.isAvailable=%d", preferredLocale, recognizer.isAvailable ? 1 : 0)
+        self.taskGeneration += 1
+        let gen = self.taskGeneration
         self.task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            guard let self else { return }
-
-            if let result {
-                let fullText = result.bestTranscription.formattedString
-                let delta: String
-                if fullText.count > self.committedLength {
-                    delta = String(fullText.suffix(fullText.count - self.committedLength)).trimmingCharacters(in: .whitespaces)
-                } else {
-                    // Apple rewrote text shorter — adjust so next new text is immediately visible
-                    self.committedLength = fullText.count
-                    delta = ""
-                }
-
-                // Debug: time since last audio buffer
-                let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
-                let audioLag = self.lastAudioAtMs > 0 ? nowMs - self.lastAudioAtMs : 0
-
-                if !delta.isEmpty && !result.isFinal {
-                    let truncated = delta.count > 80 ? String(delta.prefix(80)) + "…" : delta
-                    let info = "lag=\(audioLag)ms samples=\(self.audioSampleCount)"
-                    let padded = "\(truncated) [\(info)]".padding(toLength: 120, withPad: " ", startingAt: 0)
-                    fputs("\r[partial] \(padded)", stderr)
-                    fflush(stderr)
-                }
-
-                self.updateState({
-                    self.transcript = delta
-                    if result.isFinal {
-                        self.promoteToFinal(fullText)
-                    }
-                }, notify: true)
-
-                if !result.isFinal {
-                    self.scheduleStableCheck(text: fullText)
-                }
-            }
-
-            if let error {
-                NSLog("[Transrator] Recognition error: %@", error.localizedDescription)
-                self.flushPartialAsFinal()
-                self.updateState({
-                    self.lastError = error.localizedDescription
-                    self.isRunning = false
-                }, notify: true)
-            }
+            guard let self, self.taskGeneration == gen else { return }
+            self.handleRecognitionResult(result: result, error: error)
         }
 
         let semaphore = DispatchSemaphore(value: 0)
@@ -629,18 +313,16 @@ private final class AppCaptionBridgeState {
         mergeCurrentState(extra: currentStateBase())
     }
 
+    // MARK: - Audio processing
+
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
         guard let request else { return }
         guard let pcmBuffer = makePCMBuffer(from: sampleBuffer) else { return }
         updateAudioDebug(with: pcmBuffer)
 
-        // Convert to 16kHz mono for SFSpeechRecognizer
         let sourceFormat = pcmBuffer.format
         if audioConverter == nil || audioConverter!.inputFormat != sourceFormat {
             audioConverter = AVAudioConverter(from: sourceFormat, to: speechFormat)
-            if audioConverter == nil {
-                NSLog("[Transrator] Failed to create audio converter from %@ to %@", sourceFormat.description, speechFormat.description)
-            }
         }
 
         guard let converter = audioConverter else {
@@ -667,22 +349,91 @@ private final class AppCaptionBridgeState {
             return pcmBuffer
         }
 
-        if let error {
-            if audioSampleCount % 500 == 0 {
-                NSLog("[Transrator] Audio conversion error: %@", error.localizedDescription)
-            }
-            return
-        }
+        if error != nil { return }
 
         if outputBuffer.frameLength > 0 {
             request.append(outputBuffer)
         }
     }
 
-    /// Character count already committed — used to extract delta from cumulative transcript
-    private var committedLength = 0
+    // MARK: - Recognition handling
 
-    // MARK: - Commit judgment (simple 1s stable timer)
+    private func handleRecognitionResult(result: SFSpeechRecognitionResult?, error: Error?) {
+        if let result {
+            let fullText = result.bestTranscription.formattedString
+            let delta: String
+            if fullText.count > committedLength {
+                delta = String(fullText.suffix(fullText.count - committedLength)).trimmingCharacters(in: .whitespaces)
+            } else {
+                committedLength = fullText.count
+                delta = ""
+            }
+
+            let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
+            let audioLag = lastAudioAtMs > 0 ? nowMs - lastAudioAtMs : 0
+
+            if !delta.isEmpty && !result.isFinal {
+                let truncated = delta.count > 80 ? String(delta.prefix(80)) + "…" : delta
+                let info = "lag=\(audioLag)ms samples=\(audioSampleCount)"
+                let padded = "\(truncated) [\(info)]".padding(toLength: 120, withPad: " ", startingAt: 0)
+                fputs("\r[partial] \(padded)", stderr)
+                fflush(stderr)
+            }
+
+            updateState({
+                self.transcript = delta
+                if result.isFinal {
+                    self.promoteToFinal(fullText)
+                }
+            }, notify: true)
+
+            if !result.isFinal {
+                scheduleStableCheck(text: fullText)
+            }
+        }
+
+        if let error {
+            NSLog("[Transrator] Recognition error: %@", error.localizedDescription)
+            flushPartialAsFinal()
+            updateState({
+                self.lastError = error.localizedDescription
+                self.isRunning = false
+            }, notify: true)
+        }
+    }
+
+    private func restartRecognitionTask() {
+        request?.endAudio()
+        task?.cancel()
+        task = nil
+        request = nil
+        stableTimer?.cancel()
+        stableTimer = nil
+        committedLength = 0
+        lastPartialText = ""
+
+        guard let recognizer = self.recognizer ?? SFSpeechRecognizer(locale: Locale(identifier: self.savedLocale)),
+              recognizer.isAvailable else { return }
+
+        let newRequest = SFSpeechAudioBufferRecognitionRequest()
+        newRequest.shouldReportPartialResults = true
+        newRequest.requiresOnDeviceRecognition = false
+        newRequest.addsPunctuation = true
+
+        self.recognizer = recognizer
+        self.request = newRequest
+        self.sessionStartMs = UInt64(Date().timeIntervalSince1970 * 1000)
+
+        NSLog("[Transrator] Restarting recognition task, locale=%@", self.savedLocale)
+        self.taskGeneration += 1
+        let gen = self.taskGeneration
+        self.task = recognizer.recognitionTask(with: newRequest) { [weak self] result, error in
+            guard let self, self.taskGeneration == gen else { return }
+            self.handleRecognitionResult(result: result, error: error)
+        }
+    }
+
+    // MARK: - Commit judgment
 
     private func promoteToFinal(_ fullText: String) {
         stableTimer?.cancel()
@@ -734,6 +485,8 @@ private final class AppCaptionBridgeState {
             }, notify: true)
         }
     }
+
+    // MARK: - State management
 
     private func currentStateBase() -> [String: Any] {
         lock.lock()
@@ -795,6 +548,8 @@ private final class AppCaptionBridgeState {
         }
     }
 
+    // MARK: - Audio utilities
+
     private func updateAudioDebug(with buffer: AVAudioPCMBuffer) {
         let level = calculateAudioLevel(buffer)
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
@@ -804,11 +559,27 @@ private final class AppCaptionBridgeState {
             self.audioLevel = level
         }
 
-        // Silence detection: 700ms of silence → commit pending partial
+        // Silence detection: 700ms → commit, 3s → restart session
         if level < silenceThreshold {
             if silenceStartMs == 0 { silenceStartMs = now }
-            if now - silenceStartMs >= silenceDurationMs {
+            let silentFor = now - silenceStartMs
+            if silentFor >= silenceResetMs {
                 silenceStartMs = 0
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.isRunning else { return }
+                    self.lock.lock()
+                    let hasPartial = !self.transcript.isEmpty
+                    self.lock.unlock()
+                    if hasPartial {
+                        self.updateState({
+                            self.promoteToFinal(self.lastPartialText)
+                        }, notify: true)
+                    }
+                    NSLog("[Transrator] Silence reset: restarting recognition for speaker change")
+                    self.restartRecognitionTask()
+                }
+            } else if silentFor >= silenceDurationMs {
+                silenceStartMs = now - silenceDurationMs
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isRunning else { return }
                     self.lock.lock()
@@ -824,6 +595,24 @@ private final class AppCaptionBridgeState {
         } else {
             silenceStartMs = 0
         }
+
+        // Session max duration → force restart
+        if sessionStartMs > 0 && now - sessionStartMs >= maxSessionMs {
+            sessionStartMs = 0
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isRunning else { return }
+                self.lock.lock()
+                let hasPartial = !self.transcript.isEmpty
+                self.lock.unlock()
+                if hasPartial {
+                    self.updateState({
+                        self.promoteToFinal(self.lastPartialText)
+                    }, notify: true)
+                }
+                NSLog("[Transrator] Session timeout: restarting recognition (45s)")
+                self.restartRecognitionTask()
+            }
+        }
     }
 
     private static func captureWindows(from shareableContent: SCShareableContent) -> [CaptureWindowInfo] {
@@ -831,14 +620,8 @@ private final class AppCaptionBridgeState {
             .compactMap { window in
                 let title = window.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 let appName = window.owningApplication?.applicationName ?? "알 수 없는 앱"
-                if title.isEmpty {
-                    return nil
-                }
-                return CaptureWindowInfo(
-                    id: String(window.windowID),
-                    name: "\(appName) - \(title)",
-                    window: window
-                )
+                if title.isEmpty { return nil }
+                return CaptureWindowInfo(id: String(window.windowID), name: "\(appName) - \(title)", window: window)
             }
             .filter { item in
                 let lowerName = item.name.lowercased()
@@ -852,7 +635,6 @@ private final class AppCaptionBridgeState {
         guard let windowIdentifier, !windowIdentifier.isEmpty else {
             return windows.first
         }
-
         return windows.first(where: { $0.id == windowIdentifier || $0.name == windowIdentifier })
     }
 
@@ -861,16 +643,10 @@ private final class AppCaptionBridgeState {
     }
 
     private func calculateAudioLevel(_ buffer: AVAudioPCMBuffer) -> Float {
-        guard let channelData = buffer.floatChannelData else {
-            return 0
-        }
-
+        guard let channelData = buffer.floatChannelData else { return 0 }
         let channelCount = Int(buffer.format.channelCount)
         let frameLength = Int(buffer.frameLength)
-        if channelCount == 0 || frameLength == 0 {
-            return 0
-        }
-
+        if channelCount == 0 || frameLength == 0 { return 0 }
         var maxValue: Float = 0
         for channel in 0..<channelCount {
             let samples = channelData[channel]
@@ -888,9 +664,7 @@ private final class AppCaptionBridgeState {
         }
 
         var asbd = asbdPointer.pointee
-        guard let format = AVAudioFormat(streamDescription: &asbd) else {
-            return nil
-        }
+        guard let format = AVAudioFormat(streamDescription: &asbd) else { return nil }
 
         let frameCount = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
         guard frameCount > 0,
@@ -905,70 +679,13 @@ private final class AppCaptionBridgeState {
             frameCount: Int32(frameCount),
             into: pcmBuffer.mutableAudioBufferList
         )
-        guard status == noErr else {
-            return nil
-        }
+        guard status == noErr else { return nil }
 
         return pcmBuffer
     }
 }
 
-private func jsonCString(_ payload: [String: Any]) -> UnsafeMutablePointer<CChar>? {
-    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
-          let string = String(data: data, encoding: .utf8) else {
-        return strdup("{\"error\":\"json_encoding_failed\"}")
-    }
-    return strdup(string)
-}
-
-private func jsonCString(_ payload: [[String: Any]]) -> UnsafeMutablePointer<CChar>? {
-    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
-          let string = String(data: data, encoding: .utf8) else {
-        return strdup("[]")
-    }
-    return strdup(string)
-}
-
-private func runOnMain<T>(_ work: @escaping () -> T) -> T {
-    if Thread.isMainThread {
-        return autoreleasepool(invoking: work)
-    }
-
-    var result: T?
-    DispatchQueue.main.sync {
-        result = autoreleasepool(invoking: work)
-    }
-    return result!
-}
-
-@_cdecl("speech_request_permissions")
-public func speech_request_permissions() -> UnsafeMutablePointer<CChar>? {
-    runOnMain {
-        jsonCString(SpeechBridgeState.shared.currentState().merging(SpeechBridgeState.shared.requestPermissions()) { _, new in new })
-    }
-}
-
-@_cdecl("speech_start_recognition")
-public func speech_start_recognition(localeIdentifier: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
-    runOnMain {
-        let locale = localeIdentifier.map { String(cString: $0) }
-        return jsonCString(SpeechBridgeState.shared.start(localeIdentifier: locale))
-    }
-}
-
-@_cdecl("speech_stop_recognition")
-public func speech_stop_recognition() -> UnsafeMutablePointer<CChar>? {
-    runOnMain {
-        jsonCString(SpeechBridgeState.shared.stop())
-    }
-}
-
-@_cdecl("speech_get_state")
-public func speech_get_state() -> UnsafeMutablePointer<CChar>? {
-    runOnMain {
-        jsonCString(SpeechBridgeState.shared.currentState())
-    }
-}
+// MARK: - C API
 
 @_cdecl("caption_capture_list_windows")
 public func caption_capture_list_windows() -> UnsafeMutablePointer<CChar>? {
@@ -1019,9 +736,6 @@ public func app_caption_start(
         }
         return jsonCString([
             "authorized": false,
-            "speechAuthorized": false,
-            "screenAuthorized": false,
-            "permissionPromptPending": false,
             "error": "앱 실시간 자막은 macOS 13 이상에서 지원됩니다.",
             "transcript": "",
             "lastFinalTranscript": "",
@@ -1054,9 +768,6 @@ public func app_caption_get_state() -> UnsafeMutablePointer<CChar>? {
         }
         return jsonCString([
             "authorized": false,
-            "speechAuthorized": false,
-            "screenAuthorized": false,
-            "permissionPromptPending": false,
             "error": "앱 실시간 자막은 macOS 13 이상에서 지원됩니다.",
             "transcript": "",
             "lastFinalTranscript": "",
@@ -1065,10 +776,3 @@ public func app_caption_get_state() -> UnsafeMutablePointer<CChar>? {
         ])
     }
 }
-
-@_cdecl("speech_free_string")
-public func speech_free_string(pointer: UnsafeMutablePointer<CChar>?) {
-    guard let pointer else { return }
-    free(pointer)
-}
-

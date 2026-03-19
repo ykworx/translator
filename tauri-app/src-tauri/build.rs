@@ -15,14 +15,21 @@ fn main() {
     }
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("missing manifest dir"));
-    let swift_file = manifest_dir.join("swift").join("SpeechBridge.swift");
+    let swift_dir = manifest_dir.join("swift");
+    let swift_files: Vec<PathBuf> = vec![
+        swift_dir.join("SwiftBridgeUtils.swift"),
+        swift_dir.join("MicSpeechBridge.swift"),
+        swift_dir.join("AppCaptionBridge.swift"),
+    ];
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("missing out dir"));
     let library_path = out_dir.join("libspeech_bridge.a");
     let module_cache_path = out_dir.join("swift-module-cache");
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").expect("missing target arch");
     let swift_arch = if target_arch == "aarch64" { "arm64" } else { target_arch.as_str() };
 
-    println!("cargo:rerun-if-changed={}", swift_file.display());
+    for sf in &swift_files {
+        println!("cargo:rerun-if-changed={}", sf.display());
+    }
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=speech_bridge");
     println!("cargo:rustc-link-lib=framework=Speech");
@@ -62,29 +69,30 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{path}");
     }
 
-    let status = Command::new("xcrun")
-        .args([
-            "--sdk",
-            "macosx",
-            "swiftc",
-            "-parse-as-library",
-            "-emit-library",
-            "-static",
-            "-target",
-            &format!("{swift_arch}-apple-macos10.15"),
-            "-sdk",
-            sdk_path,
-            "-module-cache-path",
-            module_cache_path.to_str().expect("invalid module cache path"),
-            "-o",
-            library_path.to_str().expect("invalid output path"),
-            swift_file.to_str().expect("invalid swift path"),
-        ])
-        .status()
-        .expect("failed to run swiftc");
+    let mut cmd = Command::new("xcrun");
+    cmd.args([
+        "--sdk",
+        "macosx",
+        "swiftc",
+        "-parse-as-library",
+        "-emit-library",
+        "-static",
+        "-target",
+        &format!("{swift_arch}-apple-macos10.15"),
+        "-sdk",
+        sdk_path,
+        "-module-cache-path",
+        module_cache_path.to_str().expect("invalid module cache path"),
+        "-o",
+        library_path.to_str().expect("invalid output path"),
+    ]);
+    for sf in &swift_files {
+        cmd.arg(sf.to_str().expect("invalid swift path"));
+    }
+    let status = cmd.status().expect("failed to run swiftc");
 
     if !status.success() {
-        panic!("failed to compile SpeechBridge.swift");
+        panic!("failed to compile Swift sources");
     }
 
     tauri_build::build()

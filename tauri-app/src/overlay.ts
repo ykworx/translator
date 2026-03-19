@@ -1,12 +1,14 @@
+import type { OverlayCaption } from "./types";
+
 const { listen } = window.__TAURI__.event;
 
-type OverlayCaption = {
-  id: string;
-  original: string;
-  translated: string;
-};
-
 const list = document.getElementById("overlay-list") as HTMLDivElement;
+
+function escapeHtml(text: string): string {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
 
 function render(items: OverlayCaption[]): void {
   if (items.length === 0) {
@@ -20,15 +22,6 @@ function render(items: OverlayCaption[]): void {
       <div class="overlay-translation">${escapeHtml(item.translated)}</div>
     </div>
   `).join("");
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 render([]);

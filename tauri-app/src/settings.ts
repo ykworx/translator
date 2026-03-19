@@ -3,6 +3,7 @@ const { getCurrentWindow } = window.__TAURI__.window;
 
 import { CAPTURE_MODES, LANGUAGES, MODELS, DEFAULTS, SETTINGS_KEYS, SPEECH_LOCALES } from "./constants";
 import { getSetting, setSetting } from "./store";
+import { populateSelect } from "./utils";
 
 // ─── DOM ────────────────────────────────────────────
 const apiKeyInput = document.getElementById("api-key") as HTMLInputElement;
@@ -151,14 +152,6 @@ document.addEventListener("keydown", (e: KeyboardEvent) => {
 });
 
 // ─── Populate select elements ───────────────────────
-function populateSelect(select: HTMLSelectElement, items: { value: string; label: string }[]): void {
-  for (const item of items) {
-    const option = document.createElement("option");
-    option.value = item.value;
-    option.textContent = item.label;
-    select.appendChild(option);
-  }
-}
 
 function replaceOptions(select: HTMLSelectElement, items: { value: string; label: string }[]): void {
   select.innerHTML = "";

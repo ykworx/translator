@@ -2,6 +2,9 @@
 import { writeTextToClipboard } from "./clipboard";
 import { koreanPronunciation } from "./api";
 import { COPY_FEEDBACK_MS } from "./constants";
+import { escapeHtml } from "./utils";
+
+export { escapeHtml };
 
 export interface ChatEntry {
   original: string;
@@ -16,12 +19,6 @@ export interface ChatEntry {
 export let chatHistory: ChatEntry[] = [];
 export const MAX_HISTORY = 50;
 export const chat = document.getElementById("chat")!;
-
-export function escapeHtml(str: string): string {
-  const div = document.createElement("div");
-  div.textContent = str;
-  return div.innerHTML;
-}
 
 /** Sanitize HTML table: keep only safe tags/attributes, strip scripts and event handlers */
 function sanitizeTableHtml(html: string): string {
