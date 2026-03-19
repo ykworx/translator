@@ -19,6 +19,8 @@
     "store:allow-get",
     "store:allow-set",
     "store:allow-delete",
-    "store:allow-save"
+    "store:allow-save",
+    "core:event:allow-listen",
+    "core:event:allow-emit"
   ]
 }

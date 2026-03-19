@@ -1,7 +1,7 @@
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
 
-import { CAPTURE_MODES, LANGUAGES, MODELS, DEFAULTS, SETTINGS_KEYS, SPEECH_LOCALES } from "./constants";
+import { CAPTURE_MODES, DOMAIN_HINTS, LANGUAGES, MODELS, DEFAULTS, SETTINGS_KEYS, SPEECH_LOCALES } from "./constants";
 import { getSetting, setSetting } from "./store";
 import { populateSelect } from "./utils";
 
@@ -10,6 +10,7 @@ const apiKeyInput = document.getElementById("api-key") as HTMLInputElement;
 const myLangSelect = document.getElementById("my-lang") as HTMLSelectElement;
 const pairLangSelect = document.getElementById("pair-lang") as HTMLSelectElement;
 const speechLocaleSelect = document.getElementById("speech-locale") as HTMLSelectElement;
+const domainHintSelect = document.getElementById("domain-hint") as HTMLSelectElement;
 const captureModeSelect = document.getElementById("capture-mode") as HTMLSelectElement;
 const captureWindowField = document.getElementById("capture-window-field") as HTMLDivElement;
 const captureWindowSelect = document.getElementById("capture-window") as HTMLSelectElement;
@@ -176,6 +177,7 @@ async function loadCaptureWindows(selectedValue = ""): Promise<void> {
 populateSelect(myLangSelect, LANGUAGES);
 populateSelect(pairLangSelect, LANGUAGES);
 populateSelect(speechLocaleSelect, [...SPEECH_LOCALES]);
+populateSelect(domainHintSelect, [...DOMAIN_HINTS]);
 populateSelect(captureModeSelect, [...CAPTURE_MODES]);
 populateSelect(modelSelect, MODELS);
 
@@ -189,6 +191,7 @@ populateSelect(modelSelect, MODELS);
   myLangSelect.value = await getSetting(SETTINGS_KEYS.myLang, DEFAULTS.myLang);
   pairLangSelect.value = await getSetting(SETTINGS_KEYS.pairLang, DEFAULTS.pairLang);
   speechLocaleSelect.value = await getSetting(SETTINGS_KEYS.speechLocale, DEFAULTS.speechLocale);
+  domainHintSelect.value = await getSetting(SETTINGS_KEYS.domainHint, DEFAULTS.domainHint);
   captureModeSelect.value = savedCaptureMode;
   modelSelect.value = await getSetting(SETTINGS_KEYS.model, DEFAULTS.model);
 
@@ -214,6 +217,7 @@ btnSave.addEventListener("click", async () => {
     await setSetting(SETTINGS_KEYS.myLang, myLangSelect.value);
     await setSetting(SETTINGS_KEYS.pairLang, pairLangSelect.value);
     await setSetting(SETTINGS_KEYS.speechLocale, speechLocaleSelect.value);
+    await setSetting(SETTINGS_KEYS.domainHint, domainHintSelect.value);
     await setSetting(SETTINGS_KEYS.captureMode, captureModeSelect.value);
     await setSetting(SETTINGS_KEYS.captureWindow, captureWindowSelect.value);
     await setSetting(SETTINGS_KEYS.model, modelSelect.value);
@@ -236,3 +240,125 @@ btnSave.addEventListener("click", async () => {
 btnCancel.addEventListener("click", () => {
   getCurrentWindow().close();
 });
+
+// ─── Whisper Model Management ──────────────────────
+type ModelStatus = {
+  downloaded: boolean;
+  ggmlDownloaded: boolean;
+  coremlDownloaded: boolean;
+  sizeBytes: number;
+  path: string;
+  error?: string;
+};
+
+const modelStatusText = document.getElementById("model-status-text") as HTMLSpanElement;
+const modelProgress = document.getElementById("model-progress") as HTMLDivElement;
+const modelProgressFill = document.getElementById("model-progress-fill") as HTMLDivElement;
+const modelProgressText = document.getElementById("model-progress-text") as HTMLSpanElement;
+const modelDownloadBtn = document.getElementById("model-download-btn") as HTMLButtonElement;
+const modelDeleteBtn = document.getElementById("model-delete-btn") as HTMLButtonElement;
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function updateModelUI(status: ModelStatus) {
+  if (status.downloaded) {
+    modelStatusText.textContent = `다운로드 완료 (${formatBytes(status.sizeBytes)})`;
+    modelDownloadBtn.style.display = "none";
+    modelDeleteBtn.style.display = "";
+  } else {
+    const parts: string[] = [];
+    if (!status.ggmlDownloaded) parts.push("ggml 모델");
+    if (!status.coremlDownloaded) parts.push("CoreML 인코더");
+    modelStatusText.textContent = `미설치 (${parts.join(", ")} 필요)`;
+    modelDownloadBtn.style.display = "";
+    modelDeleteBtn.style.display = status.ggmlDownloaded || status.coremlDownloaded ? "" : "none";
+  }
+}
+
+async function checkModelStatus() {
+  try {
+    const status = await invoke<ModelStatus>("check_whisper_model");
+    updateModelUI(status);
+  } catch (err) {
+    modelStatusText.textContent = `상태 확인 실패: ${err}`;
+  }
+}
+
+modelDownloadBtn.addEventListener("click", async () => {
+  modelDownloadBtn.disabled = true;
+  modelDownloadBtn.textContent = "다운로드 중…";
+  modelProgress.style.display = "flex";
+  modelProgressFill.style.width = "0%";
+  modelProgressText.textContent = "0%";
+
+  try {
+    const status = await invoke<ModelStatus>("download_whisper_model");
+    updateModelUI(status);
+    modelProgress.style.display = "none";
+
+    // Auto-load model after download
+    if (status.downloaded) {
+      try {
+        await invoke("load_whisper_model");
+      } catch {}
+    }
+  } catch (err) {
+    modelStatusText.textContent = `다운로드 실패: ${err}`;
+    modelDownloadBtn.textContent = "모델 다운로드 (~540MB)";
+    modelDownloadBtn.disabled = false;
+    modelProgress.style.display = "none";
+  }
+});
+
+let deleteConfirmPending = false;
+
+modelDeleteBtn.addEventListener("click", async () => {
+  // Two-click confirm: first click changes text, second click deletes
+  if (!deleteConfirmPending) {
+    deleteConfirmPending = true;
+    modelDeleteBtn.textContent = "정말 삭제하시겠습니까?";
+    modelDeleteBtn.classList.add("model-btn-confirm");
+    setTimeout(() => {
+      if (deleteConfirmPending) {
+        deleteConfirmPending = false;
+        modelDeleteBtn.textContent = "모델 삭제";
+        modelDeleteBtn.classList.remove("model-btn-confirm");
+      }
+    }, 3000);
+    return;
+  }
+
+  deleteConfirmPending = false;
+  modelDeleteBtn.disabled = true;
+  modelDeleteBtn.textContent = "삭제 중…";
+  modelDeleteBtn.classList.remove("model-btn-confirm");
+  try {
+    const status = await invoke<ModelStatus>("delete_whisper_model");
+    updateModelUI(status);
+  } catch (err) {
+    modelStatusText.textContent = `삭제 실패: ${err}`;
+    modelDeleteBtn.textContent = "모델 삭제";
+  } finally {
+    modelDeleteBtn.disabled = false;
+  }
+});
+
+// Listen for download progress events
+try {
+  window.__TAURI__.event.listen("model-download-progress", (event: any) => {
+    const { file, downloaded, total, percent } = event.payload;
+    modelProgressFill.style.width = `${percent}%`;
+    modelProgressText.textContent = `${Math.round(percent)}%`;
+    modelDownloadBtn.textContent = `${file}: ${formatBytes(downloaded)} / ${formatBytes(total)}`;
+  });
+} catch (e) {
+  console.warn("Failed to listen for model-download-progress:", e);
+}
+
+// Check model status on load
+checkModelStatus();

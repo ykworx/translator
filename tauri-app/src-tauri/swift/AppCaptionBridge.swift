@@ -3,7 +3,6 @@ import CoreGraphics
 import CoreMedia
 import Foundation
 import ScreenCaptureKit
-import Speech
 
 @available(macOS 13.0, *)
 private final class ZoomAudioOutput: NSObject, SCStreamOutput {
@@ -39,10 +38,6 @@ final class AppCaptionBridgeState {
 
     private var stream: SCStream?
     private var output: ZoomAudioOutput?
-    private var recognizer: SFSpeechRecognizer?
-    private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var task: SFSpeechRecognitionTask?
-    private var taskGeneration: Int = 0
     private var audioConverter: AVAudioConverter?
     private let speechFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
 
@@ -57,18 +52,12 @@ final class AppCaptionBridgeState {
     private var savedLocale = "ko-KR"
     private var finalCounter = 0
     private var audioSampleCount: UInt64 = 0
-    private var lastPartialText = ""
-    private var lastPartialTime: Date = .distantPast
-    private var stableTimer: DispatchWorkItem?
     private var silenceStartMs: UInt64 = 0
     private let silenceThreshold: Float = 0.01
     private let silenceDurationMs: UInt64 = 700
     private let silenceResetMs: UInt64 = 3000
     private var lastAudioAtMs: UInt64 = 0
     private var audioLevel: Float = 0
-    private var sessionStartMs: UInt64 = 0
-    private let maxSessionMs: UInt64 = 45000
-    private var committedLength = 0
 
     // MARK: - Public API
 
@@ -93,11 +82,11 @@ final class AppCaptionBridgeState {
     }
 
     func permissionsSnapshot() -> [String: Any] {
-        let speechAuthorized = SFSpeechRecognizer.authorizationStatus() == .authorized
+        let modelLoaded = WhisperEngine.shared.isModelLoaded
         let screenAuthorized = CGPreflightScreenCaptureAccess()
         return [
-            "authorized": speechAuthorized && screenAuthorized,
-            "speechAuthorized": speechAuthorized,
+            "authorized": modelLoaded && screenAuthorized,
+            "modelLoaded": modelLoaded,
             "screenAuthorized": screenAuthorized,
             "permissionPromptPending": permissionPromptPending,
             "sourceApp": sourceApp,
@@ -106,30 +95,14 @@ final class AppCaptionBridgeState {
     }
 
     func requestPermissions() -> [String: Any] {
-        let currentSpeechStatus = SFSpeechRecognizer.authorizationStatus()
-        if currentSpeechStatus == .notDetermined {
-            updateState { permissionPromptPending = true }
-            let semaphore = DispatchSemaphore(value: 0)
-            SFSpeechRecognizer.requestAuthorization { status in
-                self.updateState {
-                    self.permissionPromptPending = false
-                    if status != .authorized && self.lastError.isEmpty {
-                        self.lastError = "음성 인식 권한이 허용되지 않았습니다."
-                    }
-                }
-                semaphore.signal()
-            }
-            semaphore.wait()
-        }
-
-        let speechAuthorized = SFSpeechRecognizer.authorizationStatus() == .authorized
-        if !speechAuthorized {
+        // Check Whisper model loaded
+        guard WhisperEngine.shared.isModelLoaded else {
             return mergeCurrentState(extra: [
                 "authorized": false,
-                "speechAuthorized": false,
+                "modelLoaded": false,
                 "screenAuthorized": CGPreflightScreenCaptureAccess(),
                 "permissionPromptPending": false,
-                "error": "음성 인식 권한이 허용되지 않았습니다."
+                "error": "Whisper 모델이 로드되지 않았습니다. 설정에서 모델을 먼저 다운로드해주세요."
             ])
         }
 
@@ -146,7 +119,7 @@ final class AppCaptionBridgeState {
             if !granted {
                 return mergeCurrentState(extra: [
                     "authorized": false,
-                    "speechAuthorized": true,
+                    "modelLoaded": true,
                     "screenAuthorized": false,
                     "permissionPromptPending": false,
                     "error": "화면 및 시스템 오디오 캡처 권한이 필요합니다."
@@ -156,7 +129,7 @@ final class AppCaptionBridgeState {
 
         return mergeCurrentState(extra: [
             "authorized": true,
-            "speechAuthorized": true,
+            "modelLoaded": true,
             "screenAuthorized": true,
             "permissionPromptPending": false
         ])
@@ -175,30 +148,30 @@ final class AppCaptionBridgeState {
 
         _ = stop(clearTranscript: true)
 
-        let preferredLocale = (localeIdentifier?.isEmpty == false ? localeIdentifier! : Locale.preferredLanguages.first)
-            ?? Locale.current.identifier
-        self.savedLocale = preferredLocale
-        let locale = Locale(identifier: preferredLocale)
-        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
+        // Acquire WhisperEngine
+        guard WhisperEngine.shared.acquire(owner: .appCaption) else {
             return mergeCurrentState(extra: [
-                "error": "선택한 언어의 Apple Speech 인식을 사용할 수 없습니다."
+                "error": "Whisper 엔진이 다른 기능에서 사용 중입니다."
             ])
         }
 
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        request.requiresOnDeviceRecognition = false
-        request.addsPunctuation = true
+        let preferredLocale = (localeIdentifier?.isEmpty == false ? localeIdentifier! : Locale.preferredLanguages.first)
+            ?? Locale.current.identifier
+        self.savedLocale = preferredLocale
+        WhisperEngine.shared.setLanguage(from: preferredLocale)
 
-        self.recognizer = recognizer
-        self.request = request
-        self.sessionStartMs = UInt64(Date().timeIntervalSince1970 * 1000)
-        NSLog("[Transrator] Starting recognition task, locale=%@, recognizer.isAvailable=%d", preferredLocale, recognizer.isAvailable ? 1 : 0)
-        self.taskGeneration += 1
-        let gen = self.taskGeneration
-        self.task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            guard let self, self.taskGeneration == gen else { return }
-            self.handleRecognitionResult(result: result, error: error)
+        // Set up WhisperEngine callbacks
+        WhisperEngine.shared.onPartialResult = { [weak self] text in
+            guard let self else { return }
+            self.updateState({
+                self.transcript = text
+            }, notify: true)
+        }
+        WhisperEngine.shared.onFinalResult = { [weak self] text in
+            guard let self else { return }
+            self.updateState({
+                self.promoteToFinal(text)
+            }, notify: true)
         }
 
         let semaphore = DispatchSemaphore(value: 0)
@@ -272,11 +245,9 @@ final class AppCaptionBridgeState {
     }
 
     func stop(clearTranscript: Bool) -> [String: Any] {
-        request?.endAudio()
-        task?.cancel()
-        task = nil
-        request = nil
-        recognizer = nil
+        // Finalize remaining audio
+        WhisperEngine.shared.forceFinalize()
+        WhisperEngine.shared.release(owner: .appCaption)
 
         if let stream {
             Task {
@@ -286,9 +257,6 @@ final class AppCaptionBridgeState {
         self.stream = nil
         self.output = nil
         self.audioConverter = nil
-        self.stableTimer?.cancel()
-        self.stableTimer = nil
-        self.committedLength = 0
         self.silenceStartMs = 0
 
         updateState({
@@ -298,7 +266,6 @@ final class AppCaptionBridgeState {
                 self.lastFinalTranscript = ""
                 self.lastFinalSegmentId = ""
                 self.lastError = ""
-                self.lastPartialText = ""
                 self.finalCounter = 0
             }
             self.audioSampleCount = 0
@@ -316,7 +283,6 @@ final class AppCaptionBridgeState {
     // MARK: - Audio processing
 
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        guard let request else { return }
         guard let pcmBuffer = makePCMBuffer(from: sampleBuffer) else { return }
         updateAudioDebug(with: pcmBuffer)
 
@@ -326,7 +292,10 @@ final class AppCaptionBridgeState {
         }
 
         guard let converter = audioConverter else {
-            request.append(pcmBuffer)
+            // If formats match, send directly
+            if sourceFormat.sampleRate == speechFormat.sampleRate && sourceFormat.channelCount == speechFormat.channelCount {
+                WhisperEngine.shared.appendPCMBuffer(pcmBuffer)
+            }
             return
         }
 
@@ -352,138 +321,21 @@ final class AppCaptionBridgeState {
         if error != nil { return }
 
         if outputBuffer.frameLength > 0 {
-            request.append(outputBuffer)
-        }
-    }
-
-    // MARK: - Recognition handling
-
-    private func handleRecognitionResult(result: SFSpeechRecognitionResult?, error: Error?) {
-        if let result {
-            let fullText = result.bestTranscription.formattedString
-            let delta: String
-            if fullText.count > committedLength {
-                delta = String(fullText.suffix(fullText.count - committedLength)).trimmingCharacters(in: .whitespaces)
-            } else {
-                committedLength = fullText.count
-                delta = ""
-            }
-
-            let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
-            let audioLag = lastAudioAtMs > 0 ? nowMs - lastAudioAtMs : 0
-
-            if !delta.isEmpty && !result.isFinal {
-                let truncated = delta.count > 80 ? String(delta.prefix(80)) + "…" : delta
-                let info = "lag=\(audioLag)ms samples=\(audioSampleCount)"
-                let padded = "\(truncated) [\(info)]".padding(toLength: 120, withPad: " ", startingAt: 0)
-                fputs("\r[partial] \(padded)", stderr)
-                fflush(stderr)
-            }
-
-            updateState({
-                self.transcript = delta
-                if result.isFinal {
-                    self.promoteToFinal(fullText)
-                }
-            }, notify: true)
-
-            if !result.isFinal {
-                scheduleStableCheck(text: fullText)
-            }
-        }
-
-        if let error {
-            NSLog("[Transrator] Recognition error: %@", error.localizedDescription)
-            flushPartialAsFinal()
-            updateState({
-                self.lastError = error.localizedDescription
-                self.isRunning = false
-            }, notify: true)
-        }
-    }
-
-    private func restartRecognitionTask() {
-        request?.endAudio()
-        task?.cancel()
-        task = nil
-        request = nil
-        stableTimer?.cancel()
-        stableTimer = nil
-        committedLength = 0
-        lastPartialText = ""
-
-        guard let recognizer = self.recognizer ?? SFSpeechRecognizer(locale: Locale(identifier: self.savedLocale)),
-              recognizer.isAvailable else { return }
-
-        let newRequest = SFSpeechAudioBufferRecognitionRequest()
-        newRequest.shouldReportPartialResults = true
-        newRequest.requiresOnDeviceRecognition = false
-        newRequest.addsPunctuation = true
-
-        self.recognizer = recognizer
-        self.request = newRequest
-        self.sessionStartMs = UInt64(Date().timeIntervalSince1970 * 1000)
-
-        NSLog("[Transrator] Restarting recognition task, locale=%@", self.savedLocale)
-        self.taskGeneration += 1
-        let gen = self.taskGeneration
-        self.task = recognizer.recognitionTask(with: newRequest) { [weak self] result, error in
-            guard let self, self.taskGeneration == gen else { return }
-            self.handleRecognitionResult(result: result, error: error)
+            WhisperEngine.shared.appendPCMBuffer(outputBuffer)
         }
     }
 
     // MARK: - Commit judgment
 
-    private func promoteToFinal(_ fullText: String) {
-        stableTimer?.cancel()
-        stableTimer = nil
-
-        let delta = transcript.trimmingCharacters(in: .whitespaces)
-        committedLength = fullText.count
-
+    private func promoteToFinal(_ text: String) {
+        let delta = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !delta.isEmpty else { return }
 
         lastFinalTranscript = delta
         finalCounter += 1
         lastFinalSegmentId = "app-\(finalCounter)"
-        lastPartialText = ""
         transcript = ""
-        fputs("\r\u{1B}[2K", stderr)
         NSLog("[Transrator] Promoted to final #%d: %@", finalCounter, delta)
-    }
-
-    private func scheduleStableCheck(text: String) {
-        stableTimer?.cancel()
-        lastPartialText = text
-        lastPartialTime = Date()
-        let item = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.lock.lock()
-            let current = self.lastPartialText
-            let shouldPromote = !current.isEmpty && current == text
-            self.lock.unlock()
-            if shouldPromote {
-                self.updateState({
-                    self.promoteToFinal(current)
-                }, notify: true)
-            }
-        }
-        stableTimer = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
-    }
-
-    private func flushPartialAsFinal() {
-        stableTimer?.cancel()
-        stableTimer = nil
-        lock.lock()
-        let text = lastPartialText
-        lock.unlock()
-        if !text.isEmpty {
-            updateState({
-                self.promoteToFinal(text)
-            }, notify: true)
-        }
     }
 
     // MARK: - State management
@@ -559,7 +411,7 @@ final class AppCaptionBridgeState {
             self.audioLevel = level
         }
 
-        // Silence detection: 700ms → commit, 3s → restart session
+        // Silence detection: 700ms → force finalize, 3s → force finalize + fresh start
         if level < silenceThreshold {
             if silenceStartMs == 0 { silenceStartMs = now }
             let silentFor = now - silenceStartMs
@@ -567,51 +419,18 @@ final class AppCaptionBridgeState {
                 silenceStartMs = 0
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isRunning else { return }
-                    self.lock.lock()
-                    let hasPartial = !self.transcript.isEmpty
-                    self.lock.unlock()
-                    if hasPartial {
-                        self.updateState({
-                            self.promoteToFinal(self.lastPartialText)
-                        }, notify: true)
-                    }
-                    NSLog("[Transrator] Silence reset: restarting recognition for speaker change")
-                    self.restartRecognitionTask()
+                    WhisperEngine.shared.forceFinalize()
+                    NSLog("[Transrator] Silence reset: force finalized for speaker change")
                 }
             } else if silentFor >= silenceDurationMs {
                 silenceStartMs = now - silenceDurationMs
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isRunning else { return }
-                    self.lock.lock()
-                    let hasPartial = !self.transcript.isEmpty
-                    self.lock.unlock()
-                    if hasPartial {
-                        self.updateState({
-                            self.promoteToFinal(self.lastPartialText)
-                        }, notify: true)
-                    }
+                    WhisperEngine.shared.forceFinalize()
                 }
             }
         } else {
             silenceStartMs = 0
-        }
-
-        // Session max duration → force restart
-        if sessionStartMs > 0 && now - sessionStartMs >= maxSessionMs {
-            sessionStartMs = 0
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.isRunning else { return }
-                self.lock.lock()
-                let hasPartial = !self.transcript.isEmpty
-                self.lock.unlock()
-                if hasPartial {
-                    self.updateState({
-                        self.promoteToFinal(self.lastPartialText)
-                    }, notify: true)
-                }
-                NSLog("[Transrator] Session timeout: restarting recognition (45s)")
-                self.restartRecognitionTask()
-            }
         }
     }
 
@@ -705,7 +524,7 @@ public func app_caption_request_permissions() -> UnsafeMutablePointer<CChar>? {
         }
         return jsonCString([
             "authorized": false,
-            "speechAuthorized": false,
+            "modelLoaded": false,
             "screenAuthorized": false,
             "permissionPromptPending": false,
             "error": "앱 실시간 자막은 macOS 13 이상에서 지원됩니다.",

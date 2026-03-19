@@ -20,6 +20,24 @@ let pendingTranslationBuffer = "";
 let pendingTranslationSegmentIds: string[] = [];
 let pendingTranslationTimer: number | null = null;
 let renderRafId = 0;
+let sessionStartTime = 0; // timestamp when caption session started
+let elapsedTimerInterval: number | null = null;
+
+function formatElapsed(ts?: number): string {
+  if (!ts || !sessionStartTime) return "00:00";
+  const elapsed = Math.max(0, Math.floor((ts - sessionStartTime) / 1000));
+  const m = Math.floor(elapsed / 60).toString().padStart(2, "0");
+  const s = (elapsed % 60).toString().padStart(2, "0");
+  return `${m}:${s}`;
+}
+
+function formatElapsedNow(): string {
+  if (!sessionStartTime) return "00:00";
+  const elapsed = Math.max(0, Math.floor((Date.now() - sessionStartTime) / 1000));
+  const m = Math.floor(elapsed / 60).toString().padStart(2, "0");
+  const s = (elapsed % 60).toString().padStart(2, "0");
+  return `${m}:${s}`;
+}
 
 let chat: HTMLElement;
 let appCaptionStatus: HTMLDivElement;
@@ -27,7 +45,11 @@ let btnAppCaptions: HTMLButtonElement;
 let resolveLangConfig: () => Promise<LangConfig>;
 
 function updateAppCaptionUi(statusText: string, streaming: boolean): void {
-  appCaptionStatus.textContent = statusText;
+  if (streaming && sessionStartTime) {
+    appCaptionStatus.textContent = `${statusText} · ${formatElapsedNow()}`;
+  } else {
+    appCaptionStatus.textContent = statusText;
+  }
   appCaptionStatus.classList.toggle("streaming", streaming);
   btnAppCaptions.classList.toggle("streaming", streaming);
   btnAppCaptions.textContent = streaming ? "⏹ 실시간 번역 중지" : "🖥 실시간 번역";
@@ -48,10 +70,14 @@ function renderCaptionsInChat(): void {
     const cap = overlayCaptions[i];
     const el = existingEls[i];
 
+    const timeStr = formatElapsed(cap.timestamp);
+
     if (el) {
       if (el.dataset.captionId !== cap.id) el.dataset.captionId = cap.id;
+      const timeEl = el.querySelector(".caption-time") as HTMLElement;
       const origDiv = el.querySelector(".caption-original") as HTMLElement;
       const transDiv = el.querySelector(".caption-translation") as HTMLElement;
+      if (timeEl && timeEl.textContent !== timeStr) timeEl.textContent = timeStr;
       if (origDiv && origDiv.textContent !== cap.original) origDiv.textContent = cap.original;
       if (transDiv && transDiv.textContent !== cap.translated) transDiv.textContent = cap.translated;
       if (cap.id === "__partial__") transDiv?.classList.add("caption-partial");
@@ -60,6 +86,11 @@ function renderCaptionsInChat(): void {
       const section = document.createElement("div");
       section.className = "caption-section";
       section.dataset.captionId = cap.id;
+
+      const timeEl = document.createElement("span");
+      timeEl.className = "caption-time";
+      timeEl.textContent = timeStr;
+      section.appendChild(timeEl);
 
       const origDiv = document.createElement("div");
       origDiv.className = "caption-original";
@@ -84,18 +115,19 @@ function renderCaptionsInChat(): void {
 }
 
 function pushOverlayCaption(original: string, translated: string, id: string): void {
+  const now = Date.now();
   if (id !== "__partial__") {
     const partialIdx = overlayCaptions.findIndex(c => c.id === "__partial__");
     if (partialIdx !== -1) {
-      overlayCaptions[partialIdx] = { id, original, translated };
+      overlayCaptions[partialIdx] = { id, original, translated, timestamp: overlayCaptions[partialIdx].timestamp || now };
       return;
     }
   }
   const existingIdx = overlayCaptions.findIndex(c => c.id === id);
   if (existingIdx !== -1) {
-    overlayCaptions[existingIdx] = { id, original, translated };
+    overlayCaptions[existingIdx] = { id, original, translated, timestamp: overlayCaptions[existingIdx].timestamp };
   } else {
-    overlayCaptions.push({ id, original, translated });
+    overlayCaptions.push({ id, original, translated, timestamp: now });
   }
 }
 
@@ -110,6 +142,11 @@ function resetAppCaptionSession(): void {
     window.clearTimeout(pendingTranslationTimer);
     pendingTranslationTimer = null;
   }
+  if (elapsedTimerInterval !== null) {
+    window.clearInterval(elapsedTimerInterval);
+    elapsedTimerInterval = null;
+  }
+  sessionStartTime = 0;
 }
 
 function stopAppCaptionListening(): void {
@@ -237,6 +274,12 @@ async function startAppCaptions(): Promise<void> {
     ? (navigator.language || "ko-KR")
     : savedSpeechLocale;
 
+  // Set domain hint before starting
+  const domainHint = await getSetting(SETTINGS_KEYS.domainHint, DEFAULTS.domainHint);
+  if (domainHint) {
+    await invoke("set_whisper_domain_hint", { hint: domainHint });
+  }
+
   resetAppCaptionSession();
   scheduleRenderCaptions();
 
@@ -250,6 +293,16 @@ async function startAppCaptions(): Promise<void> {
   }
 
   isAppCaptionsRunning = true;
+  sessionStartTime = Date.now();
+
+  // Update elapsed timer every second
+  if (elapsedTimerInterval !== null) window.clearInterval(elapsedTimerInterval);
+  elapsedTimerInterval = window.setInterval(() => {
+    if (isAppCaptionsRunning) {
+      updateAppCaptionUi(`${state.sourceApp || "선택 앱"} 듣는 중`, true);
+    }
+  }, 1000);
+
   updateAppCaptionUi(`${state.sourceApp || "선택 앱"} 오디오를 기다리는 중…`, true);
   await startAppCaptionListener();
 }

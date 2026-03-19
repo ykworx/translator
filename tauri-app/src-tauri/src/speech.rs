@@ -10,7 +10,7 @@ pub struct SpeechStatus {
     is_final: bool,
     error: Option<String>,
     authorized: Option<bool>,
-    speech_authorized: Option<bool>,
+    model_loaded: Option<bool>,
     microphone_authorized: Option<bool>,
     permission_prompt_pending: Option<bool>,
 }

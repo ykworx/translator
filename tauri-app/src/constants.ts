@@ -37,6 +37,18 @@ export const MODELS = [
   { value: "gemini-2.5-pro", label: "gemini-2.5-pro" },
 ];
 
+/** Domain hint presets for Whisper speech recognition */
+export const DOMAIN_HINTS = [
+  { value: "", label: "없음 (기본)" },
+  { value: "비즈니스 회의, 매출, 전략, 프로젝트, 일정", label: "비즈니스 회의" },
+  { value: "기술 개발, 소프트웨어, API, 서버, 배포, 버그", label: "기술/개발" },
+  { value: "일상 대화, 인사, 날씨, 음식, 여행", label: "일상 대화" },
+  { value: "강의, 수업, 교육, 시험, 학습", label: "강의/교육" },
+  { value: "뉴스, 정치, 경제, 사회, 국제", label: "뉴스/시사" },
+  { value: "의료, 진료, 증상, 처방, 검사", label: "의료" },
+  { value: "법률, 계약, 소송, 판결, 규정", label: "법률" },
+] as const;
+
 /** Store keys for persisted settings */
 export const SETTINGS_KEYS = {
   apiKey: "apiKey",
@@ -49,6 +61,7 @@ export const SETTINGS_KEYS = {
   targetLanguage: "targetLanguage",
   selectShortcut: "selectShortcut",
   clipboardShortcut: "clipboardShortcut",
+  domainHint: "domainHint",
 } as const;
 
 /** Default settings values */
@@ -63,6 +76,7 @@ export const DEFAULTS = {
   targetLanguage: "auto",
   selectShortcut: "Super+Ctrl+KeyT",
   clipboardShortcut: "Super+Ctrl+Shift+KeyT",
+  domainHint: "",
 } as const;
 
 /** UI constants */

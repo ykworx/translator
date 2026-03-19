@@ -1,5 +1,6 @@
 mod clipboard;
 mod caption_capture;
+mod model_manager;
 mod shortcut;
 mod speech;
 mod window;
@@ -40,7 +41,12 @@ pub fn run() {
             caption_capture::get_app_caption_state,
             shortcut::update_shortcuts,
             shortcut::suspend_shortcuts,
-            shortcut::resume_shortcuts
+            shortcut::resume_shortcuts,
+            model_manager::check_whisper_model,
+            model_manager::download_whisper_model,
+            model_manager::delete_whisper_model,
+            model_manager::load_whisper_model,
+            model_manager::set_whisper_domain_hint
         ])
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -162,6 +168,9 @@ pub fn run() {
             register_shortcut_handlers(app.handle(), select_shortcut, clipboard_shortcut)?;
 
             caption_capture::init_app_handle(app.handle().clone());
+
+            // Auto-load Whisper model if previously downloaded
+            model_manager::auto_load_model(app.handle());
 
             Ok(())
         })

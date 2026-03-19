@@ -1,15 +1,13 @@
 import AVFoundation
 import Foundation
-import Speech
 
 final class SpeechBridgeState {
     static let shared = SpeechBridgeState()
 
     private let lock = NSLock()
-    private var recognizer: SFSpeechRecognizer?
-    private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var task: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
+    private var audioConverter: AVAudioConverter?
+    private let whisperFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
 
     private var transcript = ""
     private var isRunning = false
@@ -19,35 +17,25 @@ final class SpeechBridgeState {
     private var isStopping = false
 
     func permissionsSnapshot() -> [String: Any] {
-        let speechAuthorized = speechAuthorizationStatus() == .authorized
+        let modelLoaded = WhisperEngine.shared.isModelLoaded
         let micAuthorized = microphoneAuthorizationStatus() == .authorized
         return [
-            "authorized": speechAuthorized && micAuthorized,
-            "speechAuthorized": speechAuthorized,
+            "authorized": modelLoaded && micAuthorized,
+            "modelLoaded": modelLoaded,
             "microphoneAuthorized": micAuthorized,
             "permissionPromptPending": permissionPromptPending
         ]
     }
 
     func requestPermissions() -> [String: Any] {
-        let currentSpeechStatus = speechAuthorizationStatus()
-        if currentSpeechStatus == .notDetermined {
-            requestSpeechAuthorizationIfNeeded()
+        // Check Whisper model loaded
+        guard WhisperEngine.shared.isModelLoaded else {
             return [
                 "authorized": false,
-                "speechAuthorized": false,
-                "microphoneAuthorized": microphoneAuthorizationStatus() == .authorized,
-                "permissionPromptPending": true,
-                "error": "음성 인식 권한 팝업을 확인한 뒤 다시 눌러주세요."
-            ]
-        }
-        guard currentSpeechStatus == .authorized else {
-            return [
-                "authorized": false,
-                "speechAuthorized": false,
+                "modelLoaded": false,
                 "microphoneAuthorized": microphoneAuthorizationStatus() == .authorized,
                 "permissionPromptPending": false,
-                "error": "음성 인식 권한이 허용되지 않았습니다."
+                "error": "Whisper 모델이 로드되지 않았습니다. 설정에서 모델을 먼저 다운로드해주세요."
             ]
         }
 
@@ -56,7 +44,7 @@ final class SpeechBridgeState {
             requestMicrophoneAuthorizationIfNeeded()
             return [
                 "authorized": false,
-                "speechAuthorized": true,
+                "modelLoaded": true,
                 "microphoneAuthorized": false,
                 "permissionPromptPending": true,
                 "error": "마이크 권한 팝업을 확인한 뒤 다시 눌러주세요."
@@ -66,7 +54,7 @@ final class SpeechBridgeState {
         guard micStatus == .authorized else {
             return [
                 "authorized": false,
-                "speechAuthorized": true,
+                "modelLoaded": true,
                 "microphoneAuthorized": false,
                 "permissionPromptPending": false,
                 "error": "마이크 권한이 허용되지 않았습니다."
@@ -75,7 +63,7 @@ final class SpeechBridgeState {
 
         return [
             "authorized": true,
-            "speechAuthorized": true,
+            "modelLoaded": true,
             "microphoneAuthorized": true,
             "permissionPromptPending": false
         ]
@@ -89,36 +77,51 @@ final class SpeechBridgeState {
 
         stopRecognition(clearTranscript: false)
 
-        let preferredLocale = (localeIdentifier?.isEmpty == false ? localeIdentifier! : Locale.preferredLanguages.first)
-            ?? Locale.current.identifier
-        let locale = Locale(identifier: preferredLocale)
-        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
+        // Acquire WhisperEngine
+        guard WhisperEngine.shared.acquire(owner: .mic) else {
             return mergeCurrentState(extra: [
-                "error": "선택한 언어의 Apple Speech 인식을 사용할 수 없습니다."
+                "error": "Whisper 엔진이 다른 기능에서 사용 중입니다."
             ])
         }
 
-        self.recognizer = recognizer
-        self.request = SFSpeechAudioBufferRecognitionRequest()
-        guard let request else {
-            return mergeCurrentState(extra: ["error": "음성 인식 요청을 만들 수 없습니다."])
-        }
+        // Set language
+        let preferredLocale = (localeIdentifier?.isEmpty == false ? localeIdentifier! : Locale.preferredLanguages.first)
+            ?? Locale.current.identifier
+        WhisperEngine.shared.setLanguage(from: preferredLocale)
 
-        request.shouldReportPartialResults = true
-        request.requiresOnDeviceRecognition = false
-        if #available(macOS 13, *) { request.addsPunctuation = true }
+        // Set up callbacks
+        WhisperEngine.shared.onPartialResult = { [weak self] text in
+            self?.updateState {
+                self?.transcript = text
+                self?.isFinal = false
+            }
+        }
+        WhisperEngine.shared.onFinalResult = { [weak self] text in
+            self?.updateState {
+                self?.transcript = text
+                self?.isFinal = true
+            }
+        }
 
         do {
             let inputNode = audioEngine.inputNode
-            let format = inputNode.outputFormat(forBus: 0)
+            let inputFormat = inputNode.outputFormat(forBus: 0)
             inputNode.removeTap(onBus: 0)
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-                self?.request?.append(buffer)
+
+            // Set up audio converter from mic format to 16kHz mono float32
+            audioConverter = AVAudioConverter(from: inputFormat, to: whisperFormat)
+
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+                guard let self else { return }
+                if let converted = self.convertToWhisperFormat(buffer) {
+                    WhisperEngine.shared.appendPCMBuffer(converted)
+                }
             }
 
             audioEngine.prepare()
             try audioEngine.start()
         } catch {
+            WhisperEngine.shared.release(owner: .mic)
             stopRecognition(clearTranscript: false)
             return mergeCurrentState(extra: [
                 "error": "마이크를 시작할 수 없습니다: \(error.localizedDescription)"
@@ -133,31 +136,6 @@ final class SpeechBridgeState {
             permissionPromptPending = false
         }
 
-        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            guard let self else { return }
-
-            if let result {
-                self.updateState {
-                    self.transcript = result.bestTranscription.formattedString
-                    self.isFinal = result.isFinal
-                }
-            }
-
-            if let error {
-                self.updateState {
-                    self.lastError = error.localizedDescription
-                    self.isRunning = false
-                }
-                self.stopRecognition(clearTranscript: false)
-                return
-            }
-
-            if let result, result.isFinal {
-                self.updateState { self.isRunning = false }
-                self.stopRecognition(clearTranscript: false)
-            }
-        }
-
         return snapshot()
     }
 
@@ -170,26 +148,49 @@ final class SpeechBridgeState {
         mergeCurrentState(extra: permissionsSnapshot())
     }
 
-    private func stopRecognition(clearTranscript: Bool) {
-        let taskToCancel: SFSpeechRecognitionTask?
+    private func convertToWhisperFormat(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let converter = audioConverter else { return nil }
 
+        let ratio = whisperFormat.sampleRate / buffer.format.sampleRate
+        let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
+        guard outputFrameCount > 0,
+              let outputBuffer = AVAudioPCMBuffer(pcmFormat: whisperFormat, frameCapacity: outputFrameCount) else {
+            return nil
+        }
+
+        var error: NSError?
+        var consumed = false
+        converter.convert(to: outputBuffer, error: &error) { _, outStatus in
+            if consumed {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+
+        if error != nil || outputBuffer.frameLength == 0 { return nil }
+        return outputBuffer
+    }
+
+    private func stopRecognition(clearTranscript: Bool) {
         lock.lock()
         if isStopping {
             lock.unlock()
             return
         }
         isStopping = true
-        taskToCancel = task
-        task = nil
         let shouldClearTranscript = clearTranscript
         lock.unlock()
 
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
-        request?.endAudio()
-        taskToCancel?.cancel()
-        request = nil
-        recognizer = nil
+        audioConverter = nil
+
+        // Finalize any remaining audio in Whisper
+        WhisperEngine.shared.forceFinalize()
+        WhisperEngine.shared.release(owner: .mic)
 
         updateState {
             isRunning = false
@@ -253,22 +254,6 @@ final class SpeechBridgeState {
         lock.lock()
         update()
         lock.unlock()
-    }
-
-    private func speechAuthorizationStatus() -> SFSpeechRecognizerAuthorizationStatus {
-        SFSpeechRecognizer.authorizationStatus()
-    }
-
-    private func requestSpeechAuthorizationIfNeeded() {
-        updateState { permissionPromptPending = true }
-        SFSpeechRecognizer.requestAuthorization { status in
-            self.updateState {
-                self.permissionPromptPending = false
-                if status != .authorized && self.lastError.isEmpty {
-                    self.lastError = "음성 인식 권한이 허용되지 않았습니다."
-                }
-            }
-        }
     }
 
     private func microphoneAuthorizationStatus() -> AVAuthorizationStatus {

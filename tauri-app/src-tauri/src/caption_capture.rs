@@ -44,7 +44,7 @@ pub struct AppCaptionStatus {
     audio_level: Option<f32>,
     error: Option<String>,
     authorized: Option<bool>,
-    speech_authorized: Option<bool>,
+    model_loaded: Option<bool>,
     screen_authorized: Option<bool>,
     permission_prompt_pending: Option<bool>,
     source_app: Option<String>,

@@ -91,6 +91,13 @@ async function startSpeechInput(): Promise<void> {
   const localeIdentifier = savedSpeechLocale === "system"
     ? (navigator.language || "ko-KR")
     : savedSpeechLocale;
+
+  // Set domain hint
+  const domainHint = await getSetting(SETTINGS_KEYS.domainHint, DEFAULTS.domainHint);
+  if (domainHint) {
+    await invoke("set_whisper_domain_hint", { hint: domainHint });
+  }
+
   const state = await invoke<SpeechRecognitionState>("start_speech_recognition", { localeIdentifier });
   if (state.error) {
     throw new Error(state.error);

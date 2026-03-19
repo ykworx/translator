@@ -4,7 +4,7 @@ export type SpeechRecognitionState = {
   isFinal: boolean;
   error?: string;
   authorized?: boolean;
-  speechAuthorized?: boolean;
+  modelLoaded?: boolean;
   microphoneAuthorized?: boolean;
   permissionPromptPending?: boolean;
 };
@@ -19,7 +19,7 @@ export type AppCaptionState = {
   audioLevel?: number;
   error?: string;
   authorized?: boolean;
-  speechAuthorized?: boolean;
+  modelLoaded?: boolean;
   screenAuthorized?: boolean;
   permissionPromptPending?: boolean;
   sourceApp?: string;
@@ -30,6 +30,7 @@ export type OverlayCaption = {
   id: string;
   original: string;
   translated: string;
+  timestamp?: number;
 };
 
 export type CaptionRetryState = {

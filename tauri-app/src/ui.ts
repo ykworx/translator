@@ -14,6 +14,7 @@ export interface ChatEntry {
   isImage?: boolean;
   imageBase64?: string;
   imageExtractedText?: string;
+  timestamp?: number;
 }
 
 export let chatHistory: ChatEntry[] = [];
@@ -57,10 +58,18 @@ function sanitizeTableHtml(html: string): string {
   return doc.body.innerHTML;
 }
 
+function formatTime(ts?: number): string {
+  const d = ts ? new Date(ts) : new Date();
+  const h = d.getHours().toString().padStart(2, "0");
+  const m = d.getMinutes().toString().padStart(2, "0");
+  return `${h}:${m}`;
+}
+
 export function renderEntry(entry: ChatEntry): HTMLDivElement {
   const div = document.createElement("div");
   div.className = "entry";
 
+  const timeStr = formatTime(entry.timestamp);
   const origText = escapeHtml(entry.original.trim()).replace(/\n/g, "<br>");
   const extractedTextRaw = (entry.imageExtractedText || "").trim();
   const extractedText = escapeHtml(extractedTextRaw).replace(/\n/g, "<br>");
@@ -112,6 +121,7 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
           ${isError ? "" : '<span class="card-pill copy-btn copy-trans">⧉ 복사</span>'}
         </div>
         ${transText}
+        <span class="card-time">${timeStr}</span>
       </div>
     </div>
   `;
@@ -224,6 +234,7 @@ export function removeLoading(): void {
 }
 
 export function addEntry(entry: ChatEntry): void {
+  if (!entry.timestamp) entry.timestamp = Date.now();
   chatHistory.push(entry);
   if (chatHistory.length > MAX_HISTORY) {
     chatHistory.shift();

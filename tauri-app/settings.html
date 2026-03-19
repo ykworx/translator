@@ -207,6 +207,57 @@
       color: var(--fg-dim);
     }
 
+    /* Model status */
+    .model-status {
+      font-size: 12px;
+      color: var(--fg-dim);
+      margin-bottom: 8px;
+    }
+    .model-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .model-btn {
+      padding: 6px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--input-bg);
+      color: var(--fg);
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .model-btn:hover { opacity: 0.85; }
+    .model-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .model-btn-danger { color: #ff3b30; }
+    .model-btn-danger:hover { background: rgba(255,59,48,0.1); }
+    .model-progress {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .progress-bar {
+      flex: 1;
+      height: 6px;
+      border-radius: 3px;
+      background: var(--tab-bg);
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--tab-active);
+      border-radius: 3px;
+      transition: width 0.2s;
+      width: 0%;
+    }
+    .progress-text {
+      font-size: 11px;
+      color: var(--fg-dim);
+      min-width: 32px;
+      text-align: right;
+    }
+
     /* About */
     .about-center {
       text-align: center;
@@ -312,6 +363,11 @@
         </select>
       </div>
       <div class="field">
+        <label>음성 인식 도메인 힌트</label>
+        <select id="domain-hint">
+        </select>
+      </div>
+      <div class="field">
         <label>회의 자막 캡처 모드</label>
         <select id="capture-mode">
         </select>
@@ -324,6 +380,23 @@
         <select id="capture-window">
           <option value="">열려 있는 창을 불러오는 중…</option>
         </select>
+      </div>
+      <hr class="divider">
+      <div class="field">
+        <label>Whisper 음성 인식 모델</label>
+        <div class="model-status" id="model-status">
+          <span id="model-status-text">확인 중…</span>
+        </div>
+        <div class="model-progress" id="model-progress" style="display:none;">
+          <div class="progress-bar">
+            <div class="progress-fill" id="model-progress-fill"></div>
+          </div>
+          <span class="progress-text" id="model-progress-text">0%</span>
+        </div>
+        <div class="model-actions" id="model-actions">
+          <button type="button" class="model-btn" id="model-download-btn" style="display:none;">모델 다운로드 (~540MB)</button>
+          <button type="button" class="model-btn model-btn-danger" id="model-delete-btn" style="display:none;">모델 삭제</button>
+        </div>
       </div>
     </div>
 

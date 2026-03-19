@@ -44,6 +44,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": [
+      "vendor/whisper.cpp/models/for-tests-silero-v5.1.2-ggml.bin"
+    ],
     "macOS": {
       "minimumSystemVersion": "10.15"
     },
