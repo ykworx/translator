@@ -109,6 +109,17 @@ final class WhisperEngine {
     /// Prompt tokens carried from last finalized streaming segment
     private var streamPromptTokens: [Int32] = []
 
+    // MARK: - Silero VAD for streaming
+
+    /// Silero VAD context (lazy, reused across segments)
+    private var vadCtx: OpaquePointer?  // whisper_vad_context *
+    /// Buffer for VAD speech detection (~0.5s chunks)
+    private var vadBuffer: [Float] = []
+    private let vadChunkSize = 8_000  // 0.5s at 16kHz — minimum for reliable VAD
+    /// Consecutive non-speech VAD chunks before finalize
+    private var vadSilentCount = 0
+    private let vadSilentForFinalize = 2  // 2 × 0.5s = 1s non-speech → finalize
+
     // MARK: - Accumulate + Finalize Parameters (legacy mode)
 
     private let stepInterval   = 32_000  // 2s — partial inference trigger
@@ -208,6 +219,7 @@ final class WhisperEngine {
     func unloadModel() {
         lock.lock()
         defer { lock.unlock() }
+        if vadCtx != nil { whisper_vad_free(vadCtx); vadCtx = nil }
         if streamState != nil { whisper_free_state(streamState); streamState = nil }
         streamInitialized = false
         if ctx != nil { whisper_free(ctx); ctx = nil }
@@ -264,6 +276,8 @@ final class WhisperEngine {
         streamTotalSent = 0
         isFinalizePending = false
         streamPromptTokens.removeAll()
+        vadBuffer.removeAll()
+        vadSilentCount = 0
         if let ctx, let ss = streamState {
             whisper_stream_reset(ctx, ss)
         }
@@ -325,6 +339,22 @@ final class WhisperEngine {
 
     // MARK: - Streaming AlignAtt Mode
 
+    /// Create Silero VAD context lazily
+    private func ensureVadCtx() -> OpaquePointer? {
+        if vadCtx != nil { return vadCtx }
+        guard let path = vadModelPath else { return nil }
+        var params = whisper_vad_default_context_params()
+        params.n_threads = 1
+        params.use_gpu = false  // VAD is tiny, CPU is fine
+        vadCtx = path.withCString { cPath in
+            whisper_vad_init_from_file_with_params(cPath, params)
+        }
+        if vadCtx != nil {
+            NSLog("[WhisperEngine] Silero VAD context created for streaming")
+        }
+        return vadCtx
+    }
+
     /// Create streaming state lazily — MUST be called after DTW is enabled on ctx
     private func ensureStreamState() -> Bool {
         guard let ctx else {
@@ -365,22 +395,55 @@ final class WhisperEngine {
         return true
     }
 
-    /// Streaming path: buffer audio → when ready, encode + AlignAtt decode → emit partial
-    private func appendSamplesStreaming(_ samples: [Float]) {
-        // Silence detection
-        let rms = computeRMS(samples)
+    /// Check VAD on accumulated buffer. Returns true if non-speech detected long enough to finalize.
+    private func checkVadSilence(_ samples: [Float]) -> Bool {
+        vadBuffer.append(contentsOf: samples)
+
+        // Need at least vadChunkSize samples for reliable detection
+        guard vadBuffer.count >= vadChunkSize else { return false }
+
+        let chunk = Array(vadBuffer.prefix(vadChunkSize))
+        vadBuffer.removeFirst(vadChunkSize)
+
+        if let vctx = ensureVadCtx() {
+            let isSpeech = chunk.withUnsafeBufferPointer { buf in
+                whisper_vad_detect_speech(vctx, buf.baseAddress, Int32(buf.count))
+            }
+            if !isSpeech {
+                vadSilentCount += 1
+                if vadSilentCount >= vadSilentForFinalize {
+                    vadSilentCount = 0
+                    return true  // non-speech long enough → finalize
+                }
+            } else {
+                vadSilentCount = 0
+            }
+            return false
+        }
+
+        // Fallback: no VAD model → use RMS
+        let rms = computeRMS(chunk)
         if rms < silenceThreshold {
-            silentChunkCount += 1
-            if silentChunkCount >= silentChunksForFinalize {
-                silentChunkCount = 0
-                lock.lock()
-                let hasAudio = streamTotalSent > 0 || !streamPendingSamples.isEmpty
-                lock.unlock()
-                if hasAudio { finalizeStreaming() }
-                return
+            vadSilentCount += 1
+            if vadSilentCount >= vadSilentForFinalize {
+                vadSilentCount = 0
+                return true
             }
         } else {
-            silentChunkCount = 0
+            vadSilentCount = 0
+        }
+        return false
+    }
+
+    /// Streaming path: buffer audio → when ready, encode + AlignAtt decode → emit partial
+    private func appendSamplesStreaming(_ samples: [Float]) {
+        // VAD-based silence detection (or RMS fallback)
+        if checkVadSilence(samples) {
+            lock.lock()
+            let hasAudio = streamTotalSent > 0 || !streamPendingSamples.isEmpty
+            lock.unlock()
+            if hasAudio { finalizeStreaming() }
+            return
         }
 
         // Always buffer audio — never drop samples
