@@ -89,26 +89,32 @@ final class WhisperEngine {
 
     enum Owner: String { case mic, appCaption, none }
 
+    /// Optional check before finalize — returns true if finalize should proceed
+    /// Used by AppCaptionBridge to inject RNNoise vadProb check
+    var shouldFinalize: (() -> Bool)?
+
     private let lock = NSLock()
     private let inferenceQueue = DispatchQueue(label: "transrator.whisper.inference", qos: .userInitiated)
 
     private var ctx: OpaquePointer?
     private(set) var isModelLoaded = false
     private var currentOwner: Owner = .none
-    private var vadModelPath: String?
+    // vadModelPath removed — using CoreML VAD instead of ggml
 
     /// When true, callbacks fire directly on inference thread (no DispatchQueue.main.async)
     /// Used by feedWavFile to avoid deadlock when main thread is blocked on semaphore
     fileprivate var isBenchmarkMode = false
 
-    /// ggml Silero VAD context (lazy, reused across segments)
-    private var vadCtx: OpaquePointer?  // whisper_vad_context *
+    /// CoreML Silero VAD (ANE-accelerated, ~0.3ms per 256ms chunk)
+    private var coremlVad: CoreMLVad?
+    private var coremlVadLoaded = false
 
     // MARK: - Accumulate + Finalize Parameters
 
-    private let stepInterval   = 48_000  // 3s — partial inference trigger (balance between responsiveness and CPU)
+    private let stepInterval   = 32_000  // 2s — partial inference trigger
     private let maxDuration    = 160_000 // 10s — force finalize (longer for better context)
-    private let minInferSize   = 16_000  // 1.0s minimum for inference
+    private let minInferSize   = 16_000  // 1.0s minimum for finalize
+    private let minPartialSize = 32_000  // 2.0s minimum for partial (avoid hallucination)
 
     /// Audio buffer — grows until finalize, then clears
     private var audioBuffer: [Float] = []
@@ -121,7 +127,7 @@ final class WhisperEngine {
     /// Silence detection (fast, RMS-based)
     private let silenceThreshold: Float = 0.005
     private var silentChunkCount = 0
-    private let silentChunksForFinalize = 7 // 700ms at ~100ms chunks
+    private let silentChunksForFinalize = 8 // 800ms at ~100ms chunks
 
     // MARK: - Hallucination filter (O(1) exact + substring fallback + cached regex)
 
@@ -241,7 +247,7 @@ final class WhisperEngine {
 
         ctx = newCtx
         isModelLoaded = true
-        resolveVADModelPath()
+        loadCoreMLVad()
         NSLog("[WhisperEngine] Model loaded from %@", path)
 
         // Warm-up encode: run a dummy encode with 0.1s silence to prime
@@ -264,41 +270,42 @@ final class WhisperEngine {
         return true
     }
 
-    private func resolveVADModelPath() {
-        let filename = "for-tests-silero-v5.1.2-ggml.bin"
+    private func loadCoreMLVad() {
+        let modelName = "silero-vad-coreml.mlmodelc"
 
-        // Bundle resource
-        if let p = Bundle.main.path(forResource: "for-tests-silero-v5.1.2-ggml", ofType: "bin") {
-            vadModelPath = p; return
-        }
-        // Tauri resources
+        // Try bundle resource
         if let u = Bundle.main.resourceURL {
-            let p = u.appendingPathComponent(filename).path
-            if FileManager.default.fileExists(atPath: p) { vadModelPath = p; return }
+            let p = u.appendingPathComponent(modelName).path
+            if FileManager.default.fileExists(atPath: p) {
+                let vad = CoreMLVad()
+                if vad.load(path: p) { coremlVad = vad; coremlVadLoaded = true; return }
+            }
         }
-        // Near executable
-        let nearExec = (Bundle.main.bundlePath as NSString).appendingPathComponent(filename)
-        if FileManager.default.fileExists(atPath: nearExec) { vadModelPath = nearExec; return }
-        // Dev mode: relative to binary
+        // Dev mode: vendor directory
         let execPath = ProcessInfo.processInfo.arguments.first ?? ""
         let execDir = (execPath as NSString).deletingLastPathComponent
-        for rel in ["../../../vendor/whisper.cpp/models/\(filename)",
-                     "../../../../src-tauri/vendor/whisper.cpp/models/\(filename)"] {
+        for rel in ["../../../vendor/\(modelName)",
+                     "../../../../src-tauri/vendor/\(modelName)"] {
             let p = ((execDir as NSString).appendingPathComponent(rel) as NSString).standardizingPath
-            if FileManager.default.fileExists(atPath: p) { vadModelPath = p; NSLog("[WhisperEngine] Silero VAD found: %@", p); return }
+            if FileManager.default.fileExists(atPath: p) {
+                let vad = CoreMLVad()
+                if vad.load(path: p) { coremlVad = vad; coremlVadLoaded = true; return }
+            }
         }
         // Source tree
-        let srcTree = NSHomeDirectory() + "/transrator/tauri-app/src-tauri/vendor/whisper.cpp/models/\(filename)"
-        if FileManager.default.fileExists(atPath: srcTree) { vadModelPath = srcTree; NSLog("[WhisperEngine] Silero VAD found: %@", srcTree); return }
+        let srcTree = NSHomeDirectory() + "/transrator/tauri-app/src-tauri/vendor/\(modelName)"
+        if FileManager.default.fileExists(atPath: srcTree) {
+            let vad = CoreMLVad()
+            if vad.load(path: srcTree) { coremlVad = vad; coremlVadLoaded = true; return }
+        }
 
-        vadModelPath = nil
-        NSLog("[WhisperEngine] Silero VAD not found, finalize will run without VAD")
+        NSLog("[WhisperEngine] CoreML VAD not found, finalize will run without VAD")
     }
 
     func unloadModel() {
         lock.lock()
         defer { lock.unlock() }
-        if vadCtx != nil { whisper_vad_free(vadCtx); vadCtx = nil }
+        coremlVad = nil; coremlVadLoaded = false
         if ctx != nil { whisper_free(ctx); ctx = nil }
         isModelLoaded = false
         currentOwner = .none
@@ -337,7 +344,7 @@ final class WhisperEngine {
         isInferenceRunning = false
         lastFinalizedText = ""
         segmentCount = 0
-        if let vctx = vadCtx { whisper_vad_reset_state(vctx) }
+        coremlVad?.resetState()
     }
 
     // MARK: - Language
@@ -372,7 +379,13 @@ final class WhisperEngine {
                 lock.lock()
                 let hasAudio = audioBuffer.count >= minInferSize
                 lock.unlock()
-                if hasAudio { finalizeAndClear() }
+                if hasAudio {
+                    // Check RNNoise vadProb if available
+                    if shouldFinalize?() ?? true {
+                        finalizeAndClear()
+                    }
+                    // else: vadProb still high, wait for next silence check
+                }
                 return
             }
         } else {
@@ -397,22 +410,62 @@ final class WhisperEngine {
 
     // MARK: - VAD
 
-    /// Create ggml Silero VAD context lazily
-    private func ensureVadCtx() -> Bool {
-        if vadCtx != nil { return true }
-        guard let path = vadModelPath else { return false }
-        var params = whisper_vad_default_context_params()
-        params.n_threads = 1
-        params.use_gpu = false  // VAD is tiny, CPU is fine
-        vadCtx = path.withCString { cPath in
-            whisper_vad_init_from_file_with_params(cPath, params)
+    /// Extract speech-only segments using CoreML VAD
+    /// Processes audio in 256ms (4096 sample) chunks, concatenates speech segments
+    private func extractSpeechSegments(from samples: [Float], vad: CoreMLVad, threshold: Float = 0.3, padSamples: Int = 1600) -> [Float] {
+        let vadStart = CFAbsoluteTimeGetCurrent()
+        let chunkSize = CoreMLVad.chunkSize  // 4096 samples = 256ms
+        var speechSamples: [Float] = []
+        var isSpeech = false
+
+        var offset = 0
+        while offset < samples.count {
+            let end = min(offset + chunkSize, samples.count)
+            let chunk = Array(samples[offset..<end])
+            let prob = vad.process(samples: chunk)
+
+            if prob >= threshold {
+                let padStart = max(0, offset - padSamples)
+                if !isSpeech && padStart < offset {
+                    speechSamples.append(contentsOf: samples[padStart..<offset])
+                }
+                speechSamples.append(contentsOf: chunk)
+                isSpeech = true
+            } else {
+                if isSpeech {
+                    let padEnd = min(end + padSamples, samples.count)
+                    if end < padEnd {
+                        speechSamples.append(contentsOf: samples[end..<padEnd])
+                    }
+                }
+                isSpeech = false
+            }
+
+            offset = end
         }
-        if vadCtx != nil {
-            NSLog("[WhisperEngine] ggml Silero VAD context created (512 samples / 32ms)")
-            return true
+
+        let vadElapsed = (CFAbsoluteTimeGetCurrent() - vadStart) * 1000.0
+        let reduction = samples.count > 0 ? (1.0 - Double(speechSamples.count) / Double(samples.count)) * 100.0 : 0
+
+        // Guard: if VAD output is too short, use original (noisy but sufficient context)
+        let minVadOutput = 16_000  // 1 second — below this Whisper hallucinates
+        if speechSamples.count > 0 && speechSamples.count < minVadOutput {
+            NSLog("[WhisperEngine] CoreML VAD: %.1fms | %d → %d samples — too short, using original",
+                  vadElapsed, samples.count, speechSamples.count)
+            return samples
         }
-        NSLog("[WhisperEngine] ggml Silero VAD failed to load, falling back to RMS")
-        return false
+
+        // Guard: if nothing detected, return empty (no speech)
+        if speechSamples.isEmpty {
+            NSLog("[WhisperEngine] CoreML VAD: %.1fms | %d → 0 samples (no speech)",
+                  vadElapsed, samples.count)
+            return []
+        }
+
+        NSLog("[WhisperEngine] CoreML VAD: %.1fms | %d → %d samples (%.1f%% reduction)",
+              vadElapsed, samples.count, speechSamples.count, reduction)
+
+        return speechSamples
     }
 
     func appendPCMBuffer(_ buffer: AVAudioPCMBuffer) {
@@ -441,7 +494,7 @@ final class WhisperEngine {
         let currentPromptTokens = promptTokens
         lock.unlock()
 
-        guard samples.count >= minInferSize else {
+        guard samples.count >= minPartialSize else {
             lock.lock(); isInferenceRunning = false; lock.unlock()
             return
         }
@@ -495,6 +548,9 @@ final class WhisperEngine {
             if !text.isEmpty {
                 self.lastFinalText = text
             }
+            // Check if audio accumulated during finalize inference
+            let pendingCount = self.audioBuffer.count
+            let shouldPartialNow = pendingCount >= self.minPartialSize
             self.lock.unlock()
 
             if !text.isEmpty {
@@ -503,6 +559,11 @@ final class WhisperEngine {
                 } else {
                     DispatchQueue.main.async { self.onFinalResult?(text) }
                 }
+            }
+
+            // Immediately trigger partial if audio accumulated during finalize
+            if shouldPartialNow {
+                self.runPartialInference()
             }
         }
     }
@@ -513,17 +574,24 @@ final class WhisperEngine {
         lock.lock()
         guard let ctx = self.ctx else { lock.unlock(); return ("", []) }
         let domainHint = self.initialPrompt
-        let vadPath = self.vadModelPath
         lock.unlock()
 
-        var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+        // CoreML VAD pre-filter: extract speech-only segments
+        var filteredSamples = samples
+        if useVAD, let vad = coremlVad {
+            filteredSamples = extractSpeechSegments(from: samples, vad: vad)
+            if filteredSamples.isEmpty { return ("", []) }
+        }
+
+        var params = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH)
+        params.beam_search.beam_size = 3
         params.print_realtime = false
         params.print_progress = false
         params.print_timestamps = false
         params.print_special = false
         params.single_segment = false
         params.no_timestamps = true
-        params.n_threads = 2  // 2 threads: halves peak CPU with minor latency tradeoff
+        params.n_threads = 4  // 4 threads: faster decoder for beam search (beam=3)
         params.suppress_blank = true
         params.suppress_nst = true
         params.tdrz_enable = true  // tinydiarize: speaker turn detection
@@ -533,8 +601,8 @@ final class WhisperEngine {
         params.logprob_thold = -0.8      // logprob: -1.0 → -0.8
         params.no_speech_thold = 0.5     // no_speech: 0.6 → 0.5
 
-        // Silero VAD: only for finalize (clean result), not for partial (too slow ~800ms)
-        let enableVAD = useVAD && vadPath != nil
+        // CoreML VAD pre-filtering is already done above (filteredSamples)
+        // No additional VAD flag needed for whisper_full params
 
         // Set up new_segment_callback for partial results during inference
         let callbackCtx = WhisperSegmentCallbackContext(engine: self)
@@ -561,39 +629,26 @@ final class WhisperEngine {
                         mutablePromptTokens.withUnsafeBufferPointer { tokensPtr in
                             params.prompt_tokens = tokensPtr.baseAddress
                             params.prompt_n_tokens = Int32(mutablePromptTokens.count)
-                            samples.withUnsafeBufferPointer { bufferPtr in
-                                let _ = whisper_full(ctx, params, bufferPtr.baseAddress, Int32(samples.count))
+                            filteredSamples.withUnsafeBufferPointer { bufferPtr in
+                                let _ = whisper_full(ctx, params, bufferPtr.baseAddress, Int32(filteredSamples.count))
                             }
                         }
                     } else if !domainHint.isEmpty {
                         domainHint.withCString { promptPtr in
                             params.initial_prompt = promptPtr
-                            samples.withUnsafeBufferPointer { bufferPtr in
-                                let _ = whisper_full(ctx, params, bufferPtr.baseAddress, Int32(samples.count))
+                            filteredSamples.withUnsafeBufferPointer { bufferPtr in
+                                let _ = whisper_full(ctx, params, bufferPtr.baseAddress, Int32(filteredSamples.count))
                             }
                         }
                     } else {
                         samples.withUnsafeBufferPointer { bufferPtr in
-                            let _ = whisper_full(ctx, params, bufferPtr.baseAddress, Int32(samples.count))
+                            let _ = whisper_full(ctx, params, bufferPtr.baseAddress, Int32(filteredSamples.count))
                         }
                     }
                 }
 
-                if enableVAD, let vadPath {
-                    params.vad = true
-                    params.vad_params.threshold = 0.45
-                    params.vad_params.min_speech_duration_ms = 250
-                    params.vad_params.min_silence_duration_ms = 100
-                    params.vad_params.speech_pad_ms = 30
-                    params.vad_params.samples_overlap = 0.1
-                    vadPath.withCString { vadPtr in
-                        params.vad_model_path = vadPtr
-                        runInference()
-                    }
-                } else {
-                    params.vad = false
-                    runInference()
-                }
+                params.vad = false
+                runInference()
             }
         }
 

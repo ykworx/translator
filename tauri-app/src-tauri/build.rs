@@ -94,6 +94,26 @@ fn main() {
     println!("cargo:rustc-link-lib=static=ggml-cpu");
     println!("cargo:rustc-link-lib=static=ggml-metal");
 
+    // --- Build RNNoise static library ---
+    let rnnoise_dir = manifest_dir.join("vendor/rnnoise");
+    println!("cargo:rerun-if-changed={}", rnnoise_dir.join("src/denoise.c").display());
+    println!("cargo:rerun-if-changed={}", rnnoise_dir.join("include/rnnoise.h").display());
+
+    cc::Build::new()
+        .files(&[
+            rnnoise_dir.join("src/denoise.c"),
+            rnnoise_dir.join("src/rnn.c"),
+            rnnoise_dir.join("src/rnn_data.c"),
+            rnnoise_dir.join("src/pitch.c"),
+            rnnoise_dir.join("src/kiss_fft.c"),
+            rnnoise_dir.join("src/celt_lpc.c"),
+        ])
+        .include(rnnoise_dir.join("include"))
+        .include(rnnoise_dir.join("src"))
+        .define("COMPILE_OPUS", None)
+        .opt_level(3)
+        .compile("rnnoise");
+
     // --- Rerun triggers for Swift files ---
     for sf in &swift_files {
         println!("cargo:rerun-if-changed={}", sf.display());

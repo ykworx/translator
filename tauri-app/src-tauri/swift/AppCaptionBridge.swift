@@ -38,8 +38,18 @@ final class AppCaptionBridgeState {
 
     private var stream: SCStream?
     private var output: ZoomAudioOutput?
-    private var audioConverter: AVAudioConverter?
+    private var monoConverter: AVAudioConverter?     // 48kHz 2ch → 48kHz mono
+    private var downsampleConverter: AVAudioConverter? // 48kHz mono → 16kHz mono
+    private let monoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false)!
     private let speechFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+
+    // RNNoise
+    private var rnnoiseState: OpaquePointer?  // DenoiseState *
+    private var rnnoiseBuffer: [Float] = []   // accumulate samples for 480-frame chunks
+    private let rnnoiseFrameSize = 480        // 10ms @ 48kHz
+    private var vadProbHistory: [Float] = []   // ring buffer of recent vadProb values
+    private let vadProbWindowSize = 80        // 800ms @ 10ms per frame
+    private let vadProbThreshold: Float = 0.3 // average below this = no speech
 
     private var transcript = ""
     private var lastFinalTranscript = ""
@@ -174,6 +184,15 @@ final class AppCaptionBridgeState {
             }, notify: true)
         }
 
+        // RNNoise vadProb check before finalize (800ms window average)
+        WhisperEngine.shared.shouldFinalize = { [weak self] in
+            guard let self else { return true }
+            let history = self.vadProbHistory
+            guard !history.isEmpty else { return true }
+            let avg = history.reduce(0, +) / Float(history.count)
+            return avg < self.vadProbThreshold
+        }
+
         let semaphore = DispatchSemaphore(value: 0)
         var startError = ""
         Task {
@@ -247,6 +266,7 @@ final class AppCaptionBridgeState {
     func stop(clearTranscript: Bool) -> [String: Any] {
         // Finalize remaining audio
         WhisperEngine.shared.forceFinalize()
+        WhisperEngine.shared.shouldFinalize = nil
         WhisperEngine.shared.release(owner: .appCaption)
 
         if let stream {
@@ -256,7 +276,18 @@ final class AppCaptionBridgeState {
         }
         self.stream = nil
         self.output = nil
-        self.audioConverter = nil
+        self.monoConverter = nil
+        self.downsampleConverter = nil
+        self.biquadInitialized = false
+        self.hpX1 = 0; self.hpX2 = 0; self.hpY1 = 0; self.hpY2 = 0
+        self.lpX1 = 0; self.lpX2 = 0; self.lpY1 = 0; self.lpY2 = 0
+        if let state = self.rnnoiseState {
+            rnnoise_destroy(state)
+            self.rnnoiseState = nil
+        }
+        self.rnnoiseBuffer.removeAll()
+        self.vadProbHistory.removeAll()
+        // audioConverter removed — now uses monoConverter + downsampleConverter
         self.silenceStartMs = 0
 
         updateState({
@@ -281,26 +312,192 @@ final class AppCaptionBridgeState {
     }
 
     // MARK: - Audio processing
+    //
+    // Pipeline: 48kHz 2ch → 48kHz mono → bandpass (300Hz~3.4kHz) → RNNoise (480 frame) → 16kHz mono → Whisper
+
+    // Biquad bandpass filter state (high-pass 200Hz + low-pass 4kHz)
+    private var hpX1: Float = 0, hpX2: Float = 0, hpY1: Float = 0, hpY2: Float = 0
+    private var lpX1: Float = 0, lpX2: Float = 0, lpY1: Float = 0, lpY2: Float = 0
+    private var biquadInitialized = false
+    // High-pass 200Hz @ 48kHz coefficients
+    private var hpB0: Float = 0, hpB1: Float = 0, hpB2: Float = 0, hpA1: Float = 0, hpA2: Float = 0
+    // Low-pass 4kHz @ 48kHz coefficients
+    private var lpB0: Float = 0, lpB1: Float = 0, lpB2: Float = 0, lpA1: Float = 0, lpA2: Float = 0
+
+    private func initBiquad(sampleRate: Double) {
+        guard !biquadInitialized else { return }
+        biquadInitialized = true
+
+        // High-pass 300Hz
+        let hpFreq = 300.0
+        let hpW0 = 2.0 * Double.pi * hpFreq / sampleRate
+        let hpAlpha = sin(hpW0) / (2.0 * 0.707)
+        let hpCosW0 = cos(hpW0)
+        let hpA0 = 1.0 + hpAlpha
+        hpB0 = Float((1.0 + hpCosW0) / 2.0 / hpA0)
+        hpB1 = Float(-(1.0 + hpCosW0) / hpA0)
+        hpB2 = hpB0
+        hpA1 = Float(-2.0 * hpCosW0 / hpA0)
+        hpA2 = Float((1.0 - hpAlpha) / hpA0)
+
+        // Low-pass 3.4kHz
+        let lpFreq = 3400.0
+        let lpW0 = 2.0 * Double.pi * lpFreq / sampleRate
+        let lpAlpha = sin(lpW0) / (2.0 * 0.707)
+        let lpCosW0 = cos(lpW0)
+        let lpA0 = 1.0 + lpAlpha
+        lpB0 = Float((1.0 - lpCosW0) / 2.0 / lpA0)
+        lpB1 = Float((1.0 - lpCosW0) / lpA0)
+        lpB2 = lpB0
+        lpA1 = Float(-2.0 * lpCosW0 / lpA0)
+        lpA2 = Float((1.0 - lpAlpha) / lpA0)
+    }
+
+    private func applyBandpass(_ samples: UnsafeMutablePointer<Float>, count: Int) {
+        for i in 0..<count {
+            let x = samples[i]
+            // High-pass
+            let hpY = hpB0 * x + hpB1 * hpX1 + hpB2 * hpX2 - hpA1 * hpY1 - hpA2 * hpY2
+            hpX2 = hpX1; hpX1 = x; hpY2 = hpY1; hpY1 = hpY
+            // Low-pass
+            let lpY = lpB0 * hpY + lpB1 * lpX1 + lpB2 * lpX2 - lpA1 * lpY1 - lpA2 * lpY2
+            lpX2 = lpX1; lpX1 = hpY; lpY2 = lpY1; lpY1 = lpY
+            samples[i] = lpY
+        }
+    }
 
     func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
         guard let pcmBuffer = makePCMBuffer(from: sampleBuffer) else { return }
         updateAudioDebug(with: pcmBuffer)
 
-        let sourceFormat = pcmBuffer.format
-        if audioConverter == nil || audioConverter!.inputFormat != sourceFormat {
-            audioConverter = AVAudioConverter(from: sourceFormat, to: speechFormat)
+        // Step 1: Convert to 48kHz mono
+        let monoBuffer = convertToMono(pcmBuffer)
+        guard let monoBuffer else { return }
+
+        // Step 2: Bandpass filter (300Hz~3.4kHz) — disabled
+        // if let channelData = monoBuffer.floatChannelData {
+        //     initBiquad(sampleRate: 48000)
+        //     applyBandpass(channelData[0], count: Int(monoBuffer.frameLength))
+        // }
+
+        // Step 3: RNNoise denoise (480-sample frames)
+        let denoisedSamples = applyRNNoise(monoBuffer)
+        guard !denoisedSamples.isEmpty else { return }
+
+        // Step 3: Downsample 48kHz → 16kHz mono and send to Whisper
+        downsampleAndSend(denoisedSamples)
+    }
+
+    /// Convert any input format to 48kHz mono
+    private func convertToMono(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        let sourceFormat = buffer.format
+
+        // Already 48kHz mono
+        if sourceFormat.sampleRate == 48000 && sourceFormat.channelCount == 1 {
+            return buffer
         }
 
-        guard let converter = audioConverter else {
-            // If formats match, send directly
-            if sourceFormat.sampleRate == speechFormat.sampleRate && sourceFormat.channelCount == speechFormat.channelCount {
-                WhisperEngine.shared.appendPCMBuffer(pcmBuffer)
+        if monoConverter == nil || monoConverter!.inputFormat != sourceFormat {
+            monoConverter = AVAudioConverter(from: sourceFormat, to: monoFormat)
+        }
+        guard let converter = monoConverter else { return nil }
+
+        let ratio = monoFormat.sampleRate / sourceFormat.sampleRate
+        let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
+        guard outputFrameCount > 0,
+              let outputBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: outputFrameCount) else {
+            return nil
+        }
+
+        var error: NSError?
+        var consumed = false
+        converter.convert(to: outputBuffer, error: &error) { _, outStatus in
+            if consumed {
+                outStatus.pointee = .noDataNow
+                return nil
             }
+            consumed = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+
+        if error != nil { return nil }
+        return outputBuffer.frameLength > 0 ? outputBuffer : nil
+    }
+
+    /// Apply RNNoise denoising in 480-sample (10ms) frames
+    private func applyRNNoise(_ monoBuffer: AVAudioPCMBuffer) -> [Float] {
+        guard let channelData = monoBuffer.floatChannelData else { return [] }
+        let frameLength = Int(monoBuffer.frameLength)
+        guard frameLength > 0 else { return [] }
+
+        // Lazy init RNNoise
+        if rnnoiseState == nil {
+            rnnoiseState = rnnoise_create(nil)
+            if rnnoiseState == nil {
+                // RNNoise failed, pass through raw audio
+                return Array(UnsafeBufferPointer(start: channelData[0], count: frameLength))
+            }
+        }
+
+        // Accumulate samples
+        rnnoiseBuffer.append(contentsOf: UnsafeBufferPointer(start: channelData[0], count: frameLength))
+
+        var output: [Float] = []
+        output.reserveCapacity(rnnoiseBuffer.count)
+
+        // Process complete 480-sample frames
+        while rnnoiseBuffer.count >= rnnoiseFrameSize {
+            var frame = Array(rnnoiseBuffer.prefix(rnnoiseFrameSize))
+            rnnoiseBuffer.removeFirst(rnnoiseFrameSize)
+
+            // RNNoise expects Float (not Int16), scale to [-32768, 32767] range
+            for i in 0..<rnnoiseFrameSize {
+                frame[i] *= 32768.0
+            }
+
+            let prob = rnnoise_process_frame(rnnoiseState, &frame, frame)
+            self.vadProbHistory.append(prob)
+            if self.vadProbHistory.count > self.vadProbWindowSize {
+                self.vadProbHistory.removeFirst(self.vadProbHistory.count - self.vadProbWindowSize)
+            }
+
+            // Scale back to [-1, 1]
+            for i in 0..<rnnoiseFrameSize {
+                frame[i] /= 32768.0
+            }
+
+            output.append(contentsOf: frame)
+        }
+
+        return output
+    }
+
+    /// Downsample denoised 48kHz mono samples to 16kHz and send to Whisper
+    private func downsampleAndSend(_ samples: [Float]) {
+        guard !samples.isEmpty else { return }
+
+        // Create a 48kHz mono buffer from denoised samples
+        let frameCount = AVAudioFrameCount(samples.count)
+        guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: frameCount) else { return }
+        inputBuffer.frameLength = frameCount
+        if let channelData = inputBuffer.floatChannelData {
+            samples.withUnsafeBufferPointer { ptr in
+                channelData[0].update(from: ptr.baseAddress!, count: samples.count)
+            }
+        }
+
+        // Convert 48kHz → 16kHz
+        if downsampleConverter == nil {
+            downsampleConverter = AVAudioConverter(from: monoFormat, to: speechFormat)
+        }
+        guard let converter = downsampleConverter else {
+            WhisperEngine.shared.appendPCMBuffer(inputBuffer)
             return
         }
 
-        let ratio = speechFormat.sampleRate / sourceFormat.sampleRate
-        let outputFrameCount = AVAudioFrameCount(Double(pcmBuffer.frameLength) * ratio)
+        let ratio = speechFormat.sampleRate / monoFormat.sampleRate
+        let outputFrameCount = AVAudioFrameCount(Double(frameCount) * ratio)
         guard outputFrameCount > 0,
               let outputBuffer = AVAudioPCMBuffer(pcmFormat: speechFormat, frameCapacity: outputFrameCount) else {
             return
@@ -315,7 +512,7 @@ final class AppCaptionBridgeState {
             }
             consumed = true
             outStatus.pointee = .haveData
-            return pcmBuffer
+            return inputBuffer
         }
 
         if error != nil { return }
