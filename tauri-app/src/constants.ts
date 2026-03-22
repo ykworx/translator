@@ -40,13 +40,22 @@ export const MODELS = [
 /** Domain hint presets for Whisper speech recognition */
 export const DOMAIN_HINTS = [
   { value: "", label: "없음 (기본)" },
+  { value: "日本語のドラマ、恋愛、友情、家族、感情表現、日常会話", label: "드라마" },
+  { value: "日本語のアニメ、キャラクター名、技名、ファンタジー、学園、冒険", label: "애니메이션" },
+  { value: "日本語のドラマ、アニメ、映画の会話。日常会話、感情表現", label: "드라마/애니 (통합)" },
+  { value: "일상 대화, 인사, 날씨, 음식, 여행", label: "일상 대화" },
+  { value: "뉴스, 정치, 경제, 사회, 국제", label: "뉴스/시사" },
   { value: "비즈니스 회의, 매출, 전략, 프로젝트, 일정", label: "비즈니스 회의" },
   { value: "기술 개발, 소프트웨어, API, 서버, 배포, 버그", label: "기술/개발" },
-  { value: "일상 대화, 인사, 날씨, 음식, 여행", label: "일상 대화" },
   { value: "강의, 수업, 교육, 시험, 학습", label: "강의/교육" },
-  { value: "뉴스, 정치, 경제, 사회, 국제", label: "뉴스/시사" },
   { value: "의료, 진료, 증상, 처방, 검사", label: "의료" },
   { value: "법률, 계약, 소송, 판결, 규정", label: "법률" },
+] as const;
+
+export const WHISPER_MODELS = [
+  { value: "medium", label: "Medium (1.5GB, 빠름)" },
+  { value: "large-v3-turbo", label: "Large V3 Turbo (1.6GB, 정확)" },
+  { value: "large-v3", label: "Large V3 (3.1GB, 최고 정확도)" },
 ] as const;
 
 /** Store keys for persisted settings */
@@ -62,6 +71,7 @@ export const SETTINGS_KEYS = {
   selectShortcut: "selectShortcut",
   clipboardShortcut: "clipboardShortcut",
   domainHint: "domainHint",
+  whisperModel: "whisperModel",
 } as const;
 
 /** Default settings values */
@@ -70,13 +80,14 @@ export const DEFAULTS = {
   myLang: "한국어",
   pairLang: "日本語",
   model: "gemini-2.0-flash",
-  speechLocale: "system",
+  speechLocale: "ja-JP",
   captureMode: "window",
   captureWindow: "",
   targetLanguage: "auto",
   selectShortcut: "Super+Ctrl+KeyT",
   clipboardShortcut: "Super+Ctrl+Shift+KeyT",
-  domainHint: "",
+  domainHint: "日本語のドラマ、アニメ、映画の会話。日常会話、感情表現、キャラクター名。",
+  whisperModel: "large-v3-turbo",
 } as const;
 
 /** UI constants */

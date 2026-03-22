@@ -49,7 +49,14 @@ private let whisperNewSegmentCallback: @convention(c) (
         let segment = segText.trimmingCharacters(in: .whitespacesAndNewlines)
         if engine.isHallucination(segment) { continue }
         if segment.isEmpty { continue }
-        if !partialText.isEmpty { partialText += " " }
+
+        // Speaker turn detection (tinydiarize)
+        let speakerTurn = whisper_full_get_segment_speaker_turn_next_from_state(state, i)
+        if speakerTurn && !partialText.isEmpty {
+            partialText += "\n[화자 전환]\n"
+        } else if !partialText.isEmpty {
+            partialText += " "
+        }
         partialText += segment
     }
 
@@ -99,7 +106,7 @@ final class WhisperEngine {
 
     // MARK: - Accumulate + Finalize Parameters
 
-    private let stepInterval   = 32_000  // 2s — partial inference trigger
+    private let stepInterval   = 16_000  // 1s — partial inference trigger (large-v3-turbo decoder is fast enough)
     private let maxDuration    = 160_000 // 10s — force finalize (longer for better context)
     private let minInferSize   = 16_000  // 1.0s minimum for inference
 
@@ -519,6 +526,7 @@ final class WhisperEngine {
         params.n_threads = 2  // 2 threads: halves peak CPU with minor latency tradeoff
         params.suppress_blank = true
         params.suppress_nst = true
+        params.tdrz_enable = true  // tinydiarize: speaker turn detection
 
         // Hallucination 3-filter: tighter thresholds than defaults
         params.entropy_thold = 1.8       // compression_ratio: 2.4 → 1.8

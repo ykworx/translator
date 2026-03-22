@@ -1,7 +1,7 @@
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
 
-import { CAPTURE_MODES, DOMAIN_HINTS, LANGUAGES, MODELS, DEFAULTS, SETTINGS_KEYS, SPEECH_LOCALES } from "./constants";
+import { CAPTURE_MODES, DOMAIN_HINTS, LANGUAGES, MODELS, DEFAULTS, SETTINGS_KEYS, SPEECH_LOCALES, WHISPER_MODELS } from "./constants";
 import { getSetting, setSetting } from "./store";
 import { populateSelect } from "./utils";
 
@@ -11,6 +11,7 @@ const myLangSelect = document.getElementById("my-lang") as HTMLSelectElement;
 const pairLangSelect = document.getElementById("pair-lang") as HTMLSelectElement;
 const speechLocaleSelect = document.getElementById("speech-locale") as HTMLSelectElement;
 const domainHintSelect = document.getElementById("domain-hint") as HTMLSelectElement;
+const whisperModelSelect = document.getElementById("whisper-model") as HTMLSelectElement;
 const captureModeSelect = document.getElementById("capture-mode") as HTMLSelectElement;
 const captureWindowField = document.getElementById("capture-window-field") as HTMLDivElement;
 const captureWindowSelect = document.getElementById("capture-window") as HTMLSelectElement;
@@ -178,6 +179,7 @@ populateSelect(myLangSelect, LANGUAGES);
 populateSelect(pairLangSelect, LANGUAGES);
 populateSelect(speechLocaleSelect, [...SPEECH_LOCALES]);
 populateSelect(domainHintSelect, [...DOMAIN_HINTS]);
+populateSelect(whisperModelSelect, [...WHISPER_MODELS]);
 populateSelect(captureModeSelect, [...CAPTURE_MODES]);
 populateSelect(modelSelect, MODELS);
 
@@ -192,6 +194,7 @@ populateSelect(modelSelect, MODELS);
   pairLangSelect.value = await getSetting(SETTINGS_KEYS.pairLang, DEFAULTS.pairLang);
   speechLocaleSelect.value = await getSetting(SETTINGS_KEYS.speechLocale, DEFAULTS.speechLocale);
   domainHintSelect.value = await getSetting(SETTINGS_KEYS.domainHint, DEFAULTS.domainHint);
+  whisperModelSelect.value = await getSetting(SETTINGS_KEYS.whisperModel, DEFAULTS.whisperModel);
   captureModeSelect.value = savedCaptureMode;
   modelSelect.value = await getSetting(SETTINGS_KEYS.model, DEFAULTS.model);
 
@@ -218,6 +221,7 @@ btnSave.addEventListener("click", async () => {
     await setSetting(SETTINGS_KEYS.pairLang, pairLangSelect.value);
     await setSetting(SETTINGS_KEYS.speechLocale, speechLocaleSelect.value);
     await setSetting(SETTINGS_KEYS.domainHint, domainHintSelect.value);
+    await setSetting(SETTINGS_KEYS.whisperModel, whisperModelSelect.value);
     await setSetting(SETTINGS_KEYS.captureMode, captureModeSelect.value);
     await setSetting(SETTINGS_KEYS.captureWindow, captureWindowSelect.value);
     await setSetting(SETTINGS_KEYS.model, modelSelect.value);

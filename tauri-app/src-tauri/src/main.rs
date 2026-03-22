@@ -16,7 +16,7 @@ fn main() {
         }.unwrap_or_else(|| {
             // Default model path
             let home = std::env::var("HOME").unwrap_or_default();
-            format!("{}/Library/Application Support/com.ykworx.transrator/models/ggml-medium.bin", home)
+            format!("{}/Library/Application Support/com.ykworx.transrator/models/ggml-large-v3-turbo.bin", home)
         });
 
         // Find language: --language flag or default "ja"

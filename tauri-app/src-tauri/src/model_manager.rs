@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager};
 
 const MODEL_DIR_NAME: &str = "models";
-const GGML_MODEL_FILENAME: &str = "ggml-medium-q5_0.bin";
-const GGML_MODEL_FILENAME_LEGACY: &str = "ggml-medium.bin"; // FP16 (이전 버전 호환)
-const COREML_MODEL_FILENAME: &str = "ggml-medium-encoder.mlmodelc.zip";
-const COREML_MODEL_DIR: &str = "ggml-medium-encoder.mlmodelc";
+const GGML_MODEL_FILENAME: &str = "ggml-large-v3-turbo.bin";
+const GGML_MODEL_FILENAME_LEGACY: &str = "ggml-medium.bin"; // 이전 버전 호환
+const COREML_MODEL_FILENAME: &str = "ggml-large-v3-turbo-encoder.mlmodelc.zip";
+const COREML_MODEL_DIR: &str = "ggml-large-v3-turbo-encoder.mlmodelc";
 
 /// Called at app startup – loads the Whisper model if it was previously downloaded.
 pub fn auto_load_model(handle: &AppHandle) {
@@ -47,9 +47,9 @@ pub fn auto_load_model(handle: &AppHandle) {
 }
 
 const GGML_MODEL_URL: &str =
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin";
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin";
 const COREML_MODEL_URL: &str =
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-encoder.mlmodelc.zip";
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-encoder.mlmodelc.zip";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
