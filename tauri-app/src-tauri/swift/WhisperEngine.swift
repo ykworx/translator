@@ -106,7 +106,7 @@ final class WhisperEngine {
 
     // MARK: - Accumulate + Finalize Parameters
 
-    private let stepInterval   = 16_000  // 1s — partial inference trigger (large-v3-turbo decoder is fast enough)
+    private let stepInterval   = 48_000  // 3s — partial inference trigger (balance between responsiveness and CPU)
     private let maxDuration    = 160_000 // 10s — force finalize (longer for better context)
     private let minInferSize   = 16_000  // 1.0s minimum for inference
 
