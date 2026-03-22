@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import Accelerate
 
 final class SpeechBridgeState {
     static let shared = SpeechBridgeState()
@@ -8,6 +9,44 @@ final class SpeechBridgeState {
     private let audioEngine = AVAudioEngine()
     private var audioConverter: AVAudioConverter?
     private let whisperFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+
+    // MARK: - vDSP Downsampling (replaces AVAudioConverter for integer-ratio cases)
+
+    /// True when input is mono Float32 with integer-ratio sample rate (e.g. 48kHz→16kHz)
+    private var useVDSPDownsampling = false
+    private var vdspDecimationFactor: vDSP_Stride = 3
+    private var vdspFilter: [Float] = []
+    private var vdspFilterLength: vDSP_Length = 0
+    /// Reusable output buffer for AVAudioConverter fallback path
+    private var reusableOutputBuffer: AVAudioPCMBuffer?
+    /// Pre-allocated output buffer for vDSP downsampling (avoids per-callback [Float] allocation)
+    private var vdspOutputBuffer: [Float] = []
+
+    /// Build Hamming-windowed sinc low-pass FIR filter for decimation
+    private static func makeAntiAliasingFilter(decimationFactor: Int) -> [Float] {
+        let taps = 4 * decimationFactor + 1  // e.g. 13 taps for factor=3
+        let fc: Float = 1.0 / Float(decimationFactor)  // normalized cutoff
+        let M = taps - 1
+        var h = [Float](repeating: 0, count: taps)
+        let center = Float(M) / 2.0
+        for i in 0..<taps {
+            let n = Float(i) - center
+            // Sinc
+            if abs(n) < 1e-6 {
+                h[i] = 2.0 * fc
+            } else {
+                h[i] = sin(2.0 * .pi * fc * n) / (.pi * n)
+            }
+            // Hamming window
+            h[i] *= 0.54 - 0.46 * cos(2.0 * .pi * Float(i) / Float(M))
+        }
+        // Normalize to unity gain
+        var sum: Float = 0
+        vDSP_sve(h, 1, &sum, vDSP_Length(taps))
+        var invSum = 1.0 / sum
+        vDSP_vsmul(h, 1, &invSum, &h, 1, vDSP_Length(taps))
+        return h
+    }
 
     private var transcript = ""
     private var isRunning = false
@@ -108,12 +147,31 @@ final class SpeechBridgeState {
             let inputFormat = inputNode.outputFormat(forBus: 0)
             inputNode.removeTap(onBus: 0)
 
-            // Set up audio converter from mic format to 16kHz mono float32
-            audioConverter = AVAudioConverter(from: inputFormat, to: whisperFormat)
+            // Prefer vDSP fast path for integer-ratio mono Float32 (e.g. 48kHz→16kHz)
+            let inputSR = inputFormat.sampleRate
+            let targetSR = whisperFormat.sampleRate
+            if inputFormat.commonFormat == .pcmFormatFloat32,
+               inputFormat.channelCount == 1,
+               inputSR > targetSR,
+               inputSR.truncatingRemainder(dividingBy: targetSR) == 0 {
+                let factor = Int(inputSR / targetSR)
+                vdspDecimationFactor = vDSP_Stride(factor)
+                vdspFilter = Self.makeAntiAliasingFilter(decimationFactor: factor)
+                vdspFilterLength = vDSP_Length(vdspFilter.count)
+                useVDSPDownsampling = true
+                audioConverter = nil
+                NSLog("[MicSpeechBridge] vDSP downsampling: %dkHz→%dkHz (factor=%d, %d-tap FIR)",
+                      Int(inputSR / 1000), Int(targetSR / 1000), factor, vdspFilter.count)
+            } else {
+                useVDSPDownsampling = false
+                audioConverter = AVAudioConverter(from: inputFormat, to: whisperFormat)
+            }
 
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
                 guard let self else { return }
-                if let converted = self.convertToWhisperFormat(buffer) {
+                if self.useVDSPDownsampling {
+                    self.downsampleWithVDSP(buffer)
+                } else if let converted = self.convertToWhisperFormat(buffer) {
                     WhisperEngine.shared.appendPCMBuffer(converted)
                 }
             }
@@ -148,14 +206,57 @@ final class SpeechBridgeState {
         mergeCurrentState(extra: permissionsSnapshot())
     }
 
+    /// vDSP fast path: FIR filter + decimate, bypass AVAudioPCMBuffer entirely
+    /// Uses pre-allocated output buffer to avoid per-callback [Float] allocation
+    private func downsampleWithVDSP(_ buffer: AVAudioPCMBuffer) {
+        let start = CFAbsoluteTimeGetCurrent()
+        guard let channelData = buffer.floatChannelData else { return }
+        let inputCount = Int(buffer.frameLength)
+        guard inputCount > 0 else { return }
+
+        let input = channelData[0]
+        let filterLen = Int(vdspFilterLength)
+        let factor = Int(vdspDecimationFactor)
+
+        // vDSP_desamp output count: (inputCount - filterLen) / factor + 1
+        let outputCount = max(0, (inputCount - filterLen) / factor + 1)
+        guard outputCount > 0 else { return }
+
+        // Grow pre-allocated buffer only if needed (amortized O(1))
+        if vdspOutputBuffer.count < outputCount {
+            vdspOutputBuffer = [Float](repeating: 0, count: outputCount)
+        }
+        vDSP_desamp(input, vdspDecimationFactor, vdspFilter, &vdspOutputBuffer,
+                    vDSP_Length(outputCount), vdspFilterLength)
+
+        let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000.0
+        PerformanceTracker.shared.record(stage: "vdsp_downsample", durationMs: elapsed)
+
+        // Pass only the valid portion
+        WhisperEngine.shared.appendSamples(Array(vdspOutputBuffer.prefix(outputCount)))
+    }
+
+    /// Fallback path: AVAudioConverter with pooled output buffer (no per-callback allocation)
     private func convertToWhisperFormat(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        let start = CFAbsoluteTimeGetCurrent()
         guard let converter = audioConverter else { return nil }
 
         let ratio = whisperFormat.sampleRate / buffer.format.sampleRate
         let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
-        guard outputFrameCount > 0,
-              let outputBuffer = AVAudioPCMBuffer(pcmFormat: whisperFormat, frameCapacity: outputFrameCount) else {
-            return nil
+        guard outputFrameCount > 0 else { return nil }
+
+        // Reuse output buffer if capacity is sufficient, otherwise allocate once
+        let outputBuffer: AVAudioPCMBuffer
+        if let reusable = reusableOutputBuffer, reusable.frameCapacity >= outputFrameCount {
+            reusable.frameLength = 0
+            outputBuffer = reusable
+        } else {
+            let capacity = max(outputFrameCount, 1024)
+            guard let newBuf = AVAudioPCMBuffer(pcmFormat: whisperFormat, frameCapacity: capacity) else {
+                return nil
+            }
+            reusableOutputBuffer = newBuf
+            outputBuffer = newBuf
         }
 
         var error: NSError?
@@ -169,6 +270,9 @@ final class SpeechBridgeState {
             outStatus.pointee = .haveData
             return buffer
         }
+
+        let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000.0
+        PerformanceTracker.shared.record(stage: "convertToWhisperFormat", durationMs: elapsed)
 
         if error != nil || outputBuffer.frameLength == 0 { return nil }
         return outputBuffer
@@ -187,6 +291,8 @@ final class SpeechBridgeState {
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         audioConverter = nil
+        useVDSPDownsampling = false
+        reusableOutputBuffer = nil
 
         // Finalize any remaining audio in Whisper
         WhisperEngine.shared.forceFinalize()

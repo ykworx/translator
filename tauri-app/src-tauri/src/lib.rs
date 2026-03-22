@@ -1,3 +1,4 @@
+pub mod benchmark;
 mod clipboard;
 mod caption_capture;
 mod model_manager;
@@ -46,7 +47,11 @@ pub fn run() {
             model_manager::download_whisper_model,
             model_manager::delete_whisper_model,
             model_manager::load_whisper_model,
-            model_manager::set_whisper_domain_hint
+            model_manager::set_whisper_domain_hint,
+            benchmark::run_wav_benchmark,
+            benchmark::get_performance_stats,
+            benchmark::reset_performance_stats,
+            benchmark::set_performance_tracking
         ])
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

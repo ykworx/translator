@@ -18,10 +18,11 @@ fn main() {
     let swift_dir = manifest_dir.join("swift");
     let swift_files: Vec<PathBuf> = vec![
         swift_dir.join("SwiftBridgeUtils.swift"),
+        swift_dir.join("PerformanceTracker.swift"),
+        swift_dir.join("CoreMLVad.swift"),
         swift_dir.join("MicSpeechBridge.swift"),
         swift_dir.join("AppCaptionBridge.swift"),
         swift_dir.join("WhisperEngine.swift"),
-        swift_dir.join("CoreMLVad.swift"),
     ];
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("missing out dir"));
     let library_path = out_dir.join("libspeech_bridge.a");
@@ -34,31 +35,40 @@ fn main() {
     let whisper_build = out_dir.join("whisper-build");
     std::fs::create_dir_all(&whisper_build).expect("failed to create whisper build dir");
 
+    // Track all whisper.cpp source files for rebuild detection
     println!("cargo:rerun-if-changed={}", whisper_src.join("CMakeLists.txt").display());
     println!("cargo:rerun-if-changed={}", whisper_src.join("src/whisper.cpp").display());
+    println!("cargo:rerun-if-changed={}", whisper_src.join("src/coreml/whisper-encoder.mm").display());
+    println!("cargo:rerun-if-changed={}", whisper_src.join("include/whisper.h").display());
+    println!("cargo:rerun-if-changed={}", whisper_src.join("ggml/src").display());
 
-    let cmake_status = Command::new("cmake")
-        .current_dir(&whisper_build)
-        .args([
-            whisper_src.to_str().unwrap(),
-            "-DCMAKE_BUILD_TYPE=Release",
-            "-DBUILD_SHARED_LIBS=OFF",
-            "-DWHISPER_BUILD_EXAMPLES=OFF",
-            "-DWHISPER_BUILD_TESTS=OFF",
-            "-DWHISPER_BUILD_SERVER=OFF",
-            "-DGGML_METAL=ON",
-            "-DGGML_ACCELERATE=ON",
-            "-DGGML_BLAS=OFF",
-            "-DWHISPER_COREML=ON",
-            "-DWHISPER_COREML_ALLOW_FALLBACK=ON",
-            &format!("-DCMAKE_OSX_ARCHITECTURES={swift_arch}"),
-        ])
-        .status()
-        .expect("failed to run cmake configure for whisper.cpp");
-    if !cmake_status.success() {
-        panic!("cmake configure failed for whisper.cpp");
+    // Only run cmake configure if not already configured
+    let cmake_cache = whisper_build.join("CMakeCache.txt");
+    if !cmake_cache.exists() {
+        let cmake_status = Command::new("cmake")
+            .current_dir(&whisper_build)
+            .args([
+                whisper_src.to_str().unwrap(),
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DBUILD_SHARED_LIBS=OFF",
+                "-DWHISPER_BUILD_EXAMPLES=OFF",
+                "-DWHISPER_BUILD_TESTS=OFF",
+                "-DWHISPER_BUILD_SERVER=OFF",
+                "-DGGML_METAL=ON",
+                "-DGGML_ACCELERATE=ON",
+                "-DGGML_BLAS=OFF",
+                "-DWHISPER_COREML=ON",
+                "-DWHISPER_COREML_ALLOW_FALLBACK=ON",
+                &format!("-DCMAKE_OSX_ARCHITECTURES={swift_arch}"),
+            ])
+            .status()
+            .expect("failed to run cmake configure for whisper.cpp");
+        if !cmake_status.success() {
+            panic!("cmake configure failed for whisper.cpp");
+        }
     }
 
+    // cmake --build is incremental — no-op if nothing changed
     let build_status = Command::new("cmake")
         .args(["--build", whisper_build.to_str().unwrap(), "--config", "Release", "-j"])
         .status()
