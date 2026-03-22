@@ -304,12 +304,12 @@ final class WhisperEngine {
                 let normSuffix = String(norm.suffix(overlapLen))
                 if normSuffix == prevSuffix { return true }
             }
-            // Long common substring check: any 12-char window match catches near-match repeats
+            // Long common substring check: any 8-char window match catches near-match repeats
             // (e.g., "あがえても" vs "あがいても" sharing most characters)
-            if norm.count >= 12 && prevNorm.count >= 12 {
+            if norm.count >= 8 && prevNorm.count >= 8 {
                 let chars = Array(norm)
-                for start in 0...(chars.count - 12) {
-                    let window = String(chars[start..<start+12])
+                for start in 0...(chars.count - 8) {
+                    let window = String(chars[start..<start+8])
                     if prevNorm.contains(window) { return true }
                 }
             }
@@ -895,7 +895,7 @@ final class WhisperEngine {
             }
 
             // Extract prompt tokens for next segment (Swift controls carry-over policy)
-            let maxPromptCarry = 15
+            let maxPromptCarry = 20
             var newPrompt: [Int32] = []
             if nSeg > 0 {
                 let lastSeg = nSeg - 1
