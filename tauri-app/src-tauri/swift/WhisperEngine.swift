@@ -131,8 +131,8 @@ final class WhisperEngine {
     /// Reduced from 19200 (1.2s) for faster first-token emission.
     /// CPU tradeoff: more frequent encode calls (~0.6s vs 1.2s) but each call is shorter.
     private let streamMinSamples = 12_800  // 0.8s — enough context for first decode (was 0.6s)
-    /// Maximum accumulated samples before force-finalize (30s, matches Lightning-SimulWhisper audio_max_len)
-    private let streamMaxSamples = 480_000
+    /// Maximum accumulated samples before force-finalize (15s — prevents stale audio buildup during backoff)
+    private let streamMaxSamples = 240_000
     /// Sliding window size for streamAllSentSamples (2s — only last 1s needed for carry-over)
     private let streamSlidingWindowSize = 32_000
     /// Total PCM samples sent to C-side so far in this segment
@@ -297,6 +297,24 @@ final class WhisperEngine {
             if prevNorm.contains(norm) { return true }
             // Previous is a substring of new (hallucination expanding on previous)
             if norm.contains(prevNorm) && prevNorm.count > 8 { return true }
+            // Suffix-prefix overlap: last N chars of previous match start of new
+            let overlapLen = min(norm.count, prevNorm.count, 15)
+            if overlapLen >= 10 {
+                let prevSuffix = String(prevNorm.suffix(overlapLen))
+                if norm.hasPrefix(prevSuffix) { return true }
+                // Both segments end with the same suffix
+                let normSuffix = String(norm.suffix(overlapLen))
+                if normSuffix == prevSuffix { return true }
+            }
+            // Long common substring check: any 12-char window match catches near-match repeats
+            // (e.g., "あがえても" vs "あがいても" sharing most characters)
+            if norm.count >= 12 && prevNorm.count >= 12 {
+                let chars = Array(norm)
+                for start in 0...(chars.count - 12) {
+                    let window = String(chars[start..<start+12])
+                    if prevNorm.contains(window) { return true }
+                }
+            }
         }
         return false
     }
