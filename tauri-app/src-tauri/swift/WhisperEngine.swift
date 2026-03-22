@@ -140,16 +140,10 @@ final class WhisperEngine {
     /// Guard against re-entrant finalize calls
     private var isFinalizePending = false
     /// Adaptive AlignAtt frame threshold based on accumulated audio duration:
-    ///  - Short utterance (<2s / 32000 samples): threshold 4 → aggressive decode
-    ///  - Normal utterance (2-5s): threshold 15 → balanced
-    ///  - Long utterance (>5s): threshold 20 → conservative
-    ///  - Finalize always uses 4
-    private var adaptiveAlignAttThreshold: Int32 {
-        let sent = streamTotalSent
-        if sent < 32_000 { return 4 }    // < 2s: aggressive
-        if sent > 80_000 { return 8 }    // > 5s: moderate (was 20, too high → no new tokens)
-        return 6                           // 2-5s: was 15, lowered for better token confirmation
-    }
+    /// AlignAtt frame threshold — Lightning-SimulWhisper style
+    /// Streaming: 25 (0.5s safety margin, frontier check alone prevents hallucination)
+    /// Finalize: 4 (decode almost to end)
+    private let streamingAlignAttThreshold: Int32 = 25
     /// Prompt tokens carried from last finalized segment (Swift controls policy)
     private var streamPromptTokens: [Int32] = []
 
@@ -157,6 +151,10 @@ final class WhisperEngine {
 
     /// Consecutive decode cycles that produced no new text — used for CPU-saving backoff
     private var consecutiveEmptyDecodes = 0
+    /// Consecutive finalized segments that produced 0 tokens — indicates music/noise, not speech
+    private var consecutiveEmptySegments = 0
+    /// When true, decode is suspended until AlignAtt confirms a token (music/noise gate)
+    private var decodeSuspended = false
 
     // MARK: - Rewind detection (prefix divergence → hallucination propagation cut)
 
@@ -322,7 +320,7 @@ final class WhisperEngine {
     /// Record finalized text for repetition tracking
     fileprivate func recordFinalizedText(_ text: String) {
         recentFinalizedTexts.append(text)
-        if recentFinalizedTexts.count > 5 {
+        if recentFinalizedTexts.count > 15 {
             recentFinalizedTexts.removeFirst()
         }
     }
@@ -479,6 +477,8 @@ final class WhisperEngine {
         vadSilentCount = 0
         vadInSpeech = false
         consecutiveEmptyDecodes = 0
+        consecutiveEmptySegments = 0
+        decodeSuspended = false
         lastPartialText = ""
         lastFinalizedText = ""
         segmentCount = 0
@@ -731,8 +731,14 @@ final class WhisperEngine {
         }
 
         // Skip decode if audio is too quiet (avoid hallucination on silence)
-        // Skip both first decode AND continuation if recent audio is silent
         if recentRMS < 0.005 {
+            lock.unlock()
+            return
+        }
+
+        // Music/noise gate: when suspended, only attempt first decode of each segment
+        // If AlignAtt confirms tokens, decodeSuspended is cleared in finalize
+        if decodeSuspended && streamTotalSent > 0 {
             lock.unlock()
             return
         }
@@ -817,7 +823,7 @@ final class WhisperEngine {
         // 4. Decode with AlignAtt (adaptive threshold)
         // finalize: thr=4 (aggressive, emit all remaining)
         // streaming: adaptive based on audio duration (4/15/20)
-        let threshold = finalize ? Int32(4) : adaptiveAlignAttThreshold
+        let threshold = finalize ? Int32(4) : streamingAlignAttThreshold
         let result = PerformanceTracker.shared.measure(stage: "whisper_stream_decode_alignatt") {
             whisper_stream_decode_alignatt(ctx, ss,
                 threshold, 4,
@@ -925,6 +931,21 @@ final class WhisperEngine {
             self.isFinalizePending = false
             self.lock.unlock()
 
+            // Track consecutive empty segments for music/noise detection
+            if finalText.isEmpty {
+                self.consecutiveEmptySegments += 1
+                if self.consecutiveEmptySegments >= 3 && !self.decodeSuspended {
+                    self.decodeSuspended = true
+                    NSLog("[STT] suspended: %d consecutive empty segments (music/noise)", self.consecutiveEmptySegments)
+                }
+            } else {
+                self.consecutiveEmptySegments = 0
+                if self.decodeSuspended {
+                    self.decodeSuspended = false
+                    NSLog("[STT] resumed: speech detected")
+                }
+            }
+
             // Emit final result, skipping if it's a repeat of a recent segment
             if !finalText.isEmpty && !self.isRepeatOfLastSegment(finalText) {
                 self.segmentCount += 1
@@ -938,6 +959,8 @@ final class WhisperEngine {
                 }
             } else if !finalText.isEmpty {
                 NSLog("[STT] filtered(repeat-final): \"%@\"", finalText)
+                // Record filtered text too — prevents it from rotating out of history
+                self.recordFinalizedText(finalText)
             }
         }
     }
