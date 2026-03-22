@@ -32,26 +32,16 @@ private let whisperNewSegmentCallback: @convention(c) (
     let totalSegments = whisper_full_n_segments_from_state(state)
     guard totalSegments > 0 else { return }
 
-    // In streaming mode: result_all contains the FULL confirmed text as a single segment.
-    // Read ALL segments to get cumulative text (not just the new ones).
-    // In legacy mode: read only new segments (incremental).
-    let startIdx: Int32
-    if engine.inferenceMode == .streaming {
-        startIdx = 0  // read all — C side puts full confirmed text in result_all
-    } else {
-        startIdx = totalSegments - nNew
-        guard startIdx >= 0 else { return }
-    }
+    let startIdx = totalSegments - nNew
+    guard startIdx >= 0 else { return }
 
-    // Build partial text from tokens, dropping the last token (may be incomplete).
     let cbStart = CFAbsoluteTimeGetCurrent()
 
     var partialText = ""
     for i in startIdx..<totalSegments {
         let nTok = whisper_full_n_tokens_from_state(state, i)
-        let keepTok = engine.inferenceMode == .streaming ? max(0, nTok - 1) : nTok
         var segText = ""
-        for j in 0..<keepTok {
+        for j in 0..<nTok {
             if let cStr = whisper_full_get_token_text_from_state(ctx, state, i, j) {
                 segText += String(cString: cStr)
             }
@@ -67,10 +57,6 @@ private let whisperNewSegmentCallback: @convention(c) (
     PerformanceTracker.shared.record(stage: "newSegmentCallback", durationMs: cbElapsed)
 
     if !partialText.isEmpty {
-        // Rewind detection: check if partial diverged from previous
-        if engine.inferenceMode == .streaming {
-            engine.checkRewind(partialText)
-        }
         // Cross-segment repetition check
         if engine.isRepeatOfLastSegment(partialText) {
             return
@@ -96,12 +82,6 @@ final class WhisperEngine {
 
     enum Owner: String { case mic, appCaption, none }
 
-    /// Inference mode: accumulate (legacy) or streaming (AlignAtt)
-    enum InferenceMode {
-        case accumulate  // Legacy: accumulate audio, then whisper_full()
-        case streaming   // AlignAtt: emit safe tokens as audio arrives
-    }
-
     private let lock = NSLock()
     private let inferenceQueue = DispatchQueue(label: "transrator.whisper.inference", qos: .userInitiated)
 
@@ -114,91 +94,14 @@ final class WhisperEngine {
     /// Used by feedWavFile to avoid deadlock when main thread is blocked on semaphore
     fileprivate var isBenchmarkMode = false
 
-    // MARK: - Inference Mode
-
-    var inferenceMode: InferenceMode = .streaming
-
-    // MARK: - Streaming AlignAtt State
-
-    /// Dedicated whisper_state for streaming (created lazily with DTW enabled)
-    private var streamState: OpaquePointer?
-    private var streamInitialized = false
-    /// Buffered PCM samples waiting to be sent to the streaming decoder
-    private var streamPendingSamples: [Float] = []
-    /// All PCM samples sent to C-side in this segment (for carry-over on force-finalize)
-    private var streamAllSentSamples: [Float] = []
-    /// Minimum samples before first streaming decode (~0.6s)
-    /// Reduced from 19200 (1.2s) for faster first-token emission.
-    /// CPU tradeoff: more frequent encode calls (~0.6s vs 1.2s) but each call is shorter.
-    private let streamMinSamples = 12_800  // 0.8s — enough context for first decode (was 0.6s)
-    /// Maximum accumulated samples before force-finalize (15s — prevents stale audio buildup during backoff)
-    private let streamMaxSamples = 240_000
-    /// Sliding window size for streamAllSentSamples (2s — only last 1s needed for carry-over)
-    private let streamSlidingWindowSize = 32_000
-    /// Total PCM samples sent to C-side so far in this segment
-    private var streamTotalSent = 0
-    /// Guard against re-entrant finalize calls
-    private var isFinalizePending = false
-    /// Adaptive AlignAtt frame threshold based on accumulated audio duration:
-    /// AlignAtt frame threshold — Lightning-SimulWhisper style
-    /// Streaming: 25 (0.5s safety margin, frontier check alone prevents hallucination)
-    /// Finalize: 4 (decode almost to end)
-    private let streamingAlignAttThreshold: Int32 = 25
-    /// Prompt tokens carried from last finalized segment (Swift controls policy)
-    private var streamPromptTokens: [Int32] = []
-
-    // MARK: - Decode backoff (skip cycles when decoder produces nothing)
-
-    /// Consecutive decode cycles that produced no new text — used for CPU-saving backoff
-    private var consecutiveEmptyDecodes = 0
-    /// Consecutive finalized segments that produced 0 tokens — indicates music/noise, not speech
-    private var consecutiveEmptySegments = 0
-    /// When true, decode is suspended until AlignAtt confirms a token (music/noise gate)
-    private var decodeSuspended = false
-
-    // MARK: - Rewind detection (prefix divergence → hallucination propagation cut)
-
-    /// Previous partial result text for rewind detection
-    private var lastPartialText: String = ""
-
-    // MARK: - Silero VAD for streaming (ggml, 512 samples = 32ms)
-
-    /// ggml Silero VAD context (lazy, reused across segments, LSTM state maintained)
+    /// ggml Silero VAD context (lazy, reused across segments)
     private var vadCtx: OpaquePointer?  // whisper_vad_context *
-    /// Buffer to accumulate samples for VAD chunk processing (512 = 32ms at 16kHz)
-    /// Uses offset tracking to avoid O(n) removeFirst() — compact only when offset exceeds threshold
-    private var vadBuffer: [Float] = {
-        var buf = [Float]()
-        buf.reserveCapacity(8192)  // Pre-allocate ~16 VAD chunks
-        return buf
-    }()
-    private var vadBufferOffset = 0
-    private let vadChunkSize = 512  // Silero native window size (32ms at 16kHz)
-    /// Consecutive non-speech VAD chunks before finalize
-    private var vadSilentCount = 0
-    /// Adaptive silence threshold based on accumulated speech duration:
-    ///  - Short utterance (<2s): finalize quickly (256ms)
-    ///  - Normal (2-5s): default (480ms)
-    ///  - Long utterance (>5s): require longer pause (640ms)
-    private var adaptiveVadSilentForFinalize: Int {
-        let sent = streamTotalSent
-        if sent < 32_000 { return 28 }   // < 2s: 896ms silence needed (was 640ms — cut mid-word in Japanese)
-        if sent > 80_000 { return 30 }   // > 5s: 960ms pause needed
-        return 28                         // 2-5s: 896ms
-    }
-    /// Minimum segment length before allowing finalize (2.0s — prevent tiny fragments)
-    private let minSegmentSamples = 32_000
-    /// Speech probability thresholds (Silero VAD recommended defaults)
-    /// Hysteresis: speech starts at >= threshold, ends at < negThreshold
-    private let vadSpeechThreshold: Float = 0.5
-    private let vadNegThreshold: Float = 0.35  // threshold - 0.15
-    private var vadInSpeech = false
 
-    // MARK: - Accumulate + Finalize Parameters (legacy mode)
+    // MARK: - Accumulate + Finalize Parameters
 
     private let stepInterval   = 32_000  // 2s — partial inference trigger
-    private let maxDuration    = 96_000  // 6s — force finalize (VAD ~1s for 6s audio)
-    private let minInferSize   = 8_000   // 0.5s minimum for inference
+    private let maxDuration    = 160_000 // 10s — force finalize (longer for better context)
+    private let minInferSize   = 16_000  // 1.0s minimum for inference
 
     /// Audio buffer — grows until finalize, then clears
     private var audioBuffer: [Float] = []
@@ -251,32 +154,6 @@ final class WhisperEngine {
     private static let bracketRegex: NSRegularExpression = {
         try! NSRegularExpression(pattern: "【[^】]*】|\\[[^\\]]*\\]")
     }()
-
-    /// Detect rewind: if the new partial diverges too early from the previous partial,
-    /// the decoder may be hallucinating. Reset streamPromptTokens to cut propagation.
-    /// Simple prefix comparison — no Levenshtein needed.
-    fileprivate func checkRewind(_ newPartial: String) {
-        guard !lastPartialText.isEmpty else {
-            lastPartialText = newPartial
-            return
-        }
-        let prev = lastPartialText
-        let prefixLen = min(prev.count, newPartial.count)
-        // Find how many characters match from the start
-        var matchLen = 0
-        let prevChars = Array(prev)
-        let newChars = Array(newPartial)
-        for i in 0..<prefixLen {
-            if prevChars[i] == newChars[i] { matchLen += 1 } else { break }
-        }
-        // If less than 50% of the shorter string matches, it's a rewind
-        let threshold = max(4, prefixLen / 2)
-        if matchLen < threshold && prev.count > 8 {
-            NSLog("[WhisperEngine] Rewind detected: prefix match %d/%d — resetting prompt tokens", matchLen, prefixLen)
-            streamPromptTokens.removeAll()
-        }
-        lastPartialText = newPartial
-    }
 
     /// Recent finalized texts for cross-segment repetition detection (ring buffer, last 5)
     private var recentFinalizedTexts: [String] = []
@@ -357,7 +234,6 @@ final class WhisperEngine {
 
         ctx = newCtx
         isModelLoaded = true
-        // streamState is created lazily in ensureStreamInit (needs DTW enabled first)
         resolveVADModelPath()
         NSLog("[WhisperEngine] Model loaded from %@", path)
 
@@ -416,8 +292,6 @@ final class WhisperEngine {
         lock.lock()
         defer { lock.unlock() }
         if vadCtx != nil { whisper_vad_free(vadCtx); vadCtx = nil }
-        if streamState != nil { whisper_free_state(streamState); streamState = nil }
-        streamInitialized = false
         if ctx != nil { whisper_free(ctx); ctx = nil }
         isModelLoaded = false
         currentOwner = .none
@@ -437,17 +311,6 @@ final class WhisperEngine {
     }
 
     func release(owner: Owner) {
-        // Wait for any pending finalize to complete before clearing callbacks
-        if inferenceMode == .streaming {
-            lock.lock()
-            let pending = isFinalizePending || isInferenceRunning
-            lock.unlock()
-            if pending {
-                // Block until inference queue drains
-                inferenceQueue.sync {}
-            }
-        }
-
         lock.lock()
         defer { lock.unlock() }
         if currentOwner == owner {
@@ -465,27 +328,9 @@ final class WhisperEngine {
         promptTokens.removeAll()
         lastFinalText = ""
         isInferenceRunning = false
-        // Streaming state
-        streamInitialized = false
-        streamPendingSamples.removeAll()
-        streamTotalSent = 0
-        streamAllSentSamples.removeAll()
-        isFinalizePending = false
-        streamPromptTokens.removeAll()
-        vadBuffer.removeAll(keepingCapacity: true)
-        vadBufferOffset = 0
-        vadSilentCount = 0
-        vadInSpeech = false
-        consecutiveEmptyDecodes = 0
-        consecutiveEmptySegments = 0
-        decodeSuspended = false
-        lastPartialText = ""
         lastFinalizedText = ""
         segmentCount = 0
         if let vctx = vadCtx { whisper_vad_reset_state(vctx) }
-        if let ctx, let ss = streamState {
-            whisper_stream_reset(ctx, ss)
-        }
     }
 
     // MARK: - Language
@@ -504,9 +349,6 @@ final class WhisperEngine {
 
     // MARK: - Audio input
 
-    /// Recent audio RMS for silence-based decode gating
-    private var recentRMS: Float = 0
-
     /// Monotonically increasing segment counter for structured logging
     private var segmentCount = 0
 
@@ -514,17 +356,6 @@ final class WhisperEngine {
     private var lastFinalizedText: String = ""
 
     func appendSamples(_ samples: [Float]) {
-        if inferenceMode == .streaming {
-            // Track recent RMS for silence-based decode gating
-            var rms: Float = 0
-            samples.withUnsafeBufferPointer { buf in
-                vDSP_rmsqv(buf.baseAddress!, 1, &rms, vDSP_Length(buf.count))
-            }
-            recentRMS = rms
-            appendSamplesStreaming(samples)
-            return
-        }
-
         // Fast silence detection (RMS)
         let rms = computeRMS(samples)
         if rms < silenceThreshold {
@@ -557,7 +388,7 @@ final class WhisperEngine {
         }
     }
 
-    // MARK: - Streaming AlignAtt Mode
+    // MARK: - VAD
 
     /// Create ggml Silero VAD context lazily
     private func ensureVadCtx() -> Bool {
@@ -577,394 +408,6 @@ final class WhisperEngine {
         return false
     }
 
-    /// Create streaming state lazily — MUST be called after DTW is enabled on ctx
-    private func ensureStreamState() -> Bool {
-        guard let ctx else {
-            NSLog("[WhisperEngine] ensureStreamState: ctx is nil")
-            return false
-        }
-        if streamState != nil { return true }
-        streamState = whisper_init_state(ctx)
-        if streamState == nil {
-            NSLog("[WhisperEngine] ensureStreamState: whisper_init_state FAILED")
-            return false
-        }
-        return true
-    }
-
-    /// Initialize streaming session if not already done
-    private func ensureStreamInit() -> Bool {
-        guard let ctx else { return false }
-        guard ensureStreamState(), let ss = streamState else { return false }
-        if streamInitialized { return true }
-
-        let langStr = whisperLang
-        let ret = langStr.withCString { langPtr -> Int32 in
-            let lang: UnsafePointer<CChar>? = (langStr == "auto") ? nil : langPtr
-            if streamPromptTokens.isEmpty {
-                return whisper_stream_init(ctx, ss, lang, false, nil, 0, 4)
-            } else {
-                return streamPromptTokens.withUnsafeBufferPointer { tokBuf in
-                    whisper_stream_init(ctx, ss, lang, false, tokBuf.baseAddress, Int32(tokBuf.count), 4)
-                }
-            }
-        }
-        if ret != 0 {
-            NSLog("[WhisperEngine] stream init failed: %d", ret)
-            return false
-        }
-        streamInitialized = true
-        return true
-    }
-
-    /// Check silence using ggml Silero VAD (512 samples = 32ms) with hysteresis.
-    /// Speech starts at >= vadSpeechThreshold (0.5), ends at < vadNegThreshold (0.35).
-    /// Matches Lightning-SimulWhisper VAD configuration.
-    /// Returns true if non-speech detected long enough to finalize.
-    ///
-    /// Optimization: uses offset tracking instead of Array.removeFirst() to avoid
-    /// O(n) memory copies per chunk. Buffer is compacted only when offset exceeds threshold.
-    private func checkVadSilence(_ samples: [Float]) -> Bool {
-        vadBuffer.append(contentsOf: samples)
-        let silentThreshold = adaptiveVadSilentForFinalize
-
-        // Process in 512-sample chunks (32ms) — Silero native window size
-        // Use offset tracking: advance vadBufferOffset instead of removeFirst (O(1) vs O(n))
-        while vadBuffer.count - vadBufferOffset >= vadChunkSize {
-            let chunkOffset = vadBufferOffset
-            vadBufferOffset += vadChunkSize
-
-            if ensureVadCtx(), let vctx = vadCtx {
-                // Pass pointer directly at offset — zero-copy chunk access
-                let prob = vadBuffer.withUnsafeBufferPointer { buf in
-                    whisper_vad_process_chunk(vctx, buf.baseAddress! + chunkOffset, Int32(vadChunkSize))
-                }
-
-                // Hysteresis: use different thresholds for speech→silence vs silence→speech
-                if vadInSpeech {
-                    if prob < vadNegThreshold {
-                        vadInSpeech = false
-                        vadSilentCount += 1
-                    } else {
-                        vadSilentCount = 0
-                    }
-                } else {
-                    if prob >= vadSpeechThreshold {
-                        vadInSpeech = true
-                        vadSilentCount = 0
-                    } else {
-                        vadSilentCount += 1
-                    }
-                }
-
-                if vadSilentCount >= silentThreshold {
-                    vadSilentCount = 0
-                    compactVadBuffer()
-                    return true
-                }
-            } else {
-                // Fallback: no VAD model → use vDSP RMS (Accelerate, vectorized)
-                var rms: Float = 0
-                vadBuffer.withUnsafeBufferPointer { buf in
-                    vDSP_rmsqv(buf.baseAddress! + chunkOffset, 1, &rms, vDSP_Length(vadChunkSize))
-                }
-                if rms < silenceThreshold {
-                    vadSilentCount += 1
-                    if vadSilentCount >= silentThreshold {
-                        vadSilentCount = 0
-                        compactVadBuffer()
-                        return true
-                    }
-                } else {
-                    vadSilentCount = 0
-                }
-            }
-        }
-
-        // Compact buffer when offset exceeds threshold (amortized O(1))
-        compactVadBuffer()
-        return false
-    }
-
-    /// Compact vadBuffer by removing processed samples (called when offset is large enough)
-    private func compactVadBuffer() {
-        guard vadBufferOffset >= vadChunkSize * 8 else { return }
-        vadBuffer.removeFirst(vadBufferOffset)
-        vadBufferOffset = 0
-    }
-
-    /// Streaming path: buffer audio → when ready, encode + AlignAtt decode → emit partial
-    /// Lock consolidated: 3 acquisitions → 1 (append + state read + conditional take)
-    private func appendSamplesStreaming(_ samples: [Float]) {
-        let perfStart = CFAbsoluteTimeGetCurrent()
-
-        // VAD runs on audio-callback thread only — no lock needed
-        let isSilence = PerformanceTracker.shared.measure(stage: "checkVadSilence") {
-            checkVadSilence(samples)
-        }
-
-        // Single lock: append samples, read state, conditionally take pending for decode
-        lock.lock()
-        streamPendingSamples.append(contentsOf: samples)
-        let totalAccumulated = streamTotalSent + streamPendingSamples.count
-        let running = isInferenceRunning
-        let finalizing = isFinalizePending
-
-        // Silence → finalize if minimum segment met
-        if isSilence && !finalizing && totalAccumulated >= minSegmentSamples {
-            lock.unlock()
-            finalizeStreaming()
-            return
-        }
-
-        // Force finalize if too long
-        if !finalizing && totalAccumulated >= streamMaxSamples {
-            lock.unlock()
-            finalizeStreaming()
-            return
-        }
-
-        // Trigger decode if enough audio accumulated (silence or not)
-        guard !running && !finalizing && totalAccumulated >= streamMinSamples else {
-            lock.unlock()
-            return
-        }
-
-        // Skip decode if audio is too quiet (avoid hallucination on silence)
-        if recentRMS < 0.005 {
-            lock.unlock()
-            return
-        }
-
-        // Music/noise gate: when suspended, only attempt first decode of each segment
-        // If AlignAtt confirms tokens, decodeSuspended is cleared in finalize
-        if decodeSuspended && streamTotalSent > 0 {
-            lock.unlock()
-            return
-        }
-
-        // Backoff: skip every other decode after 6+ empty decodes, every 3rd after 12+
-        if consecutiveEmptyDecodes >= 6 {
-            let skipRate = consecutiveEmptyDecodes >= 12 ? 3 : 2
-            if (streamTotalSent / streamMinSamples) % skipRate != 0 {
-                lock.unlock()
-                return
-            }
-        }
-
-        // Take pending samples for decode (still inside same lock)
-        isInferenceRunning = true
-        let samplesToSend = streamPendingSamples
-        streamPendingSamples.removeAll(keepingCapacity: true)
-        lock.unlock()
-
-        inferenceQueue.async { [weak self] in
-            guard let self else { return }
-            let textBefore = self.lastPartialText
-            self.runStreamingDecode(samples: samplesToSend, finalize: false)
-            self.lock.lock()
-            if self.lastPartialText == textBefore {
-                self.consecutiveEmptyDecodes += 1
-            } else {
-                self.consecutiveEmptyDecodes = 0
-            }
-            self.isInferenceRunning = false
-            self.lock.unlock()
-        }
-
-        let perfElapsed = (CFAbsoluteTimeGetCurrent() - perfStart) * 1000.0
-        PerformanceTracker.shared.record(stage: "appendSamplesStreaming", durationMs: perfElapsed)
-    }
-
-    /// Run one streaming cycle: append audio → encode → AlignAtt decode
-    private func runStreamingDecode(samples: [Float], finalize: Bool) {
-        guard let ctx else {
-            NSLog("[WhisperEngine] runStreamingDecode: ctx nil")
-            return
-        }
-        guard ensureStreamInit() else {
-            NSLog("[WhisperEngine] runStreamingDecode: ensureStreamInit failed")
-            return
-        }
-        guard let ss = streamState else {
-            NSLog("[WhisperEngine] runStreamingDecode: streamState nil after init")
-            return
-        }
-
-        // 1. Append audio (only if there are new samples)
-        if !samples.isEmpty {
-            samples.withUnsafeBufferPointer { buf in
-                let _ = whisper_stream_append_audio(ctx, ss, buf.baseAddress, Int32(buf.count))
-            }
-            lock.lock()
-            streamTotalSent += samples.count
-            streamAllSentSamples.append(contentsOf: samples)
-            // Sliding window: cap memory at ~2s, only last 1s needed for carry-over
-            // Use suffix + reassign instead of removeFirst to avoid O(n) memmove
-            if streamAllSentSamples.count > streamSlidingWindowSize {
-                streamAllSentSamples = Array(streamAllSentSamples.suffix(streamSlidingWindowSize))
-            }
-            lock.unlock()
-        }
-
-        // 2. Encode
-        let encodeResult = PerformanceTracker.shared.measure(stage: "whisper_stream_encode") {
-            whisper_stream_encode(ctx, ss, 4)
-        }
-        if encodeResult != 0 {
-            NSLog("[WhisperEngine] stream encode FAILED")
-            return
-        }
-
-        // 3. Set up callback context
-        let callbackCtx = WhisperSegmentCallbackContext(engine: self)
-        let unmanagedCtx = Unmanaged.passRetained(callbackCtx)
-
-        // 4. Decode with AlignAtt (adaptive threshold)
-        // finalize: thr=4 (aggressive, emit all remaining)
-        // streaming: adaptive based on audio duration (4/15/20)
-        let threshold = finalize ? Int32(4) : streamingAlignAttThreshold
-        let result = PerformanceTracker.shared.measure(stage: "whisper_stream_decode_alignatt") {
-            whisper_stream_decode_alignatt(ctx, ss,
-                threshold, 4,
-                whisperNewSegmentCallback, unmanagedCtx.toOpaque())
-        }
-
-        unmanagedCtx.release()
-        NSLog("[WhisperEngine] runStreamingDecode: done (result=%d, finalize=%d)", result, finalize)
-    }
-
-    /// Force-finalize streaming: emit all remaining tokens, reset for next segment.
-    /// Always carries last 1s of audio for continuity.
-    private func finalizeStreaming() {
-        lock.lock()
-        // Prevent re-entrant finalize spam
-        if isFinalizePending {
-            lock.unlock()
-            return
-        }
-        isFinalizePending = true
-        let remainingSamples = streamPendingSamples
-        streamPendingSamples.removeAll(keepingCapacity: true)
-        let hasAudio = streamTotalSent > 0 || !remainingSamples.isEmpty
-        let segDuration = Float(streamTotalSent + remainingSamples.count) / 16000.0
-        let finRMS = recentRMS
-        // Reset counters NOW so new audio chunks start fresh
-        streamTotalSent = 0
-        isInferenceRunning = true
-        lock.unlock()
-
-        guard hasAudio else {
-            lock.lock(); isInferenceRunning = false; isFinalizePending = false; lock.unlock()
-            return
-        }
-
-        NSLog("[STT] finalize: dur=%.1fs pending=%d rms=%.4f", segDuration, remainingSamples.count, finRMS)
-
-        inferenceQueue.async { [weak self] in
-            guard let self, let ctx = self.ctx, let ss = self.streamState else {
-                self?.lock.lock(); self?.isInferenceRunning = false; self?.lock.unlock()
-                return
-            }
-
-            // Send remaining audio + finalize with thr=4 (AlignAtt, slightly relaxed)
-            self.runStreamingDecode(samples: remainingSamples, finalize: true)
-
-            // Collect final text from result_all
-            // Note: no_speech probability check is handled inside the C decode_impl
-            // via the suppress_nst parameter (already enabled in whisper params).
-            // Lightning-SimulWhisper checks no_speech_probs[0] > cfg.nonspeech_prob
-            // but their default threshold is 1.0 which effectively disables it.
-            let nSeg = whisper_full_n_segments_from_state(ss)
-            var finalText = ""
-            for i in 0..<nSeg {
-                if let cStr = whisper_full_get_segment_text_from_state(ss, i) {
-                    let seg = String(cString: cStr).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if self.isHallucination(seg) {
-                        NSLog("[STT] filtered(hallucination): \"%@\"", seg)
-                        continue
-                    }
-                    if self.isRepeatOfLastSegment(seg) {
-                        NSLog("[STT] filtered(repeat): \"%@\"", seg)
-                        continue
-                    }
-                    if seg.isEmpty { continue }
-                    if !finalText.isEmpty { finalText += " " }
-                    finalText += seg
-                }
-            }
-
-            // Extract prompt tokens for next segment (Swift controls carry-over policy)
-            let maxPromptCarry = 20
-            var newPrompt: [Int32] = []
-            if nSeg > 0 {
-                let lastSeg = nSeg - 1
-                let nTok = whisper_full_n_tokens_from_state(ss, lastSeg)
-                for j in 0..<nTok {
-                    newPrompt.append(whisper_full_get_token_id_from_state(ss, lastSeg, j))
-                }
-                if newPrompt.count > maxPromptCarry {
-                    newPrompt = Array(newPrompt.suffix(maxPromptCarry))
-                }
-            }
-
-            // Audio carry-over eliminated — prompt tokens alone provide context.
-            // Previous carry (0.3s/4800) caused re-decoding repetition.
-            let carryOverSamples: [Float] = []
-
-            // Reset streaming state (C only clears, doesn't set policy)
-            whisper_stream_reset(ctx, ss)
-
-            self.lock.lock()
-            self.streamTotalSent = 0
-            self.streamAllSentSamples.removeAll(keepingCapacity: true)
-            self.streamInitialized = false
-            self.streamPromptTokens = newPrompt
-            // Seed next segment with carry-over audio
-            // Prepend carry-over by building new array (avoids O(n) insert(at:0))
-            if !carryOverSamples.isEmpty {
-                var merged = carryOverSamples
-                merged.append(contentsOf: self.streamPendingSamples)
-                self.streamPendingSamples = merged
-            }
-            self.isInferenceRunning = false
-            self.isFinalizePending = false
-            self.lock.unlock()
-
-            // Track consecutive empty segments for music/noise detection
-            if finalText.isEmpty {
-                self.consecutiveEmptySegments += 1
-                if self.consecutiveEmptySegments >= 3 && !self.decodeSuspended {
-                    self.decodeSuspended = true
-                    NSLog("[STT] suspended: %d consecutive empty segments (music/noise)", self.consecutiveEmptySegments)
-                }
-            } else {
-                self.consecutiveEmptySegments = 0
-                if self.decodeSuspended {
-                    self.decodeSuspended = false
-                    NSLog("[STT] resumed: speech detected")
-                }
-            }
-
-            // Emit final result, skipping if it's a repeat of a recent segment
-            if !finalText.isEmpty && !self.isRepeatOfLastSegment(finalText) {
-                self.segmentCount += 1
-                NSLog("[STT] segment=%d dur=%.1fs text=\"%@\"", self.segmentCount, segDuration, finalText)
-                self.lastFinalizedText = finalText
-                self.recordFinalizedText(finalText)
-                if self.isBenchmarkMode {
-                    self.onFinalResult?(finalText)
-                } else {
-                    DispatchQueue.main.async { self.onFinalResult?(finalText) }
-                }
-            } else if !finalText.isEmpty {
-                NSLog("[STT] filtered(repeat-final): \"%@\"", finalText)
-                // Record filtered text too — prevents it from rotating out of history
-                self.recordFinalizedText(finalText)
-            }
-        }
-    }
-
     func appendPCMBuffer(_ buffer: AVAudioPCMBuffer) {
         guard let channelData = buffer.floatChannelData else { return }
         let frameCount = Int(buffer.frameLength)
@@ -982,7 +425,7 @@ final class WhisperEngine {
     // MARK: - Inference
 
     /// Run inference on all accumulated audio → emit partial result
-    /// Partial: no VAD (fast), relies on new_segment_callback for streaming
+    /// Partial: no VAD (fast), relies on new_segment_callback for incremental results
     private func runPartialInference() {
         lock.lock()
         let samples = audioBuffer
@@ -1014,11 +457,7 @@ final class WhisperEngine {
 
     /// Finalize: run inference on all accumulated audio → emit final + clear buffer
     func forceFinalize() {
-        if inferenceMode == .streaming {
-            finalizeStreaming()
-        } else {
-            finalizeAndClear()
-        }
+        finalizeAndClear()
     }
 
     private func finalizeAndClear() {
@@ -1077,7 +516,7 @@ final class WhisperEngine {
         params.print_special = false
         params.single_segment = false
         params.no_timestamps = true
-        params.n_threads = 4
+        params.n_threads = 2  // 2 threads: halves peak CPU with minor latency tradeoff
         params.suppress_blank = true
         params.suppress_nst = true
 
@@ -1089,7 +528,7 @@ final class WhisperEngine {
         // Silero VAD: only for finalize (clean result), not for partial (too slow ~800ms)
         let enableVAD = useVAD && vadPath != nil
 
-        // Set up new_segment_callback for streaming partial results during inference
+        // Set up new_segment_callback for partial results during inference
         let callbackCtx = WhisperSegmentCallbackContext(engine: self)
         let unmanagedCtx = Unmanaged.passRetained(callbackCtx)
         params.new_segment_callback = whisperNewSegmentCallback

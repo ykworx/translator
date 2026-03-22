@@ -412,10 +412,7 @@ final class AppCaptionBridgeState {
         }
 
         // Silence detection: 700ms → force finalize, 3s → force finalize + fresh start
-        // In streaming mode, WhisperEngine handles its own silence detection — skip here to avoid double finalize
-        if WhisperEngine.shared.inferenceMode == .streaming {
-            // no-op: engine-internal silence detection handles this
-        } else if level < silenceThreshold {
+        if level < silenceThreshold {
             if silenceStartMs == 0 { silenceStartMs = now }
             let silentFor = now - silenceStartMs
             if silentFor >= silenceResetMs {
