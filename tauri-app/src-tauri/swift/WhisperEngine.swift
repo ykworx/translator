@@ -127,7 +127,8 @@ final class WhisperEngine {
     /// Silence detection (fast, RMS-based)
     private let silenceThreshold: Float = 0.005
     private var silentChunkCount = 0
-    private let silentChunksForFinalize = 8 // 800ms at ~100ms chunks
+    private let silentChunksForFinalize = 12 // 1200ms at ~100ms chunks
+    private var shortSegmentDeferred = false  // defer finalize once for short segments
 
     // MARK: - Hallucination filter (O(1) exact + substring fallback + cached regex)
 
@@ -152,6 +153,9 @@ final class WhisperEngine {
         // Chinese / Other
         "Sous-titres", "Amara.org",
         "【大将】", "【字幕】", "字幕", "字幕提供", "字幕翻訳",
+        // Common short-word hallucinations from music/silence
+        "meme", "Meme", "MEME", "me", "you", "the", "a",
+        "bye", "Bye", "oh", "Oh", "hmm", "Hmm",
     ]
 
     /// Substring patterns — for hallucinations embedded in longer text
@@ -372,28 +376,51 @@ final class WhisperEngine {
     func appendSamples(_ samples: [Float]) {
         // Fast silence detection (RMS)
         let rms = computeRMS(samples)
+        // Always append samples to buffer first
+        lock.lock()
+        audioBuffer.append(contentsOf: samples)
+
+        let vadResult = shouldFinalize?() ?? true  // true = vadProb low (no speech)
+
         if rms < silenceThreshold {
             silentChunkCount += 1
             if silentChunkCount >= silentChunksForFinalize {
-                silentChunkCount = 0
-                lock.lock()
-                let hasAudio = audioBuffer.count >= minInferSize
+                NSLog("[WhisperEngine] Silence 1.2s: rms=%.4f vadOk=%d buf=%d", rms, vadResult ? 1 : 0, audioBuffer.count)
+                let audioLen = audioBuffer.count
+                let hasAudio = audioLen >= minInferSize
                 lock.unlock()
+
                 if hasAudio {
-                    // Check RNNoise vadProb if available
-                    if shouldFinalize?() ?? true {
+                    let minFinalizeSize = 32_000  // 2 seconds
+                    if audioLen < minFinalizeSize && !shortSegmentDeferred {
+                        shortSegmentDeferred = true
+                        silentChunkCount = 0
+                        return
+                    }
+                    shortSegmentDeferred = false
+                    silentChunkCount = 0
+                    if self.shouldFinalize?() ?? true {
                         finalizeAndClear()
                     }
-                    // else: vadProb still high, wait for next silence check
+                } else {
+                    // Buffer too small to process — clear to prevent loop
+                    lock.lock()
+                    audioBuffer.removeAll()
+                    newSampleCount = 0
+                    silentChunkCount = 0
+                    shortSegmentDeferred = false
+                    lock.unlock()
                 }
                 return
             }
+            lock.unlock()
         } else {
             silentChunkCount = 0
+            shortSegmentDeferred = false
+            lock.unlock()
         }
 
         lock.lock()
-        audioBuffer.append(contentsOf: samples)
         newSampleCount += samples.count
 
         let bufferLen = audioBuffer.count
@@ -448,7 +475,7 @@ final class WhisperEngine {
         let reduction = samples.count > 0 ? (1.0 - Double(speechSamples.count) / Double(samples.count)) * 100.0 : 0
 
         // Guard: if VAD output is too short, use original (noisy but sufficient context)
-        let minVadOutput = 16_000  // 1 second — below this Whisper hallucinates
+        let minVadOutput = 25_600  // 1.6 seconds — below this Whisper lacks context
         if speechSamples.count > 0 && speechSamples.count < minVadOutput {
             NSLog("[WhisperEngine] CoreML VAD: %.1fms | %d → %d samples — too short, using original",
                   vadElapsed, samples.count, speechSamples.count)
@@ -526,6 +553,7 @@ final class WhisperEngine {
         audioBuffer.removeAll()
         newSampleCount = 0
         silentChunkCount = 0
+        shortSegmentDeferred = false
         isInferenceRunning = true
         let currentPromptTokens = promptTokens
         lock.unlock()
@@ -542,18 +570,23 @@ final class WhisperEngine {
 
             self.lock.lock()
             if !newTokens.isEmpty {
-                self.promptTokens = newTokens
+                // Limit prompt tokens to last 32 to prevent context pollution
+                self.promptTokens = newTokens.count > 32 ? Array(newTokens.suffix(32)) : newTokens
             }
             self.isInferenceRunning = false
+            let isDuplicate = !text.isEmpty && text == self.lastFinalText
             if !text.isEmpty {
                 self.lastFinalText = text
+            } else {
+                // No speech detected — reset prompt to prevent context pollution
+                self.promptTokens.removeAll()
             }
             // Check if audio accumulated during finalize inference
             let pendingCount = self.audioBuffer.count
             let shouldPartialNow = pendingCount >= self.minPartialSize
             self.lock.unlock()
 
-            if !text.isEmpty {
+            if !text.isEmpty && !isDuplicate {
                 if self.isBenchmarkMode {
                     self.onFinalResult?(text)
                 } else {
@@ -850,6 +883,13 @@ final class WhisperEngine {
         // Single-character segments are usually fragments/hallucinations
         if trimmed.count == 1 { return true }
 
+        // Katakana onomatopoeia pattern: katakana-only + contains small kana (ッ, ャ, ュ, ョ etc.) + short
+        // e.g., "ハーキッ", "ギャッ" — but NOT "スド", "リレイ", "キス"
+        let katakanaOnly = trimmed.allSatisfy { $0 >= "\u{30A0}" && $0 <= "\u{30FF}" || $0 == "ー" }
+        let smallKana: Set<Character> = ["ッ", "ャ", "ュ", "ョ", "ァ", "ィ", "ゥ", "ェ", "ォ"]
+        let hasSmallKana = trimmed.contains(where: { smallKana.contains($0) })
+        if katakanaOnly && hasSmallKana && trimmed.count <= 4 { return true }
+
         // O(1) exact match — catches ~90% of hallucinations (full-segment matches)
         if Self.hallucinationSet.contains(trimmed) { return true }
 
@@ -867,9 +907,20 @@ final class WhisperEngine {
         if bracketStripped.isEmpty && !trimmed.isEmpty { return true }
 
         // Repeated single character (e.g., "ああああ", "ブブブブ")
-        // Strip prolonged sound marks, flag only if ONE unique char repeated 4+ times
         let stripped = trimmed.filter { $0 != "ー" && $0 != "〜" && $0 != "～" }
         if stripped.count >= 4 && Set(stripped).count == 1 { return true }
+
+        // Repeated 2-char pattern (e.g., "ヒッヒッヒッ", "ハハハハ")
+        if stripped.count >= 4 && Set(stripped).count <= 2 {
+            // Check if it's a repeating pattern
+            let chars = Array(stripped)
+            var isRepeat = true
+            let patLen = Set(stripped).count
+            for i in patLen..<chars.count {
+                if chars[i] != chars[i % patLen] { isRepeat = false; break }
+            }
+            if isRepeat { return true }
+        }
 
         // Repeated words
         let words = trimmed.split(separator: " ")

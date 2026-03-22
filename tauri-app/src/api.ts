@@ -1,4 +1,4 @@
-import { generateImage, generateText } from "./geminiClient";
+import { generateImage, generateText, generateTextStream } from "./geminiClient";
 import {
   type AutoLangPair,
   buildKoreanPronunciationPrompt,
@@ -78,6 +78,22 @@ export async function translate(text: string, targetLang: string, autoLangPair?:
     return callGemini(buildTranslatePrompt(text, targetLang, autoLangPair, context));
   }
   return callGemini(buildTranslatePrompt(text, targetLang, autoLangPair));
+}
+
+/**
+ * Streaming translation — calls onChunk with partial translation as it arrives.
+ */
+export async function translateStream(
+  text: string,
+  targetLang: string,
+  onChunk: (partialTranslation: string) => void,
+  autoLangPair?: AutoLangPair,
+  context?: string,
+): Promise<string> {
+  const prompt = context
+    ? buildTranslatePrompt(text, targetLang, autoLangPair, context)
+    : buildTranslatePrompt(text, targetLang, autoLangPair);
+  return generateTextStream(prompt, onChunk);
 }
 
 export async function translateTable(tableHtml: string, targetLang: string, autoLangPair?: AutoLangPair): Promise<string> {

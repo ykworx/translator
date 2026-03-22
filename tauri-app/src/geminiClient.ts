@@ -56,6 +56,68 @@ export async function generateText(prompt: string): Promise<string> {
   return generateContent([{ text: prompt }]);
 }
 
+/**
+ * Stream text generation — calls onChunk with each partial text as it arrives.
+ * Returns the full completed text.
+ */
+export async function generateTextStream(
+  prompt: string,
+  onChunk: (partialText: string) => void,
+): Promise<string> {
+  const { apiKey, model } = await getGeminiConfig();
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+    }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(`Gemini API error: ${resp.status} ${err}`);
+  }
+
+  const reader = resp.body?.getReader();
+  if (!reader) throw new Error("No response body");
+
+  const decoder = new TextDecoder();
+  let fullText = "";
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // Parse SSE events
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";  // keep incomplete line
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const jsonStr = line.slice(6).trim();
+      if (!jsonStr || jsonStr === "[DONE]") continue;
+
+      try {
+        const data = JSON.parse(jsonStr);
+        const chunk = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        if (chunk) {
+          fullText += chunk;
+          onChunk(fullText);
+        }
+      } catch {
+        // Skip malformed JSON
+      }
+    }
+  }
+
+  return fullText.trim();
+}
+
 export async function generateImage(prompt: string, imageBase64: string): Promise<string> {
   return generateContent([
     { text: prompt },

@@ -381,32 +381,68 @@ body {
   padding: 10px 14px;
   margin-bottom: 8px;
   position: relative;
+  animation: captionAppear 0.3s ease-out;
+}
+@keyframes captionAppear {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 .caption-time {
-  position: absolute;
-  top: 6px;
-  left: 10px;
-  font-size: 9px;
-  font-family: "SF Mono", "Menlo", monospace;
-  color: var(--fg-dim);
-  opacity: 0.5;
-  letter-spacing: 0.3px;
+  display: none;
 }
 .caption-original {
   font-size: 12px;
   color: var(--fg-dim);
   margin-bottom: 4px;
-  padding-top: 10px;
+  transition: opacity 0.2s ease;
+}
+.caption-badge {
+  display: inline-block;
+  background: rgba(128,128,128,0.2);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-family: "SF Mono", "Menlo", monospace;
+  color: var(--fg-dim);
+  margin-right: 6px;
+  vertical-align: middle;
+  letter-spacing: 0.3px;
 }
 .caption-translation {
   font-size: 14px;
   font-weight: 600;
   color: var(--fg);
+  min-height: 1.4em;
+  transition: opacity 0.2s ease, color 0.3s ease;
+}
+.caption-translation:empty {
+  min-height: 0;
+  margin: 0;
+}
+.caption-translation.caption-streaming {
+  color: var(--fg);
+  font-weight: 600;
 }
 .caption-partial {
   color: var(--fg-dim);
   font-weight: 400;
   font-style: italic;
+  font-size: 12px;
+  animation: partialPulse 1.5s ease-in-out infinite;
+}
+@keyframes partialPulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+.caption-char-new {
+  animation: charFadeIn 0.2s ease-out;
+}
+@keyframes charFadeIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.caption-cursor {
+  display: none;
 }
 
 /* Summary content */
