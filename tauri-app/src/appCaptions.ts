@@ -52,7 +52,7 @@ function updateAppCaptionUi(statusText: string, streaming: boolean): void {
   }
   appCaptionStatus.classList.toggle("streaming", streaming);
   btnAppCaptions.classList.toggle("streaming", streaming);
-  btnAppCaptions.textContent = streaming ? "⏹ 실시간 번역 중지" : "🖥 실시간 번역";
+  btnAppCaptions.textContent = streaming ? "⏹ 중지" : "🖥 자막";
 }
 
 // ─── Typing effect queue ─────────────────────────
@@ -316,9 +316,11 @@ async function doTranslate(text: string, segmentId: string): Promise<void> {
       clearTypingQueue(segmentId);
     };
     if (typingState && typingState.displayed < typingState.target.length) {
-      // Wait for typing to complete
+      // Wait for typing to complete (timeout guard: 10s max)
+      let elapsed = 0;
       const waitForTyping = setInterval(() => {
-        if (!typingState.timer || typingState.displayed >= typingState.target.length) {
+        elapsed += 50;
+        if (!typingState.timer || typingState.displayed >= typingState.target.length || elapsed >= 10000) {
           clearInterval(waitForTyping);
           finishUp();
         }

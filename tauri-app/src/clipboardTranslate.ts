@@ -1,5 +1,5 @@
 import type { LangConfig } from "./types";
-import { readText } from "./clipboard";
+import { readText, writeTextToClipboard, writeHtmlToClipboard } from "./clipboard";
 import { translate, translateTable, translateImage } from "./api";
 import { chat, renderLoading, removeLoading, addEntry } from "./ui";
 import { getErrorMessage } from "./utils";
@@ -62,6 +62,8 @@ export function initClipboardListeners(_resolveLangConfig: () => Promise<LangCon
           const { targetLang, autoLangPair } = await resolveLangConfig();
           const result = await translateTable(tableHtml, targetLang, autoLangPair);
           addEntry({ original: displayText, translated: result, isTable: true, originalHtml: tableHtml });
+          // Auto-copy as HTML table (preserves structure on paste)
+          try { await writeHtmlToClipboard(result); } catch {}
         } catch (e) {
           removeLoading();
           addEntry({ original: displayText, translated: `[오류] ${getErrorMessage(e)}` });
@@ -82,6 +84,7 @@ export function initClipboardListeners(_resolveLangConfig: () => Promise<LangCon
           const { targetLang, autoLangPair } = await resolveLangConfig();
           const result = await translate(text, targetLang, autoLangPair);
           addEntry({ original: text, translated: result });
+          try { await writeTextToClipboard(result); } catch {}
         } catch (e) {
           removeLoading();
           addEntry({ original: text, translated: `[오류] ${getErrorMessage(e)}` });

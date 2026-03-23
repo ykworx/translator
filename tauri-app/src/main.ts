@@ -5,10 +5,11 @@ const { invoke } = window.__TAURI__.core;
 import type { LangConfig } from "./types";
 import { getSetting, setSetting } from "./store";
 import { writeTextToClipboard } from "./clipboard";
-import { suggestReplies, summarize, translate } from "./api";
-import { chatHistory, chat, renderLoading, removeLoading, addEntry, clearChat } from "./ui";
+import { suggestReplies, summarize, translateStream } from "./api";
+import type { ChatEntry } from "./ui";
+import { chatHistory, chat, addEntry, clearChat, showEmptyState } from "./ui";
 import { LANGUAGES, DEFAULTS, MAX_TEXTAREA_HEIGHT, SETTINGS_KEYS } from "./constants";
-import { populateSelect, getErrorMessage } from "./utils";
+import { populateSelect, getErrorMessage, escapeHtml } from "./utils";
 import { initSpeechInput } from "./speechInput";
 import { initAppCaptions } from "./appCaptions";
 import { initClipboardListeners } from "./clipboardTranslate";
@@ -41,15 +42,48 @@ async function handleSubmit(): Promise<void> {
   if (!text) return;
 
   inputField.value = "";
-  chat.appendChild(renderLoading(text));
+  syncInputHeight();
+
+  // Create a streaming entry
+  const entry: ChatEntry = { original: text, translated: "", timestamp: Date.now() };
+  const div = document.createElement("div");
+  div.className = "entry";
+  div.id = "streaming-entry";
+  const origText = escapeHtml(text).replace(/\n/g, "<br>");
+  div.innerHTML = `
+    <div class="section original">
+      <div class="label">원문</div>
+      <div class="card orig">${origText}</div>
+    </div>
+    <div class="section translated">
+      <div class="label">번역 결과</div>
+      <div class="card trans">
+        <div class="loading-dots"><span></span><span></span><span></span></div>
+      </div>
+    </div>
+  `;
+  chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
+  const transCard = div.querySelector(".card.trans") as HTMLElement;
 
   try {
     const { targetLang, autoLangPair } = await resolveLangConfig();
-    const result = await translate(text, targetLang, autoLangPair);
-    addEntry({ original: text, translated: result });
+    const result = await translateStream(
+      text,
+      targetLang,
+      (partial) => {
+        transCard.innerHTML = escapeHtml(partial.trim()).replace(/\n/g, "<br>");
+        chat.scrollTop = chat.scrollHeight;
+      },
+      autoLangPair,
+    );
+    entry.translated = result;
+    div.remove();
+    addEntry(entry);
   } catch (e) {
-    removeLoading();
+    div.remove();
+    inputField.value = text;
+    syncInputHeight();
     addEntry({ original: text, translated: `[오류] ${getErrorMessage(e)}` });
   }
 }
@@ -109,7 +143,7 @@ btnSuggest.addEventListener("click", async () => {
     console.error("Suggest error:", e);
   }
 
-  btnSuggest.textContent = "💬 빠른 답장";
+  btnSuggest.textContent = "💬 답장";
   btnSuggest.disabled = false;
 });
 
@@ -156,6 +190,62 @@ inputField.addEventListener("input", () => {
   syncInputHeight();
 });
 
+// ─── Keyboard shortcuts ────────────────────────────
+document.addEventListener("keydown", (e: KeyboardEvent) => {
+  const isInInput = document.activeElement === inputField;
+
+  // Escape — clear input or hide window
+  if (e.key === "Escape") {
+    if (isInInput && inputField.value.trim()) {
+      inputField.value = "";
+      syncInputHeight();
+    } else {
+      invoke("plugin:window|hide");
+    }
+    return;
+  }
+
+  // Cmd+K — clear chat
+  if (e.metaKey && e.code === "KeyK" && !e.shiftKey) {
+    e.preventDefault();
+    clearChat();
+    return;
+  }
+
+  // Cmd+Shift+C — copy last translation
+  if (e.metaKey && e.shiftKey && e.code === "KeyC") {
+    e.preventDefault();
+    if (chatHistory.length > 0) {
+      const last = chatHistory[chatHistory.length - 1];
+      if (!last.translated.startsWith("[오류]")) {
+        writeTextToClipboard(last.translated).catch(() => {});
+        showCopyToast();
+      }
+    }
+    return;
+  }
+});
+
+function showCopyToast(): void {
+  let toast = document.getElementById("copy-toast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "copy-toast";
+    toast.textContent = "✓ 클립보드에 복사됨";
+    document.body.appendChild(toast);
+  }
+  toast.classList.add("visible");
+  setTimeout(() => toast!.classList.remove("visible"), 1800);
+}
+
+// ─── Retry failed translations ────────────────────
+document.addEventListener("retry-translation", async (e: Event) => {
+  const text = (e as CustomEvent).detail.text;
+  inputField.value = text;
+  syncInputHeight();
+  await handleSubmit();
+});
+
 // ─── Populate select elements ───────────────────────
 populateSelect(langSelect, LANGUAGES);
 
@@ -183,3 +273,6 @@ document.addEventListener("visibilitychange", () => {
     inputField.focus();
   }
 });
+
+// ─── First-run empty state ──────────────────────────
+showEmptyState();

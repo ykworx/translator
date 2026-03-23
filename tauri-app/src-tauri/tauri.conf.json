@@ -48,7 +48,8 @@
       "vendor/whisper.cpp/models/for-tests-silero-v5.1.2-ggml.bin"
     ],
     "macOS": {
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "-"
     },
     "icon": [
       "icons/32x32.png",

@@ -31,6 +31,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             clipboard::read_clipboard_image,
             clipboard::read_clipboard_html,
+            clipboard::write_clipboard_html,
             speech::request_speech_permissions,
             speech::start_speech_recognition,
             speech::stop_speech_recognition,
@@ -174,8 +175,13 @@ pub fn run() {
 
             caption_capture::init_app_handle(app.handle().clone());
 
-            // Auto-load Whisper model if previously downloaded
-            model_manager::auto_load_model(app.handle());
+            // Auto-load Whisper model if previously downloaded (background thread to avoid blocking startup)
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    model_manager::auto_load_model(&handle);
+                });
+            }
 
             Ok(())
         })

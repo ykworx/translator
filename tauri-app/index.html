@@ -13,22 +13,24 @@
   </div>
 
   <!-- Chat area -->
-  <div id="chat"></div>
+  <div id="chat" role="log" aria-label="번역 기록" aria-live="polite"></div>
 
   <!-- Bottom area -->
   <div id="bottom-area">
     <div id="input-area">
-      <textarea id="input-field" placeholder="번역할 내용을 입력하세요" rows="1"></textarea>
+      <textarea id="input-field" aria-label="번역할 내용 입력" placeholder="번역할 내용을 입력하세요" rows="1"></textarea>
       <div id="input-toolbar">
         <div id="toolbar-left">
-          <button id="btn-mic" class="toolbar-btn" title="Apple Speech 음성 입력">🎙 음성 입력</button>
-          <button id="btn-zoom-captions" class="toolbar-btn" title="선택 앱 실시간 번역">🖥 실시간 번역</button>
-          <button id="btn-suggest" class="toolbar-btn" title="빠른 답장">💬 빠른 답장</button>
+          <button id="btn-mic" class="toolbar-btn" title="음성 입력">🎙 음성</button>
+          <button id="btn-zoom-captions" class="toolbar-btn" title="선택 앱 실시간 번역">🖥 자막</button>
+          <span class="toolbar-sep"></span>
+          <button id="btn-suggest" class="toolbar-btn" title="빠른 답장 생성">💬 답장</button>
           <button id="btn-summarize" class="toolbar-btn" title="내용 요약">📋 요약</button>
-          <button id="btn-clear" class="toolbar-btn" title="초기화">🗑 초기화</button>
+          <span class="toolbar-sep"></span>
+          <button id="btn-clear" class="toolbar-btn" title="대화 초기화">🗑</button>
         </div>
         <div id="toolbar-right">
-          <select id="lang-select">
+          <select id="lang-select" aria-label="번역 대상 언어">
             <option value="auto">🔄 자동 감지</option>
           </select>
         </div>

@@ -1,8 +1,9 @@
 // ─── UI Rendering ───────────────────────────────────
-import { writeTextToClipboard } from "./clipboard";
+import { writeTextToClipboard, writeHtmlToClipboard } from "./clipboard";
 import { koreanPronunciation } from "./api";
-import { COPY_FEEDBACK_MS } from "./constants";
+import { COPY_FEEDBACK_MS, SETTINGS_KEYS, DEFAULTS } from "./constants";
 import { escapeHtml } from "./utils";
+import { getSetting, setSetting } from "./store";
 
 export { escapeHtml };
 
@@ -83,7 +84,7 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
   if (entry.isTable && entry.originalHtml) {
     origContent = `<div class="table-wrap">${sanitizeTableHtml(entry.originalHtml)}</div>`;
   } else if (entry.isImage && entry.imageBase64) {
-    origContent = `<img class="orig-img" src="data:image/png;base64,${entry.imageBase64}" />`;
+    origContent = `<img class="orig-img" src="data:image/png;base64,${entry.imageBase64}" alt="번역할 클립보드 이미지" />`;
   }
 
   const imageExtractedSection = entry.isImage && entry.imageExtractedText
@@ -92,7 +93,7 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
         <div class="label">OCR 추출 원문</div>
         <div class="card orig image-detail-panel">
           <div class="card-pills">
-            <span class="card-pill copy-btn copy-extracted">⧉ 복사</span>
+            <button type="button" class="card-pill copy-btn copy-extracted" aria-label="OCR 텍스트 복사">⧉ 복사</button>
           </div>
           ${extractedText}
         </div>
@@ -106,8 +107,8 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
       <div class="card orig">
         <div class="card-pills">
           ${entry.isImage
-            ? (entry.imageExtractedText ? '<span class="card-pill image-detail-toggle" data-expanded="false">OCR 보기</span>' : "")
-            : '<span class="card-pill pron-btn" data-target="orig">Aa 발음</span><span class="card-pill copy-btn copy-orig">⧉ 복사</span>'}
+            ? (entry.imageExtractedText ? '<button type="button" class="card-pill image-detail-toggle" data-expanded="false" aria-label="OCR 텍스트 토글">OCR 보기</button>' : "")
+            : '<button type="button" class="card-pill pron-btn" data-target="orig" aria-label="원문 발음">Aa 발음</button><button type="button" class="card-pill copy-btn copy-orig" aria-label="원문 복사">⧉ 복사</button>'}
         </div>
         ${origContent}
       </div>
@@ -115,16 +116,37 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
     ${imageExtractedSection}
     <div class="section translated">
       <div class="label">번역 결과</div>
-      <div class="card trans${isError ? " error" : ""}">
+      <div class="card trans${isError ? ' error" role="alert"' : '"'}>
         <div class="card-pills">
-          ${isError ? "" : '<span class="card-pill pron-btn" data-target="trans">Aa 발음</span>'}
-          ${isError ? "" : '<span class="card-pill copy-btn copy-trans">⧉ 복사</span>'}
+          ${isError ? "" : '<button type="button" class="card-pill pron-btn" data-target="trans" aria-label="번역 발음">Aa 발음</button>'}
+          ${isError ? "" : '<button type="button" class="card-pill copy-btn copy-trans" aria-label="번역 복사">⧉ 복사</button>'}
         </div>
         ${transText}
-        <span class="card-time">${timeStr}</span>
       </div>
     </div>
   `;
+
+  // Error actions (retry or settings)
+  if (isError) {
+    const transCard = div.querySelector(".card.trans") as HTMLElement;
+    const actions = document.createElement("div");
+    actions.className = "error-actions";
+
+    if (entry.translated.includes("API 키")) {
+      actions.innerHTML = '<button type="button" class="error-action-btn error-settings">설정 열기</button>';
+    } else {
+      actions.innerHTML = '<button type="button" class="error-action-btn error-retry">다시 시도</button>';
+    }
+    transCard.appendChild(actions);
+
+    const retryBtn = actions.querySelector(".error-retry");
+    retryBtn?.addEventListener("click", () => {
+      document.dispatchEvent(new CustomEvent("retry-translation", { detail: { text: entry.original } }));
+      div.remove();
+      const idx = chatHistory.indexOf(entry);
+      if (idx !== -1) chatHistory.splice(idx, 1);
+    });
+  }
 
   // Copy buttons (original + translated)
   const copyOrigBtn = div.querySelector(".copy-orig") as HTMLElement | null;
@@ -145,7 +167,13 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
   const copyTransBtn = div.querySelector(".copy-trans") as HTMLElement | null;
   if (copyTransBtn) {
     copyTransBtn.addEventListener("click", async () => {
-      try { await writeTextToClipboard(entry.translated); } catch {
+      try {
+        if (entry.isTable) {
+          await writeHtmlToClipboard(entry.translated);
+        } else {
+          await writeTextToClipboard(entry.translated);
+        }
+      } catch {
         const ta = document.createElement("textarea");
         ta.value = entry.translated;
         document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
@@ -221,8 +249,9 @@ export function renderLoading(original: string): HTMLDivElement {
     </div>
     <div class="section translated">
       <div class="label">번역 결과</div>
-      <div class="card trans">
-        <div class="loading-dots"><span></span><span></span><span></span></div>
+      <div class="card trans" role="status" aria-label="번역 중">
+        <div class="loading-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+        <span class="sr-only">번역 중…</span>
       </div>
     </div>
   `;
@@ -245,7 +274,41 @@ export function addEntry(entry: ChatEntry): void {
   chat.scrollTop = chat.scrollHeight;
 }
 
+export async function showEmptyState(): Promise<void> {
+  if (chatHistory.length > 0) return;
+  const apiKey = await getSetting(SETTINGS_KEYS.apiKey, DEFAULTS.apiKey);
+
+  if (!apiKey) {
+    chat.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">🔑</div>
+        <div class="empty-title">시작하려면 API 키가 필요합니다</div>
+        <div class="empty-field">
+          <input type="password" id="inline-api-key" placeholder="Gemini API 키를 붙여넣으세요" />
+          <button type="button" id="inline-api-save" class="empty-save-btn">저장</button>
+        </div>
+        <div class="empty-hint">Google AI Studio에서 무료 키를 발급받을 수 있습니다</div>
+      </div>`;
+
+    document.getElementById("inline-api-save")?.addEventListener("click", async () => {
+      const keyInput = document.getElementById("inline-api-key") as HTMLInputElement;
+      const key = keyInput?.value.trim();
+      if (!key) return;
+      await setSetting(SETTINGS_KEYS.apiKey, key);
+      await showEmptyState();
+    });
+  } else {
+    chat.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">⌘⌃T</div>
+        <div class="empty-title">텍스트를 선택하고 ⌘+Ctrl+T</div>
+        <div class="empty-subtitle">또는 아래에 직접 입력하세요</div>
+      </div>`;
+  }
+}
+
 export function clearChat(): void {
   chatHistory = [];
   chat.innerHTML = "";
+  showEmptyState();
 }

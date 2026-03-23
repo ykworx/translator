@@ -70,3 +70,38 @@ pub fn read_clipboard_image() -> Option<String> {
     use base64::Engine;
     Some(base64::engine::general_purpose::STANDARD.encode(&png_data))
 }
+
+/// Write HTML to clipboard so it can be pasted as rich content (tables, etc.)
+#[tauri::command]
+pub fn write_clipboard_html(html: String) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSPasteboard;
+        use objc2_foundation::NSString;
+        let pasteboard = NSPasteboard::generalPasteboard();
+        unsafe { pasteboard.clearContents() };
+        let html_type = NSString::from_str("public.html");
+        let text_type = NSString::from_str("public.utf8-plain-text");
+        let ns_html = NSString::from_str(&html);
+        // Also set plain text fallback (strip tags)
+        let plain = strip_html_tags(&html);
+        let ns_plain = NSString::from_str(&plain);
+        pasteboard.setString_forType(&ns_html, &html_type);
+        pasteboard.setString_forType(&ns_plain, &text_type);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn strip_html_tags(html: &str) -> String {
+    let mut result = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(ch),
+            _ => {}
+        }
+    }
+    result
+}
