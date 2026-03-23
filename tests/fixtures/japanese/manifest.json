@@ -1,0 +1,68 @@
+{
+  "dataset": "gtts-generated",
+  "language": "ja",
+  "num_samples": 10,
+  "target_sample_rate": 16000,
+  "samples": [
+    {
+      "filename": "ja_sample_000.wav",
+      "transcript": "本日は天気が良くて、とても気持ちの良い一日になりそうです。",
+      "duration_sec": 6.67,
+      "sample_rate": 16000
+    },
+    {
+      "filename": "ja_sample_001.wav",
+      "transcript": "東京駅から新幹線で京都まで約二時間十五分かかります。",
+      "duration_sec": 6.58,
+      "sample_rate": 16000
+    },
+    {
+      "filename": "ja_sample_002.wav",
+      "transcript": "このプロジェクトの進捗状況について報告いたします。現在、開発フェーズの八十パーセントが完了しております。",
+      "duration_sec": 11.06,
+      "sample_rate": 16000
+    },
+    {
+      "filename": "ja_sample_003.wav",
+      "transcript": "人工知能の技術は急速に発展しており、音声認識の精度も大幅に向上しています。",
+      "duration_sec": 9.17,
+      "sample_rate": 16000
+    },
+    {
+      "filename": "ja_sample_004.wav",
+      "transcript": "すみません、この商品の在庫はまだありますか。サイズはMサイズが欲しいのですが。",
+      "duration_sec": 8.33,
+      "sample_rate": 16000
+    },
+    {
+      "filename": "ja_sample_005.wav",
+      "transcript": "来週の月曜日に会議を設定しましたので、ご確認をお願いいたします。",
+      "duration_sec": 7.3,
+      "sample_rate": 16000
+    },
+    {
+      "filename": "ja_sample_006.wav",
+      "transcript": "日本の四季はとても美しく、特に春の桜と秋の紅葉は世界的に有名です。",
+      "duration_sec": 8.59,
+      "sample_rate": 16000
+    },
+    {
+      "filename": "ja_sample_007.wav",
+      "transcript": "音声処理の遅延を三百ミリ秒以下に削減することが、今回の最重要課題です。",
+      "duration_sec": 8.4,
+      "sample_rate": 16000
+    },
+    {
+      "filename": "ja_sample_008.wav",
+      "transcript": "リアルタイム文字起こしシステムでは、正確さと速度のバランスが非常に重要になります。",
+      "duration_sec": 8.33,
+      "sample_rate": 16000
+    },
+    {
+      "filename": "ja_sample_009.wav",
+      "transcript": "ご視聴いただきありがとうございます。次回の配信もお楽しみに。",
+      "duration_sec": 6.36,
+      "sample_rate": 16000
+    }
+  ]
+}

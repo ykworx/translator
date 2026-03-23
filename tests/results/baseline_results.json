@@ -1,0 +1,81 @@
+{
+  "timestamp": "2026-03-22T04:57:00Z",
+  "description": "Baseline measurements after Swift-side optimizations (pre-allocated MLMultiArray, vDSP buffer, O(n) fix)",
+  "hardware": "Apple M2 Max, 32GB, macOS 15.2",
+  "model": "whisper-medium (ggml + CoreML encoder)",
+  "build": "release",
+  "tests": [
+    {
+      "name": "test_short_3s",
+      "audio_duration_ms": 3500,
+      "total_processing_ms": 1294.6,
+      "rtf": 0.37,
+      "timed_out": false,
+      "stages": {
+        "whisper_stream_encode": {"avg_ms": 550.87, "count": 2, "total_ms": 1101.74, "min_ms": 518.45, "max_ms": 583.29},
+        "whisper_stream_decode_alignatt": {"avg_ms": 11.89, "count": 2, "total_ms": 23.78, "min_ms": 0.03, "max_ms": 23.75},
+        "checkVadSilence": {"avg_ms": 0.33, "count": 35, "total_ms": 11.62, "min_ms": 0.07, "max_ms": 2.57},
+        "newSegmentCallback": {"avg_ms": 0.10, "count": 1, "total_ms": 0.10},
+        "appendSamplesStreaming": {"avg_ms": 0.27, "count": 1, "total_ms": 0.27}
+      }
+    },
+    {
+      "name": "test_medium_5s",
+      "audio_duration_ms": 5500,
+      "total_processing_ms": 1189.63,
+      "rtf": 0.216,
+      "timed_out": false,
+      "stages": {
+        "whisper_stream_encode": {"avg_ms": 543.01, "count": 2, "total_ms": 1086.02, "min_ms": 510.09, "max_ms": 575.93},
+        "whisper_stream_decode_alignatt": {"avg_ms": 10.99, "count": 2, "total_ms": 21.98, "min_ms": 0.01, "max_ms": 21.98},
+        "checkVadSilence": {"avg_ms": 0.20, "count": 55, "total_ms": 11.05, "min_ms": 0.06, "max_ms": 0.80},
+        "newSegmentCallback": {"avg_ms": 0.06, "count": 1, "total_ms": 0.06},
+        "appendSamplesStreaming": {"avg_ms": 0.20, "count": 1, "total_ms": 0.20}
+      }
+    },
+    {
+      "name": "test_silence_2s",
+      "audio_duration_ms": 2000,
+      "total_processing_ms": 1140.41,
+      "rtf": 0.57,
+      "timed_out": false,
+      "stages": {
+        "whisper_stream_encode": {"avg_ms": 522.20, "count": 2, "total_ms": 1044.40, "min_ms": 511.05, "max_ms": 533.34},
+        "whisper_stream_decode_alignatt": {"avg_ms": 12.08, "count": 2, "total_ms": 24.17, "min_ms": 0.01, "max_ms": 24.16},
+        "checkVadSilence": {"avg_ms": 0.22, "count": 20, "total_ms": 4.34, "min_ms": 0.06, "max_ms": 0.83}
+      }
+    },
+    {
+      "name": "test_long_10s",
+      "audio_duration_ms": 10500,
+      "total_processing_ms": 1128.11,
+      "rtf": 0.107,
+      "timed_out": false,
+      "stages": {
+        "whisper_stream_encode": {"avg_ms": 517.28, "count": 2, "total_ms": 1034.55, "min_ms": 505.28, "max_ms": 529.27},
+        "whisper_stream_decode_alignatt": {"avg_ms": 10.99, "count": 2, "total_ms": 21.97, "min_ms": 0.01, "max_ms": 21.96},
+        "checkVadSilence": {"avg_ms": 0.19, "count": 105, "total_ms": 20.35, "min_ms": 0.06, "max_ms": 0.83}
+      }
+    },
+    {
+      "name": "test_burst_1s",
+      "audio_duration_ms": 2000,
+      "total_processing_ms": 1131.20,
+      "rtf": 0.566,
+      "timed_out": false,
+      "stages": {
+        "whisper_stream_encode": {"avg_ms": 519.82, "count": 2, "total_ms": 1039.64, "min_ms": 511.42, "max_ms": 528.23},
+        "whisper_stream_decode_alignatt": {"avg_ms": 11.07, "count": 2, "total_ms": 22.14, "min_ms": 0.01, "max_ms": 22.13},
+        "checkVadSilence": {"avg_ms": 0.21, "count": 20, "total_ms": 4.29, "min_ms": 0.06, "max_ms": 0.73}
+      }
+    }
+  ],
+  "summary": {
+    "avg_encode_ms": 530.64,
+    "avg_decode_ms": 11.40,
+    "avg_vad_ms": 0.23,
+    "avg_rtf": 0.37,
+    "bottleneck": "whisper_stream_encode (93% of processing time)",
+    "first_token_latency_estimate_ms": "600 (buffer) + 530 (encode) + 12 (decode) = ~1142ms"
+  }
+}
