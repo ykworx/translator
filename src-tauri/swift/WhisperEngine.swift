@@ -643,7 +643,7 @@ final class WhisperEngine {
         params.new_segment_callback = whisperNewSegmentCallback
         params.new_segment_callback_user_data = unmanagedCtx.toOpaque()
 
-        var mutablePromptTokens = promptTokens
+        let mutablePromptTokens = promptTokens
 
         // Helper: run whisper_full with all nested withCString scopes kept alive
         func executeWhisperFull() {
@@ -860,7 +860,7 @@ final class WhisperEngine {
         let perfStats = PerformanceTracker.shared.snapshot()
         PerformanceTracker.shared.isEnabled = wasEnabled
 
-        var result: [String: Any] = [
+        let result: [String: Any] = [
             "hypothesis": finalResult,
             "partials": partials,
             "audio_duration_ms": round(audioDurationMs * 100) / 100,

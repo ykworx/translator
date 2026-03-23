@@ -26,7 +26,9 @@
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "windowEffects": {
-          "effects": ["hudWindow"],
+          "effects": [
+            "hudWindow"
+          ],
           "state": "active"
         }
       }
@@ -45,7 +47,7 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "vendor/whisper.cpp/models/for-tests-silero-v5.1.2-ggml.bin"
+      "vendor/whisper.cpp/models/for-tests-silero-v6.2.0-ggml.bin"
     ],
     "macOS": {
       "minimumSystemVersion": "10.15",
