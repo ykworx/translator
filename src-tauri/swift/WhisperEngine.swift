@@ -43,10 +43,16 @@ private let whisperNewSegmentCallback: @convention(c) (
         var segText = ""
         for j in 0..<nTok {
             if let cStr = whisper_full_get_token_text_from_state(ctx, state, i, j) {
-                segText += String(cString: cStr)
+                let tok = String(cString: cStr)
+                // Skip special tokens like [_EOT_], [_SOT_], [_BEG_], etc.
+                if tok.hasPrefix("[_") && tok.hasSuffix("_]") { continue }
+                if tok.hasPrefix("<|") && tok.hasSuffix("|>") { continue }
+                segText += tok
             }
         }
-        let segment = segText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Replace broken unicode (replacement char U+FFFD) with empty
+        let cleaned = segText.replacingOccurrences(of: "\u{FFFD}", with: "")
+        let segment = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
         if engine.isHallucination(segment) { continue }
         if segment.isEmpty { continue }
 
@@ -66,8 +72,10 @@ private let whisperNewSegmentCallback: @convention(c) (
     if !partialText.isEmpty {
         // Cross-segment repetition check
         if engine.isRepeatOfLastSegment(partialText) {
+            NSLog("[WhisperEngine] Partial (repeat, skipped): %@", partialText)
             return
         }
+        NSLog("[WhisperEngine] Partial: %@", partialText)
         let callback = engine.onPartialResult
         if engine.isBenchmarkMode {
             callback?(partialText)
@@ -385,7 +393,7 @@ final class WhisperEngine {
         if rms < silenceThreshold {
             silentChunkCount += 1
             if silentChunkCount >= silentChunksForFinalize {
-                NSLog("[WhisperEngine] Silence 1.2s: rms=%.4f vadOk=%d buf=%d", rms, vadResult ? 1 : 0, audioBuffer.count)
+                NSLog("[WhisperEngine] Silence 1.2s: rms=%.4f vadSilent=%d buf=%d", rms, vadResult ? 1 : 0, audioBuffer.count)
                 let audioLen = audioBuffer.count
                 let hasAudio = audioLen >= minInferSize
                 lock.unlock()
@@ -624,7 +632,7 @@ final class WhisperEngine {
         params.print_special = false
         params.single_segment = false
         params.no_timestamps = true
-        params.n_threads = 4  // 4 threads: faster decoder for beam search (beam=3)
+        params.n_threads = 2  // 2 threads: beam search decoder doesn't benefit from more on Apple Silicon
         params.suppress_blank = true
         params.suppress_nst = true
         params.tdrz_enable = true  // tinydiarize: speaker turn detection

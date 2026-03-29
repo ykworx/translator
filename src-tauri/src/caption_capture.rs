@@ -57,6 +57,7 @@ mod platform {
 
     unsafe extern "C" {
         fn caption_capture_list_windows() -> *mut c_char;
+        fn caption_capture_pick_window_interactive() -> *mut c_char;
         fn app_caption_request_permissions() -> *mut c_char;
         fn app_caption_start(
             locale_identifier: *const c_char,
@@ -100,8 +101,36 @@ mod platform {
             .map_err(|e| format!("Caption capture window list parse error: {e}"))
     }
 
+    fn decode_capture_window(pointer: *mut c_char) -> Result<CaptureWindow, String> {
+        if pointer.is_null() {
+            return Err("Caption capture bridge returned no data.".into());
+        }
+
+        let raw = unsafe { CStr::from_ptr(pointer) }
+            .to_str()
+            .map(str::to_owned)
+            .map_err(|_| "Caption capture bridge returned invalid UTF-8.".to_string());
+        unsafe { speech_free_string(pointer) };
+
+        let raw = raw?;
+
+        // Check for error response
+        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(err) = obj.get("error").and_then(|v| v.as_str()) {
+                return Err(err.to_string());
+            }
+        }
+
+        serde_json::from_str::<CaptureWindow>(&raw)
+            .map_err(|e| format!("Caption capture pick window parse error: {e}"))
+    }
+
     pub fn list_windows() -> Result<Vec<CaptureWindow>, String> {
         decode_window_list(unsafe { caption_capture_list_windows() })
+    }
+
+    pub fn pick_window_interactive() -> Result<CaptureWindow, String> {
+        decode_capture_window(unsafe { caption_capture_pick_window_interactive() })
     }
 
     pub fn request_permissions() -> Result<AppCaptionStatus, String> {
@@ -147,6 +176,10 @@ mod platform {
 
     pub fn list_windows() -> Result<Vec<CaptureWindow>, String> {
         Err("창 오디오 캡처는 macOS에서만 지원됩니다.".into())
+    }
+
+    pub fn pick_window_interactive() -> Result<CaptureWindow, String> {
+        Err("이 기능은 macOS에서만 지원됩니다.".into())
     }
 
     pub fn request_permissions() -> Result<AppCaptionStatus, String> {
@@ -201,4 +234,9 @@ pub fn stop_app_captions() -> Result<AppCaptionStatus, String> {
 #[tauri::command]
 pub fn get_app_caption_state() -> Result<AppCaptionStatus, String> {
     platform::get_state()
+}
+
+#[tauri::command]
+pub fn pick_window_under_cursor() -> Result<CaptureWindow, String> {
+    platform::pick_window_interactive()
 }

@@ -384,6 +384,7 @@ async function handleAppCaptionUpdate(state: AppCaptionState): Promise<void> {
     );
 
     if (state.transcript) {
+      console.log("[caption-partial]", state.transcript);
       pushOverlayCaption(state.transcript, "", "__partial__");
       scheduleRenderCaptions();
     }

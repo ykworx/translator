@@ -565,3 +565,160 @@ body {
 }
 .empty-save-btn:hover { opacity: 0.9; }
 .empty-hint { font-size: 11px; color: var(--fg-dim); }
+
+/* Handwriting panel */
+#handwriting-panel {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--input-bg);
+  border-top: 1px solid var(--border);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  animation: hwSlideUp 0.25s ease-out;
+}
+#handwriting-panel.hidden { display: none; }
+@keyframes hwSlideUp {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+#hw-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--divider);
+}
+.hw-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.hw-mode-tabs { display: flex; gap: 2px; }
+.hw-mode-btn {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 2px 10px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+.hw-mode-btn:hover { color: var(--fg); background: rgba(128,128,128,0.15); }
+.hw-mode-btn.active {
+  background: rgba(0,122,255,0.15);
+  border-color: rgba(0,122,255,0.4);
+  color: #007aff;
+  font-weight: 600;
+}
+.hw-actions { display: flex; gap: 6px; }
+.hw-btn {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--fg);
+  cursor: pointer;
+  font-family: inherit;
+}
+.hw-btn:hover { background: rgba(128,128,128,0.15); }
+
+#hw-canvas-wrap {
+  height: 240px;
+  position: relative;
+  cursor: crosshair;
+}
+#handwriting-canvas {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+}
+
+#handwriting-result {
+  padding: 10px 14px;
+  min-height: 40px;
+  max-height: 140px;
+  overflow-y: auto;
+  border-top: 1px solid var(--divider);
+}
+
+.hw-placeholder, .hw-loading, .hw-error {
+  font-size: 12px;
+  color: var(--fg-dim);
+  text-align: center;
+  padding: 8px;
+}
+.hw-error { color: #ff3b30; }
+
+.hw-result-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hw-char-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.hw-char {
+  font-size: 36px;
+  font-weight: 300;
+  line-height: 1;
+}
+.hw-insert-btn {
+  background: rgba(0,122,255,0.1);
+  border: 1px solid rgba(0,122,255,0.3);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: #007aff;
+  cursor: pointer;
+  font-family: inherit;
+}
+.hw-insert-btn:hover { background: rgba(0,122,255,0.2); }
+
+.hw-readings {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.hw-reading {
+  font-size: 13px;
+  color: var(--fg);
+}
+.hw-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-right: 4px;
+}
+.hw-kr {
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.hw-meaning {
+  font-size: 13px;
+  color: var(--fg);
+}
+.hw-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.hw-example {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}

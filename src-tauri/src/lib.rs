@@ -41,6 +41,7 @@ pub fn run() {
             caption_capture::start_app_captions,
             caption_capture::stop_app_captions,
             caption_capture::get_app_caption_state,
+            caption_capture::pick_window_under_cursor,
             shortcut::update_shortcuts,
             shortcut::suspend_shortcuts,
             shortcut::resume_shortcuts,
@@ -121,6 +122,7 @@ pub fn run() {
                     {
                         Ok(win) => {
                             center_window_on_cursor(&win, 480.0, 520.0);
+                            win.set_focus().ok();
                         }
                         Err(e) => error!("Failed to create settings window: {e}"),
                     }

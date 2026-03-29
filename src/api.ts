@@ -1,6 +1,8 @@
 import { generateImage, generateText, generateTextStream } from "./geminiClient";
 import {
   type AutoLangPair,
+  type HandwritingMode,
+  buildHandwritingRecognitionPrompt,
   buildKoreanPronunciationPrompt,
   buildSuggestRepliesPrompt,
   buildSummarizePrompt,
@@ -117,4 +119,32 @@ export async function summarize(original: string, translated: string): Promise<s
 
 export async function koreanPronunciation(text: string): Promise<string> {
   return callGemini(buildKoreanPronunciationPrompt(text));
+}
+
+export interface HandwritingResult {
+  character: string;
+  onyomi: string;
+  onyomiKr: string;
+  kunyomi: string;
+  kunyomiKr: string;
+  meaning: string;
+  examples: string[];
+}
+
+export async function recognizeHandwriting(base64Png: string, mode: HandwritingMode = "kanji"): Promise<HandwritingResult> {
+  const raw = await generateImage(buildHandwritingRecognitionPrompt(mode), base64Png);
+  const cleaned = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    return {
+      character: "?",
+      onyomi: "—",
+      onyomiKr: "—",
+      kunyomi: "—",
+      kunyomiKr: "—",
+      meaning: raw,
+      examples: [],
+    };
+  }
 }

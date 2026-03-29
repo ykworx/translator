@@ -74,6 +74,34 @@ export function buildSummarizePrompt(original: string, translated: string): stri
     `Original: ${original}\nTranslation: ${translated}`;
 }
 
+export type HandwritingMode = "kanji" | "kana";
+
+export function buildHandwritingRecognitionPrompt(mode: HandwritingMode = "kanji"): string {
+  const modeInstruction: Record<HandwritingMode, string> = {
+    kanji: `This image contains a handwritten KANJI (漢字) character.
+Identify the kanji character.`,
+    kana: `This image contains a handwritten Japanese KANA character (hiragana or katakana).
+Identify the kana character. Set onyomi and kunyomi to "—".`,
+  };
+
+  return `You are a Japanese character recognition expert.
+${modeInstruction[mode]}
+
+Respond in EXACTLY this JSON format (no markdown, no code fences):
+{"character":"漢","onyomi":"カン","onyomiKr":"칸","kunyomi":"—","kunyomiKr":"—","meaning":"한나라 한, 중국","examples":["漢字 (かんじ) 한자","漢方 (かんぽう) 한방"]}
+
+Rules:
+- character: the recognized character
+- onyomi: 음독 in katakana (or — if none)
+- onyomiKr: 음독 Korean pronunciation
+- kunyomi: 훈독 in hiragana (or — if none)
+- kunyomiKr: 훈독 Korean pronunciation
+- meaning: Korean meaning
+- examples: 2-3 example words using the character
+- If multiple characters are detected, identify the most prominent one
+- Output ONLY valid JSON, nothing else`;
+}
+
 export function buildKoreanPronunciationPrompt(text: string): string {
   return "Write the Korean pronunciation (reading) of the following text.\n" +
     "Rules:\n" +

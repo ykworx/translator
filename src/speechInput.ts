@@ -60,6 +60,9 @@ async function pollSpeechState(): Promise<void> {
     }
 
     if (state.isRunning) {
+      if (state.transcript) {
+        console.log("[speech-partial]", state.transcript);
+      }
       updateSpeechUi(state.transcript ? `듣는 중: ${state.transcript}` : "듣는 중…", true);
       if (isSpeechRecording) {
         scheduleSpeechPoll();

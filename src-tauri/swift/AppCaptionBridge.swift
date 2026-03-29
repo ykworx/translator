@@ -641,8 +641,39 @@ final class AppCaptionBridgeState {
             }
             .filter { item in
                 let lowerName = item.name.lowercased()
-                let excluded = ["transrator", "control center", "finder", "dock"]
-                return !excluded.contains(where: { lowerName.contains($0) }) && !bundleIdLikeInternal(lowerName)
+                let appBundleId = item.window.owningApplication?.bundleIdentifier.lowercased() ?? ""
+
+                // Apps that never produce meaningful audio
+                let excludedNames = [
+                    "transrator", "control center", "finder", "dock",
+                    "system preferences", "system settings", "시스템 설정",
+                    "activity monitor", "활성 상태 보기",
+                    "terminal", "iterm", "warp", "alacritty", "kitty",
+                    "textedit", "메모", "notes", "calculator", "계산기",
+                    "preview", "미리보기", "font book", "keychain access",
+                    "disk utility", "디스크 유틸리티", "console", "콘솔",
+                    "xcode", "visual studio code", "cursor",
+                    "archive utility", "installer", "migration assistant",
+                    "screenshot", "스크린샷", "automator", "script editor",
+                    "bluetooth file exchange", "directory utility",
+                ]
+                let excludedBundleIds = [
+                    "com.apple.finder", "com.apple.dock",
+                    "com.apple.controlcenter", "com.apple.systempreferences",
+                    "com.apple.systemsettings", "com.apple.ActivityMonitor",
+                    "com.apple.Terminal", "com.googlecode.iterm2",
+                    "com.apple.TextEdit", "com.apple.Notes",
+                    "com.apple.Preview", "com.apple.calculator",
+                    "com.apple.dt.Xcode", "com.microsoft.VSCode",
+                    "com.apple.ScriptEditor2", "com.apple.Automator",
+                    "com.apple.DiskUtility", "com.apple.KeychainAccess",
+                    "com.apple.Console", "com.apple.FontBook",
+                ]
+
+                if excludedNames.contains(where: { lowerName.contains($0) }) { return false }
+                if excludedBundleIds.contains(where: { appBundleId.contains($0) }) { return false }
+                if bundleIdLikeInternal(lowerName) { return false }
+                return true
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -792,3 +823,89 @@ public func app_caption_get_state() -> UnsafeMutablePointer<CChar>? {
         ])
     }
 }
+
+// ─── Interactive Window Picker ───
+
+import AppKit
+
+/// Picks a window by listening for the next global mouse click, then finding the window at that position.
+@_cdecl("caption_capture_pick_window_interactive")
+public func caption_capture_pick_window_interactive() -> UnsafeMutablePointer<CChar>? {
+    var resultPtr: UnsafeMutablePointer<CChar>? = nil
+    let semaphore = DispatchSemaphore(value: 0)
+    let currentPID = ProcessInfo.processInfo.processIdentifier
+
+    DispatchQueue.main.async {
+        var clickMonitor: Any?
+        var keyMonitor: Any?
+
+        func cleanup() {
+            NSCursor.pop()
+            if let m = clickMonitor { NSEvent.removeMonitor(m) }
+            if let m = keyMonitor { NSEvent.removeMonitor(m) }
+        }
+
+        func findWindowAtPoint(_ nsPoint: NSPoint) -> [String: Any]? {
+            // Convert NS coords (bottom-left) to CG coords (top-left)
+            let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+            let cgPoint = CGPoint(x: nsPoint.x, y: primaryHeight - nsPoint.y)
+
+            guard let windowList = CGWindowListCopyWindowInfo(
+                [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
+            ) as? [[String: Any]] else { return nil }
+
+            for window in windowList {
+                guard let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
+                      let ownerName = window[kCGWindowOwnerName as String] as? String,
+                      let ownerPID = window[kCGWindowOwnerPID as String] as? Int32,
+                      let layer = window[kCGWindowLayer as String] as? Int32,
+                      layer == 0,
+                      ownerPID != currentPID
+                else { continue }
+
+                let wx = (boundsDict["X"] as? NSNumber)?.doubleValue ?? 0
+                let wy = (boundsDict["Y"] as? NSNumber)?.doubleValue ?? 0
+                let ww = (boundsDict["Width"] as? NSNumber)?.doubleValue ?? 0
+                let wh = (boundsDict["Height"] as? NSNumber)?.doubleValue ?? 0
+
+                if cgPoint.x >= wx && cgPoint.x <= wx + ww && cgPoint.y >= wy && cgPoint.y <= wy + wh {
+                    let title = window[kCGWindowName as String] as? String ?? ""
+                    let displayName = title.isEmpty ? ownerName : "\(ownerName) - \(title)"
+                    let windowNumber = window[kCGWindowNumber as String] as? Int ?? 0
+                    return ["id": String(windowNumber), "name": displayName]
+                }
+            }
+            return nil
+        }
+
+        // Push crosshair cursor
+        NSCursor.crosshair.push()
+
+        // Listen for global click (works on any window, not just ours)
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { event in
+            cleanup()
+            let clickPos = NSEvent.mouseLocation
+            if let info = findWindowAtPoint(clickPos),
+               let data = try? JSONSerialization.data(withJSONObject: info),
+               let str = String(data: data, encoding: .utf8) {
+                resultPtr = strdup(str)
+            } else {
+                resultPtr = strdup("{\"error\":\"마우스 위치에 캡처 가능한 창을 찾을 수 없습니다.\"}")
+            }
+            semaphore.signal()
+        }
+
+        // Listen for Escape to cancel
+        keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53 {
+                cleanup()
+                resultPtr = strdup("{\"error\":\"cancelled\"}")
+                semaphore.signal()
+            }
+        }
+    }
+
+    semaphore.wait()
+    return resultPtr
+}
+

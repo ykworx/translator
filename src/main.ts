@@ -13,6 +13,7 @@ import { populateSelect, getErrorMessage, escapeHtml } from "./utils";
 import { initSpeechInput } from "./speechInput";
 import { initAppCaptions } from "./appCaptions";
 import { initClipboardListeners } from "./clipboardTranslate";
+import { initHandwriting } from "./handwriting";
 
 // ─── DOM References ──────────────────────────────────
 const inputField = document.getElementById("input-field") as HTMLTextAreaElement;
@@ -104,6 +105,11 @@ initAppCaptions(
 );
 
 initClipboardListeners(resolveLangConfig);
+
+initHandwriting(
+  chat,
+  document.getElementById("btn-handwriting") as HTMLButtonElement,
+);
 
 // ─── Quick reply ────────────────────────────────────
 btnSuggest.addEventListener("click", async () => {
