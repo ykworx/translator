@@ -17,10 +17,16 @@ mod platform {
     }
 
     pub fn load_model(path: &str) {
-        let c_path = CString::new(path).expect("Invalid model path");
-        let result = unsafe { whisper_engine_load_model(c_path.as_ptr()) };
-        if !result.is_null() {
-            unsafe { speech_free_string(result) };
+        match CString::new(path) {
+            Ok(c_path) => {
+                let result = unsafe { whisper_engine_load_model(c_path.as_ptr()) };
+                if !result.is_null() {
+                    unsafe { speech_free_string(result) };
+                }
+            }
+            Err(_) => {
+                eprintln!("[benchmark] Invalid model path");
+            }
         }
     }
 
@@ -43,7 +49,10 @@ mod platform {
 
     pub fn feed_wav(path: &str, language: Option<&str>) -> Result<Value, String> {
         let c_path = CString::new(path).map_err(|_| "Invalid path".to_string())?;
-        let c_lang = language.map(|l| CString::new(l).unwrap());
+        let c_lang = match language {
+            Some(language) => Some(CString::new(language).map_err(|_| "Invalid language".to_string())?),
+            None => None,
+        };
         let lang_ptr = c_lang.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
         decode_json_value(unsafe { whisper_engine_feed_wav(c_path.as_ptr(), lang_ptr) })
     }

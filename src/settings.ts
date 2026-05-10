@@ -110,7 +110,9 @@ function stopRecording(btn: HTMLButtonElement, captured: boolean) {
   }
   recordingBtn = null;
   // Re-register global shortcuts
-  invoke("resume_shortcuts").catch(() => {});
+  invoke("resume_shortcuts").catch((e) => {
+    console.warn("Failed to resume shortcuts:", e);
+  });
 }
 
 shortcutSelectBtn.addEventListener("click", () => startRecording(shortcutSelectBtn));
@@ -255,12 +257,21 @@ type ModelStatus = {
   error?: string;
 };
 
+type ModelDownloadProgress = {
+  file: string;
+  downloaded: number;
+  total: number;
+  percent: number;
+};
+
 const modelStatusText = document.getElementById("model-status-text") as HTMLSpanElement;
 const modelProgress = document.getElementById("model-progress") as HTMLDivElement;
 const modelProgressFill = document.getElementById("model-progress-fill") as HTMLDivElement;
 const modelProgressText = document.getElementById("model-progress-text") as HTMLSpanElement;
 const modelDownloadBtn = document.getElementById("model-download-btn") as HTMLButtonElement;
 const modelDeleteBtn = document.getElementById("model-delete-btn") as HTMLButtonElement;
+let deleteConfirmTimer: number | null = null;
+let unlistenModelDownloadProgress: (() => void) | null = null;
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -327,17 +338,25 @@ modelDeleteBtn.addEventListener("click", async () => {
     deleteConfirmPending = true;
     modelDeleteBtn.textContent = "정말 삭제하시겠습니까?";
     modelDeleteBtn.classList.add("model-btn-confirm");
-    setTimeout(() => {
+    if (deleteConfirmTimer !== null) {
+      window.clearTimeout(deleteConfirmTimer);
+    }
+    deleteConfirmTimer = window.setTimeout(() => {
       if (deleteConfirmPending) {
         deleteConfirmPending = false;
         modelDeleteBtn.textContent = "모델 삭제";
         modelDeleteBtn.classList.remove("model-btn-confirm");
       }
+      deleteConfirmTimer = null;
     }, 3000);
     return;
   }
 
   deleteConfirmPending = false;
+  if (deleteConfirmTimer !== null) {
+    window.clearTimeout(deleteConfirmTimer);
+    deleteConfirmTimer = null;
+  }
   modelDeleteBtn.disabled = true;
   modelDeleteBtn.textContent = "삭제 중…";
   modelDeleteBtn.classList.remove("model-btn-confirm");
@@ -353,16 +372,33 @@ modelDeleteBtn.addEventListener("click", async () => {
 });
 
 // Listen for download progress events
-try {
-  window.__TAURI__.event.listen("model-download-progress", (event: any) => {
-    const { file, downloaded, total, percent } = event.payload;
-    modelProgressFill.style.width = `${percent}%`;
-    modelProgressText.textContent = `${Math.round(percent)}%`;
-    modelDownloadBtn.textContent = `${file}: ${formatBytes(downloaded)} / ${formatBytes(total)}`;
-  });
-} catch (e) {
+window.__TAURI__.event.listen("model-download-progress", (event: { payload: ModelDownloadProgress }) => {
+  const { file, downloaded, total, percent } = event.payload;
+  if (
+    typeof file !== "string"
+    || typeof downloaded !== "number"
+    || typeof total !== "number"
+    || typeof percent !== "number"
+  ) {
+    return;
+  }
+  modelProgressFill.style.width = `${percent}%`;
+  modelProgressText.textContent = `${Math.round(percent)}%`;
+  modelDownloadBtn.textContent = `${file}: ${formatBytes(downloaded)} / ${formatBytes(total)}`;
+}).then((unlisten) => {
+  unlistenModelDownloadProgress = unlisten;
+}).catch((e) => {
   console.warn("Failed to listen for model-download-progress:", e);
-}
+});
+
+window.addEventListener("beforeunload", () => {
+  if (deleteConfirmTimer !== null) {
+    window.clearTimeout(deleteConfirmTimer);
+    deleteConfirmTimer = null;
+  }
+  unlistenModelDownloadProgress?.();
+  unlistenModelDownloadProgress = null;
+});
 
 // Check model status on load
 checkModelStatus();

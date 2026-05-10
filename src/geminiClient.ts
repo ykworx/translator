@@ -14,6 +14,67 @@ interface GeminiInlineDataPart {
 
 type GeminiPart = GeminiTextPart | GeminiInlineDataPart;
 
+const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
+const MAX_RETRY_ATTEMPTS = 4;
+const BASE_RETRY_DELAY_MS = 1500;
+const MIN_REQUEST_INTERVAL_MS = 1200;
+
+let nextRequestStart: Promise<void> = Promise.resolve();
+let lastRequestStartedAt = 0;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+function scheduleRequestStart<T>(task: () => Promise<T>): Promise<T> {
+  const startSlot = nextRequestStart.then(async () => {
+    const waitMs = Math.max(0, lastRequestStartedAt + MIN_REQUEST_INTERVAL_MS - Date.now());
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+    lastRequestStartedAt = Date.now();
+  });
+
+  nextRequestStart = startSlot.catch(() => {});
+
+  return startSlot.then(task);
+}
+
+function parseRetryAfterMs(headerValue: string | null): number | null {
+  if (!headerValue) return null;
+
+  const seconds = Number(headerValue);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+
+  const targetTime = Date.parse(headerValue);
+  if (Number.isNaN(targetTime)) return null;
+
+  return Math.max(0, targetTime - Date.now());
+}
+
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  let attempt = 0;
+
+  while (true) {
+    const resp = await scheduleRequestStart(() => fetch(url, init));
+    if (resp.ok) return resp;
+
+    const errText = await resp.text();
+    const retryAfterMs = parseRetryAfterMs(resp.headers.get("retry-after"));
+    const shouldRetry = RETRYABLE_STATUS_CODES.has(resp.status) && attempt < MAX_RETRY_ATTEMPTS;
+
+    if (!shouldRetry) {
+      throw new Error(`Gemini API error: ${resp.status} ${errText}`);
+    }
+
+    const backoffMs = retryAfterMs ?? (BASE_RETRY_DELAY_MS * (2 ** attempt));
+    await sleep(Math.min(backoffMs, 15000));
+    attempt += 1;
+  }
+}
+
 function buildGeminiUrl(model: string, apiKey: string): string {
   return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 }
@@ -41,7 +102,7 @@ async function extractResponseText(resp: Response): Promise<string> {
 
 async function generateContent(parts: GeminiPart[]): Promise<string> {
   const { apiKey, model } = await getGeminiConfig();
-  const resp = await fetch(buildGeminiUrl(model, apiKey), {
+  const resp = await fetchWithRetry(buildGeminiUrl(model, apiKey), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -67,18 +128,13 @@ export async function generateTextStream(
   const { apiKey, model } = await getGeminiConfig();
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
 
-  const resp = await fetch(url, {
+  const resp = await fetchWithRetry(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
     }),
   });
-
-  if (!resp.ok) {
-    const err = await resp.text();
-    throw new Error(`Gemini API error: ${resp.status} ${err}`);
-  }
 
   const reader = resp.body?.getReader();
   if (!reader) throw new Error("No response body");

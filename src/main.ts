@@ -1,11 +1,13 @@
 // ─── Tauri API ───────────────────────────────────────
 const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
 
 // ─── Module imports ──────────────────────────────────
 import type { LangConfig } from "./types";
 import { getSetting, setSetting } from "./store";
 import { writeTextToClipboard } from "./clipboard";
 import { suggestReplies, summarize, translateStream } from "./api";
+import type { HandwritingResult } from "./api";
 import type { ChatEntry } from "./ui";
 import { chatHistory, chat, addEntry, clearChat, showEmptyState } from "./ui";
 import { LANGUAGES, DEFAULTS, MAX_TEXTAREA_HEIGHT, SETTINGS_KEYS } from "./constants";
@@ -21,6 +23,8 @@ const langSelect = document.getElementById("lang-select") as HTMLSelectElement;
 const btnSuggest = document.getElementById("btn-suggest") as HTMLButtonElement;
 const btnSummarize = document.getElementById("btn-summarize") as HTMLButtonElement;
 const btnClear = document.getElementById("btn-clear") as HTMLButtonElement;
+let isSubmittingTranslation = false;
+let copyToastTimer: number | null = null;
 
 // ─── Helpers ─────────────────────────────────────────
 function syncInputHeight(): void {
@@ -39,9 +43,12 @@ async function resolveLangConfig(): Promise<LangConfig> {
 
 // ─── Translation submit ─────────────────────────────
 async function handleSubmit(): Promise<void> {
+  if (isSubmittingTranslation) return;
+
   const text = inputField.value.trim();
   if (!text) return;
 
+  isSubmittingTranslation = true;
   inputField.value = "";
   syncInputHeight();
 
@@ -86,6 +93,8 @@ async function handleSubmit(): Promise<void> {
     inputField.value = text;
     syncInputHeight();
     addEntry({ original: text, translated: `[오류] ${getErrorMessage(e)}` });
+  } finally {
+    isSubmittingTranslation = false;
   }
 }
 
@@ -130,7 +139,9 @@ btnSuggest.addEventListener("click", async () => {
           btn.className = "suggest-btn";
           btn.textContent = `${label}: ${text}`;
           btn.addEventListener("click", async () => {
-            await writeTextToClipboard(text).catch(() => {});
+            await writeTextToClipboard(text).catch((err) => {
+              console.warn("Failed to copy suggestion to clipboard:", err);
+            });
             document.querySelectorAll<HTMLElement>(".suggest-btn").forEach(b => {
               if (b.textContent?.startsWith("\u2713")) {
                 b.textContent = b.dataset.orig || "";
@@ -224,7 +235,9 @@ document.addEventListener("keydown", (e: KeyboardEvent) => {
     if (chatHistory.length > 0) {
       const last = chatHistory[chatHistory.length - 1];
       if (!last.translated.startsWith("[오류]")) {
-        writeTextToClipboard(last.translated).catch(() => {});
+        writeTextToClipboard(last.translated).catch((err) => {
+          console.warn("Failed to copy last translation to clipboard:", err);
+        });
         showCopyToast();
       }
     }
@@ -241,12 +254,72 @@ function showCopyToast(): void {
     document.body.appendChild(toast);
   }
   toast.classList.add("visible");
-  setTimeout(() => toast!.classList.remove("visible"), 1800);
+  if (copyToastTimer !== null) {
+    window.clearTimeout(copyToastTimer);
+  }
+  copyToastTimer = window.setTimeout(() => {
+    toast?.classList.remove("visible");
+    copyToastTimer = null;
+  }, 1800);
+}
+
+// ─── Handwriting overlay result ──────────────────
+let unlistenHwOverlayResult: (() => void) | null = null;
+let hwToastTimer: number | null = null;
+listen("handwriting-overlay-result", (event) => {
+  const payload = event.payload as { result?: HandwritingResult } | null;
+  const result = payload?.result;
+  if (!result) return;
+
+  const char = result.character;
+  if (!char || char === "?") return;
+
+  inputField.value += char;
+  syncInputHeight();
+  inputField.focus();
+  inputField.dispatchEvent(new Event("input"));
+
+  showHwToast(result);
+}).then((unlisten) => {
+  unlistenHwOverlayResult = unlisten;
+}).catch((err) => {
+  console.error("Failed to attach handwriting-overlay-result listener:", err);
+});
+
+window.addEventListener("beforeunload", () => {
+  unlistenHwOverlayResult?.();
+  unlistenHwOverlayResult = null;
+  if (hwToastTimer !== null) {
+    window.clearTimeout(hwToastTimer);
+    hwToastTimer = null;
+  }
+});
+
+function showHwToast(r: HandwritingResult): void {
+  let toast = document.getElementById("hw-overlay-toast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "hw-overlay-toast";
+    document.body.appendChild(toast);
+  }
+  const meaning = r.meaning && r.meaning.length < 40 ? ` — ${r.meaning}` : "";
+  toast.textContent = `✏️ 인식: ${r.character}${meaning}`;
+  toast.classList.add("visible");
+  if (hwToastTimer !== null) {
+    window.clearTimeout(hwToastTimer);
+  }
+  hwToastTimer = window.setTimeout(() => {
+    toast?.classList.remove("visible");
+    hwToastTimer = null;
+  }, 2400);
 }
 
 // ─── Retry failed translations ────────────────────
 document.addEventListener("retry-translation", async (e: Event) => {
-  const text = (e as CustomEvent).detail.text;
+  if (!(e instanceof CustomEvent) || typeof e.detail?.text !== "string") {
+    return;
+  }
+  const text = e.detail.text;
   inputField.value = text;
   syncInputHeight();
   await handleSubmit();

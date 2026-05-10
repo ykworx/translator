@@ -1,11 +1,17 @@
+interface TauriEvent<P = unknown> {
+  event: string;
+  id: number;
+  payload: P;
+}
+
 interface Window {
   __TAURI__: {
     event: {
-      listen: (event: string, handler: (payload: any) => void) => Promise<() => void>;
-      emit: (event: string, payload?: any) => Promise<void>;
+      listen: <P = unknown>(event: string, handler: (event: TauriEvent<P>) => void) => Promise<() => void>;
+      emit: (event: string, payload?: unknown) => Promise<void>;
     };
     core: {
-      invoke: <T = any>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+      invoke: <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
     };
     window: {
       getCurrentWindow: () => {

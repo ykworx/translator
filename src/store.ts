@@ -2,15 +2,26 @@
 const { invoke } = window.__TAURI__.core;
 
 let storeRid: number | null = null;
+let storeRidPromise: Promise<number> | null = null;
 
 export async function getStoreRid(): Promise<number> {
-  if (storeRid === null) {
-    storeRid = await invoke("plugin:store|load", {
+  if (storeRid !== null) {
+    return storeRid;
+  }
+
+  if (!storeRidPromise) {
+    storeRidPromise = invoke<number>("plugin:store|load", {
       path: "settings.json",
       options: { autoSave: true },
+    }).then((rid) => {
+      storeRid = rid;
+      return rid;
+    }).finally(() => {
+      storeRidPromise = null;
     });
   }
-  return storeRid!;
+
+  return storeRidPromise;
 }
 
 export async function getSetting<T>(key: string, defaultValue: T): Promise<T> {

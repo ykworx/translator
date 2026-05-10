@@ -528,6 +528,18 @@ body {
 }
 #copy-toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+/* Handwriting overlay result toast */
+#hw-overlay-toast {
+  position: fixed; bottom: 70px; left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  background: rgba(0,0,0,0.75); backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: white; padding: 7px 16px; border-radius: 20px;
+  font-size: 12px; opacity: 0; pointer-events: none;
+  transition: opacity 0.3s, transform 0.3s; z-index: 1000;
+}
+#hw-overlay-toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

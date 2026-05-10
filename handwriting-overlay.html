@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>필기 인식 오버레이</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    #hw-overlay-root {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      display: flex;
+      flex-direction: column;
+    }
+
+    #hw-overlay-canvas {
+      position: fixed;
+      inset: 0;
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    #hw-overlay-mode-bar {
+      position: fixed;
+      top: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(255, 255, 255, 0.12);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 12px;
+      padding: 8px 16px;
+      z-index: 10;
+    }
+
+    .ov-mode-btn {
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 7px;
+      padding: 4px 14px;
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.65);
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .ov-mode-btn:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: rgba(255, 255, 255, 0.9);
+    }
+    .ov-mode-btn.active {
+      background: rgba(0, 122, 255, 0.4);
+      border-color: rgba(0, 122, 255, 0.7);
+      color: #fff;
+      font-weight: 600;
+    }
+    #ov-close-btn {
+      color: rgba(255, 200, 200, 0.75);
+      border-color: rgba(255, 100, 100, 0.25);
+    }
+    #ov-close-btn:hover {
+      background: rgba(255, 80, 80, 0.18);
+      color: #fff;
+      border-color: rgba(255, 100, 100, 0.5);
+    }
+
+    .ov-sep {
+      width: 1px;
+      height: 18px;
+      background: rgba(255, 255, 255, 0.2);
+      margin: 0 4px;
+    }
+
+    #hw-overlay-status {
+      position: fixed;
+      top: 24px;
+      right: 28px;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.65);
+      z-index: 10;
+      pointer-events: none;
+      min-height: 18px;
+    }
+
+    #hw-overlay-hint {
+      position: fixed;
+      bottom: 28px;
+      right: 28px;
+      font-size: 11.5px;
+      color: rgba(255, 255, 255, 0.55);
+      letter-spacing: 0.02em;
+      z-index: 10;
+      pointer-events: none;
+      text-align: right;
+      line-height: 1.7;
+    }
+
+    #hw-overlay-result {
+      position: fixed;
+      bottom: 32px;
+      left: 50%;
+      right: auto;
+      transform: translateX(-50%);
+      z-index: 10;
+      pointer-events: none;
+      max-width: 360px;
+    }
+
+    .ov-result-card {
+      background: rgba(30, 30, 30, 0.88);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 14px;
+      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      animation: resultAppear 0.2s ease-out;
+      cursor: pointer;
+      pointer-events: auto;
+    }
+    .ov-result-card:hover {
+      border-color: rgba(255, 255, 255, 0.28);
+    }
+    .ov-card-hint {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.45);
+      margin-top: 2px;
+      letter-spacing: 0.02em;
+    }
+    @keyframes resultAppear {
+      from { opacity: 0; transform: translateX(-50%) translateY(8px) scale(0.94); }
+      to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+    }
+
+    .ov-char-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .ov-char {
+      font-size: 48px;
+      font-weight: 300;
+      color: #fff;
+      line-height: 1;
+    }
+    .ov-insert-hint {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.65);
+    }
+    .ov-readings {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .ov-reading {
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.85);
+    }
+    .ov-reading-label {
+      font-size: 9.5px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.65);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-right: 4px;
+    }
+    .ov-reading-kr {
+      color: rgba(255, 255, 255, 0.65);
+      font-size: 12px;
+    }
+    .ov-meaning {
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.7);
+    }
+    .ov-examples {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 2px;
+    }
+    .ov-example {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    .ov-loading {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.5);
+      padding: 8px;
+    }
+    .ov-error {
+      font-size: 12px;
+      color: #ff6961;
+      padding: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div id="hw-overlay-root">
+    <canvas id="hw-overlay-canvas"></canvas>
+
+    <div id="hw-overlay-mode-bar">
+      <button class="ov-mode-btn active" data-mode="kanji">漢字</button>
+      <button class="ov-mode-btn" data-mode="kana">かな</button>
+      <div class="ov-sep"></div>
+      <button class="ov-mode-btn" id="ov-clear-btn">지우기</button>
+      <div class="ov-sep"></div>
+      <button class="ov-mode-btn" id="ov-close-btn" title="닫기 (ESC)" aria-label="필기 인식 닫기">✕</button>
+    </div>
+
+    <div id="hw-overlay-status"></div>
+    <div id="hw-overlay-result"></div>
+    <div id="hw-overlay-sr-live" aria-live="polite" aria-atomic="true" style="position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;"></div>
+
+    <div id="hw-overlay-hint">
+      ESC 취소 · ↵ 인식 · ⌘⌫ 비우기
+    </div>
+  </div>
+
+  <script type="module" src="/src/handwritingOverlay.ts"></script>
+</body>
+</html>

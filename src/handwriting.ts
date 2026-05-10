@@ -3,6 +3,8 @@ import type { HandwritingMode } from "./prompts";
 import { recognizeHandwriting, type HandwritingResult } from "./api";
 import { escapeHtml } from "./utils";
 
+const { invoke } = window.__TAURI__.core;
+
 let canvas: HTMLCanvasElement;
 let ctx: CanvasRenderingContext2D;
 let isDrawing = false;
@@ -10,6 +12,8 @@ let hasStrokes = false;
 let autoRecognizeTimer: number | null = null;
 const AUTO_RECOGNIZE_DELAY = 1500;
 let currentMode: HandwritingMode = "kanji";
+let isRecognizing = false;
+let recognitionRequestId = 0;
 
 // Panel elements
 let panel: HTMLDivElement;
@@ -29,7 +33,13 @@ export function initHandwriting(
 
   ctx = canvas.getContext("2d")!;
 
-  btnHandwriting.addEventListener("click", () => {
+  btnHandwriting.addEventListener("click", (e: MouseEvent) => {
+    if (e.shiftKey) {
+      invoke("open_handwriting_overlay").catch((err) => {
+        console.error("Failed to open handwriting overlay:", err);
+      });
+      return;
+    }
     if (isOpen) {
       closePanel();
     } else {
@@ -79,6 +89,7 @@ function openPanel(): void {
 }
 
 function closePanel(): void {
+  invalidateRecognition();
   isOpen = false;
   panel.classList.add("hidden");
   clearAutoTimer();
@@ -104,6 +115,7 @@ function setupStrokeStyle(): void {
 }
 
 function startDraw(e: PointerEvent): void {
+  invalidateRecognition();
   isDrawing = true;
   hasStrokes = true;
   clearAutoTimer();
@@ -135,6 +147,7 @@ function getPos(e: PointerEvent): { x: number; y: number } {
 }
 
 function clearCanvas(): void {
+  invalidateRecognition();
   const rect = canvas.parentElement!.getBoundingClientRect();
   ctx.clearRect(0, 0, rect.width, rect.height);
   hasStrokes = false;
@@ -149,6 +162,11 @@ function clearAutoTimer(): void {
   }
 }
 
+function invalidateRecognition(): void {
+  recognitionRequestId += 1;
+  isRecognizing = false;
+}
+
 function scheduleAutoRecognize(): void {
   clearAutoTimer();
   autoRecognizeTimer = window.setTimeout(() => {
@@ -157,17 +175,25 @@ function scheduleAutoRecognize(): void {
 }
 
 async function recognize(): Promise<void> {
-  if (!hasStrokes) return;
+  if (!hasStrokes || isRecognizing) return;
   clearAutoTimer();
+  isRecognizing = true;
+  const requestId = ++recognitionRequestId;
 
   resultArea.innerHTML = `<div class="hw-loading">인식 중…</div>`;
 
   try {
     const base64 = canvasToBase64();
     const result = await recognizeHandwriting(base64, currentMode);
+    if (requestId !== recognitionRequestId) return;
     renderResult(result);
   } catch (e) {
+    if (requestId !== recognitionRequestId) return;
     resultArea.innerHTML = `<div class="hw-error">인식 실패: ${escapeHtml(String(e))}</div>`;
+  } finally {
+    if (requestId === recognitionRequestId) {
+      isRecognizing = false;
+    }
   }
 }
 

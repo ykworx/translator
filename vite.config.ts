@@ -16,9 +16,11 @@ export default defineConfig({
     minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_DEBUG,
     rollupOptions: {
+      treeshake: true,
       input: {
         main: resolve(__dirname, "index.html"),
         settings: resolve(__dirname, "settings.html"),
+        "handwriting-overlay": resolve(__dirname, "handwriting-overlay.html"),
       },
     },
   },

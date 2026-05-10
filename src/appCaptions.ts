@@ -9,6 +9,7 @@ const { invoke } = window.__TAURI__.core;
 
 const MIN_TRANSLATION_LENGTH = 4;
 const TRANSLATION_FLUSH_DELAY = 3000;
+const MAX_OVERLAY_CAPTIONS = 200;
 
 let isAppCaptionsRunning = false;
 let appCaptionUnlisten: (() => void) | null = null;
@@ -19,6 +20,8 @@ let captionRetryStates = new Map<string, CaptionRetryState>();
 let pendingTranslationBuffer = "";
 let pendingTranslationSegmentIds: string[] = [];
 let pendingTranslationTimer: number | null = null;
+let isCaptionTranslationInFlight = false;
+let captionSessionId = 0;
 let renderRafId = 0;
 let sessionStartTime = 0; // timestamp when caption session started
 let elapsedTimerInterval: number | null = null;
@@ -211,12 +214,33 @@ function renderCaptionsInChat(): void {
   chat.scrollTop = chat.scrollHeight;
 }
 
+function trimOverlayCaptions(): void {
+  const finalCount = overlayCaptions.reduce((n, c) => (c.id === "__partial__" ? n : n + 1), 0);
+  if (finalCount <= MAX_OVERLAY_CAPTIONS) return;
+
+  let toRemove = finalCount - MAX_OVERLAY_CAPTIONS;
+  const kept: OverlayCaption[] = [];
+  for (const cap of overlayCaptions) {
+    if (toRemove > 0 && cap.id !== "__partial__") {
+      translatedCaptionSegmentIds.delete(cap.id);
+      pendingCaptionSegmentIds.delete(cap.id);
+      captionRetryStates.delete(cap.id);
+      clearTypingQueue(cap.id);
+      toRemove -= 1;
+      continue;
+    }
+    kept.push(cap);
+  }
+  overlayCaptions = kept;
+}
+
 function pushOverlayCaption(original: string, translated: string, id: string): void {
   const now = Date.now();
   if (id !== "__partial__") {
     const partialIdx = overlayCaptions.findIndex(c => c.id === "__partial__");
     if (partialIdx !== -1) {
       overlayCaptions[partialIdx] = { id, original, translated, timestamp: overlayCaptions[partialIdx].timestamp || now };
+      trimOverlayCaptions();
       return;
     }
   }
@@ -226,6 +250,7 @@ function pushOverlayCaption(original: string, translated: string, id: string): v
   } else {
     overlayCaptions.push({ id, original, translated, timestamp: now });
   }
+  trimOverlayCaptions();
 }
 
 function resetAppCaptionSession(): void {
@@ -240,6 +265,7 @@ function resetAppCaptionSession(): void {
     window.clearTimeout(pendingTranslationTimer);
     pendingTranslationTimer = null;
   }
+  isCaptionTranslationInFlight = false;
   if (elapsedTimerInterval !== null) {
     window.clearInterval(elapsedTimerInterval);
     elapsedTimerInterval = null;
@@ -254,8 +280,10 @@ function stopAppCaptionListening(): void {
   }
 }
 
-function flushPendingTranslation(): void {
+function flushPendingTranslation(sessionId = captionSessionId): void {
+  if (sessionId !== captionSessionId) return;
   if (!pendingTranslationBuffer || pendingTranslationSegmentIds.length === 0) return;
+  if (isCaptionTranslationInFlight) return;
   const text = pendingTranslationBuffer;
   const segmentIds = [...pendingTranslationSegmentIds];
   pendingTranslationBuffer = "";
@@ -273,11 +301,13 @@ function flushPendingTranslation(): void {
     clearTypingQueue(oldId);
   }
   scheduleRenderCaptions();
-  doTranslate(text, segmentId);
+  void doTranslate(text, segmentId, sessionId);
 }
 
-async function doTranslate(text: string, segmentId: string): Promise<void> {
+async function doTranslate(text: string, segmentId: string, sessionId: number): Promise<void> {
+  if (sessionId !== captionSessionId) return;
   pendingCaptionSegmentIds.add(segmentId);
+  isCaptionTranslationInFlight = true;
 
   // Show empty translation with cursor (streaming will fill it)
   pushOverlayCaption(text, "", segmentId);
@@ -295,6 +325,7 @@ async function doTranslate(text: string, segmentId: string): Promise<void> {
       text,
       targetLang,
       (partial) => {
+        if (sessionId !== captionSessionId) return;
         pushOverlayCaption(text, partial, segmentId);
         // Mark as streaming in DOM
         const el = chat.querySelector(`[data-caption-id="${segmentId}"] .caption-translation`);
@@ -304,6 +335,7 @@ async function doTranslate(text: string, segmentId: string): Promise<void> {
       autoLangPair,
       recentContext || undefined,
     );
+    if (sessionId !== captionSessionId) return;
     translatedCaptionSegmentIds.add(segmentId);
     captionRetryStates.delete(segmentId);
     pushOverlayCaption(text, translated, segmentId);
@@ -330,6 +362,7 @@ async function doTranslate(text: string, segmentId: string): Promise<void> {
     }
     scheduleRenderCaptions();
   } catch (e) {
+    if (sessionId !== captionSessionId) return;
     const attempts = (retryState?.attempts ?? 0) + 1;
     captionRetryStates.set(segmentId, {
       attempts,
@@ -338,11 +371,17 @@ async function doTranslate(text: string, segmentId: string): Promise<void> {
     pushOverlayCaption(text, `[오류] ${getErrorMessage(e)} · 재시도 중`, segmentId);
     scheduleRenderCaptions();
   } finally {
+    if (sessionId !== captionSessionId) return;
+    isCaptionTranslationInFlight = false;
     pendingCaptionSegmentIds.delete(segmentId);
+    if (pendingTranslationBuffer && pendingTranslationSegmentIds.length > 0) {
+      flushPendingTranslation(sessionId);
+    }
   }
 }
 
-async function translateAppCaptionFinal(state: AppCaptionState): Promise<void> {
+async function translateAppCaptionFinal(state: AppCaptionState, sessionId: number): Promise<void> {
+  if (sessionId !== captionSessionId) return;
   if (!state.lastFinalTranscript || !state.lastFinalSegmentId) return;
 
   const segmentId = state.lastFinalSegmentId;
@@ -359,15 +398,18 @@ async function translateAppCaptionFinal(state: AppCaptionState): Promise<void> {
   if (pendingTranslationTimer !== null) {
     window.clearTimeout(pendingTranslationTimer);
   }
-  pendingTranslationTimer = window.setTimeout(flushPendingTranslation, TRANSLATION_FLUSH_DELAY);
+  pendingTranslationTimer = window.setTimeout(() => {
+    flushPendingTranslation(sessionId);
+  }, TRANSLATION_FLUSH_DELAY);
 
   if (pendingTranslationBuffer.length >= MIN_TRANSLATION_LENGTH) {
-    flushPendingTranslation();
+    flushPendingTranslation(sessionId);
   }
   // Don't create a card for pending short segments — wait for merge or flush
 }
 
-async function handleAppCaptionUpdate(state: AppCaptionState): Promise<void> {
+async function handleAppCaptionUpdate(state: AppCaptionState, sessionId: number): Promise<void> {
+  if (sessionId !== captionSessionId) return;
   if (!isAppCaptionsRunning) return;
 
   if (state.error && !state.isRunning) {
@@ -389,7 +431,7 @@ async function handleAppCaptionUpdate(state: AppCaptionState): Promise<void> {
       scheduleRenderCaptions();
     }
 
-    await translateAppCaptionFinal(state);
+    await translateAppCaptionFinal(state, sessionId);
     return;
   }
 
@@ -401,17 +443,25 @@ async function handleAppCaptionUpdate(state: AppCaptionState): Promise<void> {
 }
 
 async function startAppCaptionListener(): Promise<void> {
+  const sessionId = captionSessionId;
   stopAppCaptionListening();
-  appCaptionUnlisten = await listen("app-caption-update", (event: any) => {
-    void handleAppCaptionUpdate(event.payload as AppCaptionState);
+  appCaptionUnlisten = await listen<AppCaptionState>("app-caption-update", (event) => {
+    if (sessionId !== captionSessionId) return;
+    void handleAppCaptionUpdate(event.payload, sessionId);
   });
+  if (sessionId !== captionSessionId) {
+    appCaptionUnlisten?.();
+    appCaptionUnlisten = null;
+  }
 }
 
 async function startAppCaptions(): Promise<void> {
-  const savedSpeechLocale = await getSetting(SETTINGS_KEYS.speechLocale, DEFAULTS.speechLocale);
+  const sessionId = ++captionSessionId;
+  const savedSpeechLocale = await getSetting<string>(SETTINGS_KEYS.speechLocale, DEFAULTS.speechLocale);
   const captureMode = await getSetting(SETTINGS_KEYS.captureMode, DEFAULTS.captureMode);
   const selectedCaptureWindow = await getSetting(SETTINGS_KEYS.captureWindow, DEFAULTS.captureWindow);
   const permissions = await invoke<AppCaptionState>("request_caption_capture_permissions");
+  if (sessionId !== captionSessionId) return;
   if (!permissions.authorized) {
     throw new Error(permissions.error || "앱 자막 권한이 필요합니다.");
   }
@@ -423,6 +473,7 @@ async function startAppCaptions(): Promise<void> {
   const domainHint = await getSetting(SETTINGS_KEYS.domainHint, DEFAULTS.domainHint);
   if (domainHint) {
     await invoke("set_whisper_domain_hint", { hint: domainHint });
+    if (sessionId !== captionSessionId) return;
   }
 
   resetAppCaptionSession();
@@ -433,6 +484,7 @@ async function startAppCaptions(): Promise<void> {
     captureMode,
     windowIdentifier: selectedCaptureWindow || null,
   });
+  if (sessionId !== captionSessionId) return;
   if (state.error) {
     throw new Error(state.error);
   }
@@ -453,6 +505,7 @@ async function startAppCaptions(): Promise<void> {
 }
 
 async function stopAppCaptions(): Promise<void> {
+  captionSessionId += 1;
   stopAppCaptionListening();
   isAppCaptionsRunning = false;
 

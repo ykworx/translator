@@ -131,11 +131,28 @@ export interface HandwritingResult {
   examples: string[];
 }
 
+function normalizeHandwritingResult(raw: unknown, fallbackMeaning: string): HandwritingResult {
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Invalid handwriting response");
+  }
+
+  const data = raw as Record<string, unknown>;
+  return {
+    character: typeof data.character === "string" && data.character.trim() ? data.character : "?",
+    onyomi: typeof data.onyomi === "string" && data.onyomi.trim() ? data.onyomi : "—",
+    onyomiKr: typeof data.onyomiKr === "string" && data.onyomiKr.trim() ? data.onyomiKr : "—",
+    kunyomi: typeof data.kunyomi === "string" && data.kunyomi.trim() ? data.kunyomi : "—",
+    kunyomiKr: typeof data.kunyomiKr === "string" && data.kunyomiKr.trim() ? data.kunyomiKr : "—",
+    meaning: typeof data.meaning === "string" && data.meaning.trim() ? data.meaning : fallbackMeaning,
+    examples: Array.isArray(data.examples) ? data.examples.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [],
+  };
+}
+
 export async function recognizeHandwriting(base64Png: string, mode: HandwritingMode = "kanji"): Promise<HandwritingResult> {
   const raw = await generateImage(buildHandwritingRecognitionPrompt(mode), base64Png);
   const cleaned = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
   try {
-    return JSON.parse(cleaned);
+    return normalizeHandwritingResult(JSON.parse(cleaned), raw);
   } catch {
     return {
       character: "?",

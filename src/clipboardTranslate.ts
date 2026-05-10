@@ -8,6 +8,17 @@ const { listen } = window.__TAURI__.event;
 const { invoke } = window.__TAURI__.core;
 
 let resolveLangConfig: () => Promise<LangConfig>;
+let isClipboardTranslationInFlight = false;
+
+async function runClipboardTranslation(task: () => Promise<void>): Promise<void> {
+  if (isClipboardTranslationInFlight) return;
+  isClipboardTranslationInFlight = true;
+  try {
+    await task();
+  } finally {
+    isClipboardTranslationInFlight = false;
+  }
+}
 
 async function handleImageTranslateFromClipboard(emptyMessage: string): Promise<void> {
   try {
@@ -44,61 +55,65 @@ export function initClipboardListeners(_resolveLangConfig: () => Promise<LangCon
   resolveLangConfig = _resolveLangConfig;
 
   listen("global-translate", async () => {
-    try {
-      let tableHtml: string | null = null;
+    await runClipboardTranslation(async () => {
       try {
-        tableHtml = await invoke<string | null>("read_clipboard_html");
-      } catch (e) {
-        console.error("HTML clipboard read error:", e);
-      }
+        let tableHtml: string | null = null;
+        try {
+          tableHtml = await invoke<string | null>("read_clipboard_html");
+        } catch (e) {
+          console.error("HTML clipboard read error:", e);
+        }
 
-      if (tableHtml) {
+        if (tableHtml) {
+          let clipText: string | null = null;
+          try { clipText = await readText(); } catch {}
+          const displayText = clipText?.trim() || "(테이블)";
+          chat.appendChild(renderLoading(displayText));
+          chat.scrollTop = chat.scrollHeight;
+          try {
+            const { targetLang, autoLangPair } = await resolveLangConfig();
+            const result = await translateTable(tableHtml, targetLang, autoLangPair);
+            addEntry({ original: displayText, translated: result, isTable: true, originalHtml: tableHtml });
+            // Auto-copy as HTML table (preserves structure on paste)
+            try { await writeHtmlToClipboard(result); } catch {}
+          } catch (e) {
+            removeLoading();
+            addEntry({ original: displayText, translated: `[오류] ${getErrorMessage(e)}` });
+          }
+          return;
+        }
+
         let clipText: string | null = null;
-        try { clipText = await readText(); } catch {}
-        const displayText = clipText?.trim() || "(테이블)";
-        chat.appendChild(renderLoading(displayText));
-        chat.scrollTop = chat.scrollHeight;
         try {
-          const { targetLang, autoLangPair } = await resolveLangConfig();
-          const result = await translateTable(tableHtml, targetLang, autoLangPair);
-          addEntry({ original: displayText, translated: result, isTable: true, originalHtml: tableHtml });
-          // Auto-copy as HTML table (preserves structure on paste)
-          try { await writeHtmlToClipboard(result); } catch {}
-        } catch (e) {
-          removeLoading();
-          addEntry({ original: displayText, translated: `[오류] ${getErrorMessage(e)}` });
+          clipText = await readText();
+        } catch {}
+
+        if (clipText && clipText.trim()) {
+          const text = clipText.trim();
+          chat.appendChild(renderLoading(text));
+          chat.scrollTop = chat.scrollHeight;
+          try {
+            const { targetLang, autoLangPair } = await resolveLangConfig();
+            const result = await translate(text, targetLang, autoLangPair);
+            addEntry({ original: text, translated: result });
+            try { await writeTextToClipboard(result); } catch {}
+          } catch (e) {
+            removeLoading();
+            addEntry({ original: text, translated: `[오류] ${getErrorMessage(e)}` });
+          }
+          return;
         }
-        return;
+
+        await handleImageTranslateFromClipboard("번역할 텍스트, 테이블, 또는 이미지를 복사한 후 다시 시도해주세요.");
+      } catch (e) {
+        console.error("Clipboard read error:", e);
       }
-
-      let clipText: string | null = null;
-      try {
-        clipText = await readText();
-      } catch {}
-
-      if (clipText && clipText.trim()) {
-        const text = clipText.trim();
-        chat.appendChild(renderLoading(text));
-        chat.scrollTop = chat.scrollHeight;
-        try {
-          const { targetLang, autoLangPair } = await resolveLangConfig();
-          const result = await translate(text, targetLang, autoLangPair);
-          addEntry({ original: text, translated: result });
-          try { await writeTextToClipboard(result); } catch {}
-        } catch (e) {
-          removeLoading();
-          addEntry({ original: text, translated: `[오류] ${getErrorMessage(e)}` });
-        }
-        return;
-      }
-
-      await handleImageTranslateFromClipboard("번역할 텍스트, 테이블, 또는 이미지를 복사한 후 다시 시도해주세요.");
-    } catch (e) {
-      console.error("Clipboard read error:", e);
-    }
+    });
   });
 
   listen("global-translate-image", async () => {
-    await handleImageTranslateFromClipboard("영역 캡처가 취소되었거나 이미지가 클립보드에 없습니다.");
+    await runClipboardTranslation(async () => {
+      await handleImageTranslateFromClipboard("영역 캡처가 취소되었거나 이미지가 클립보드에 없습니다.");
+    });
   });
 }

@@ -13,7 +13,81 @@ use tauri::{
     tray::TrayIconEvent,
     Manager, WindowEvent,
 };
+use tauri_plugin_global_shortcut::Shortcut;
 use tauri_plugin_store::StoreExt;
+
+#[tauri::command]
+fn open_handwriting_overlay(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("handwriting-overlay") {
+        win.show().map_err(|e| format!("Failed to show overlay: {e}"))?;
+        win.set_focus().map_err(|e| format!("Failed to focus overlay: {e}"))?;
+        return Ok(());
+    }
+
+    let monitors: Vec<tauri::window::Monitor> = app
+        .get_webview_window("main")
+        .and_then(|w| w.available_monitors().ok())
+        .unwrap_or_default();
+
+    // Use primary monitor dimensions; fall back to a large fixed size
+    let (ow, oh, ox, oy) = monitors
+        .iter()
+        .find(|m: &&tauri::window::Monitor| {
+            // Prefer the monitor containing the cursor
+            #[cfg(target_os = "macos")]
+            {
+                if let Some((cx, cy)) = window::get_cursor_position() {
+                    let sf = m.scale_factor();
+                    let mp = m.position();
+                    let ms = m.size();
+                    let mx = mp.x as f64 / sf;
+                    let my = mp.y as f64 / sf;
+                    let mw = ms.width as f64 / sf;
+                    let mh = ms.height as f64 / sf;
+                    return cx >= mx && cx < mx + mw && cy >= my && cy < my + mh;
+                }
+            }
+            let _ = m;
+            false
+        })
+        .or_else(|| monitors.first())
+        .map(|m: &tauri::window::Monitor| {
+            let sf = m.scale_factor();
+            let mp = m.position();
+            let ms = m.size();
+            (
+                ms.width as f64 / sf,
+                ms.height as f64 / sf,
+                mp.x as f64 / sf,
+                mp.y as f64 / sf,
+            )
+        })
+        .unwrap_or((1440.0, 900.0, 0.0, 0.0));
+
+    let win = tauri::WebviewWindowBuilder::new(
+        &app,
+        "handwriting-overlay",
+        tauri::WebviewUrl::App("handwriting-overlay.html".into()),
+    )
+    .title("필기 인식")
+    .inner_size(ow, oh)
+    .position(ox, oy)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .closable(true)
+    .build()
+    .map_err(|e| {
+        error!("Failed to create handwriting overlay window: {e}");
+        format!("Failed to create handwriting overlay window: {e}")
+    })?;
+
+    win.set_focus()
+        .map_err(|e| format!("Failed to focus overlay: {e}"))?;
+    Ok(())
+}
 
 use shortcut::{
     CurrentShortcuts, DEFAULT_CLIPBOARD_SHORTCUT, DEFAULT_SELECT_SHORTCUT,
@@ -21,14 +95,33 @@ use shortcut::{
 };
 use window::{center_window_on_cursor, show_window_centered};
 
+fn parse_default_shortcut(shortcut_str: &str, shortcut_name: &str) -> Shortcut {
+    parse_shortcut_str(shortcut_str).expect(&format!(
+        "Built-in default {shortcut_name} shortcut `{shortcut_str}` should always parse"
+    ))
+}
+
+fn parse_configured_shortcut(configured: &str, default: &str, shortcut_name: &str) -> Shortcut {
+    match parse_shortcut_str(configured) {
+        Ok(shortcut) => shortcut,
+        Err(e) => {
+            warn!(
+                "Invalid configured {shortcut_name} shortcut `{configured}`; falling back to `{default}`: {e}"
+            );
+            parse_default_shortcut(default, shortcut_name)
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(CurrentShortcuts {
-            select: parse_shortcut_str(DEFAULT_SELECT_SHORTCUT).unwrap(),
-            clipboard: parse_shortcut_str(DEFAULT_CLIPBOARD_SHORTCUT).unwrap(),
+            select: parse_default_shortcut(DEFAULT_SELECT_SHORTCUT, "select"),
+            clipboard: parse_default_shortcut(DEFAULT_CLIPBOARD_SHORTCUT, "clipboard"),
         }))
         .invoke_handler(tauri::generate_handler![
+            open_handwriting_overlay,
             clipboard::read_clipboard_image,
             clipboard::read_clipboard_html,
             clipboard::write_clipboard_html,
@@ -75,7 +168,9 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&about_item, &sep1, &shortcut_hint, &settings_item, &sep2, &quit_item])?;
 
             // Get existing tray icon (created from tauri.conf.json)
-            let tray = app.tray_by_id("main-tray").expect("tray not found");
+            let tray = app
+                .tray_by_id("main-tray")
+                .expect("Tray icon `main-tray` declared in tauri.conf.json was not found during app setup");
             tray.set_menu(Some(menu))?;
             tray.set_show_menu_on_left_click(false)?;
 
@@ -84,12 +179,17 @@ pub fn run() {
                 if let TrayIconEvent::Click { button, button_state, .. } = event {
                     if button == tauri::tray::MouseButton::Left && button_state == tauri::tray::MouseButtonState::Up {
                         if let Some(window) = app_handle.get_webview_window("main") {
-                            if window.is_visible().unwrap_or(false) {
-                                if let Err(e) = window.hide() {
-                                    warn!("Failed to hide window on tray click: {e}");
+                            match window.is_visible() {
+                                Ok(true) => {
+                                    if let Err(e) = window.hide() {
+                                        warn!("Failed to hide window on tray click: {e}");
+                                    }
                                 }
-                            } else {
-                                show_window_centered(&window);
+                                Ok(false) => show_window_centered(&window),
+                                Err(e) => {
+                                    warn!("Failed to determine main window visibility on tray click: {e}");
+                                    show_window_centered(&window);
+                                }
                             }
                         }
                     }
@@ -160,15 +260,23 @@ pub fn run() {
                 .and_then(|v| v.as_str().map(String::from))
                 .unwrap_or_else(|| DEFAULT_CLIPBOARD_SHORTCUT.to_string());
 
-            let select_shortcut = parse_shortcut_str(&select_str)
-                .unwrap_or_else(|_| parse_shortcut_str(DEFAULT_SELECT_SHORTCUT).unwrap());
-            let clipboard_shortcut = parse_shortcut_str(&clipboard_str)
-                .unwrap_or_else(|_| parse_shortcut_str(DEFAULT_CLIPBOARD_SHORTCUT).unwrap());
+            let select_shortcut =
+                parse_configured_shortcut(&select_str, DEFAULT_SELECT_SHORTCUT, "select");
+            let clipboard_shortcut = parse_configured_shortcut(
+                &clipboard_str,
+                DEFAULT_CLIPBOARD_SHORTCUT,
+                "clipboard",
+            );
 
             // Update managed state with actual shortcuts
             {
                 let sc_state = app.state::<Mutex<CurrentShortcuts>>();
-                let mut current = sc_state.lock().unwrap();
+                let mut current = sc_state.lock().map_err(|e| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Failed to lock current shortcuts state during setup: {e}"),
+                    )
+                })?;
                 current.select = select_shortcut.clone();
                 current.clipboard = clipboard_shortcut.clone();
             }
@@ -203,5 +311,5 @@ pub fn run() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .expect("Failed to run Tauri application event loop");
 }

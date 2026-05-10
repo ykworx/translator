@@ -1,3 +1,4 @@
+use log::warn;
 use serde::{Deserialize, Serialize};
 use std::ffi::CString;
 use std::os::raw::c_char;
@@ -204,7 +205,9 @@ async fn download_file(
                     0.0
                 },
             };
-            app.emit("model-download-progress", &progress).ok();
+            if let Err(e) = app.emit("model-download-progress", &progress) {
+                warn!("Failed to emit model-download-progress: {e}");
+            }
             last_emit = std::time::Instant::now();
         }
     }
@@ -216,7 +219,9 @@ async fn download_file(
         total,
         percent: 100.0,
     };
-    app.emit("model-download-progress", &progress).ok();
+    if let Err(e) = app.emit("model-download-progress", &progress) {
+        warn!("Failed to emit final model-download-progress: {e}");
+    }
 
     // Rename tmp to final
     std::fs::rename(&tmp_path, dest)

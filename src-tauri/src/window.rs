@@ -50,13 +50,24 @@ pub fn show_window_centered(window: &tauri::WebviewWindow) {
     #[cfg(target_os = "macos")]
     {
         use objc2_app_kit::NSWindowCollectionBehavior;
-        let ns_window = window.ns_window().expect("Failed to get NSWindow");
-        let ns_window: objc2::rc::Retained<objc2_app_kit::NSWindow> =
-            unsafe { objc2::rc::Retained::retain(ns_window as *mut objc2_app_kit::NSWindow).unwrap() };
-        ns_window.setCollectionBehavior(
-            NSWindowCollectionBehavior::MoveToActiveSpace
-                | NSWindowCollectionBehavior::FullScreenAuxiliary,
-        );
+        match window.ns_window() {
+            Ok(ns_window) => {
+                let ns_window = unsafe {
+                    objc2::rc::Retained::<objc2_app_kit::NSWindow>::retain(
+                        ns_window as *mut objc2_app_kit::NSWindow,
+                    )
+                };
+                if let Some(ns_window) = ns_window {
+                    ns_window.setCollectionBehavior(
+                        NSWindowCollectionBehavior::MoveToActiveSpace
+                            | NSWindowCollectionBehavior::FullScreenAuxiliary,
+                    );
+                } else {
+                    warn!("Failed to retain NSWindow handle");
+                }
+            }
+            Err(e) => warn!("Failed to get NSWindow handle: {e}"),
+        }
     }
     if let Err(e) = window.set_always_on_top(true) {
         warn!("Failed to set always on top: {e}");

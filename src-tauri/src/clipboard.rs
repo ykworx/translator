@@ -79,7 +79,7 @@ pub fn write_clipboard_html(html: String) {
         use objc2_app_kit::NSPasteboard;
         use objc2_foundation::NSString;
         let pasteboard = NSPasteboard::generalPasteboard();
-        unsafe { pasteboard.clearContents() };
+        pasteboard.clearContents();
         let html_type = NSString::from_str("public.html");
         let text_type = NSString::from_str("public.utf8-plain-text");
         let ns_html = NSString::from_str(&html);

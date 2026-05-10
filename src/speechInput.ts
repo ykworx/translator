@@ -8,6 +8,7 @@ const { invoke } = window.__TAURI__.core;
 let speechPollTimer: number | null = null;
 let isSpeechRecording = false;
 let isSpeechPolling = false;
+let speechSessionId = 0;
 
 let inputField: HTMLTextAreaElement;
 let speechStatus: HTMLDivElement;
@@ -39,17 +40,20 @@ function stopSpeechPolling(): void {
 
 function scheduleSpeechPoll(delayMs = 350): void {
   stopSpeechPolling();
+  const sessionId = speechSessionId;
   speechPollTimer = window.setTimeout(() => {
-    void pollSpeechState();
+    void pollSpeechState(sessionId);
   }, delayMs);
 }
 
-async function pollSpeechState(): Promise<void> {
+async function pollSpeechState(sessionId: number): Promise<void> {
   if (isSpeechPolling) return;
+  if (sessionId !== speechSessionId) return;
   isSpeechPolling = true;
 
   try {
     const state = await invoke<SpeechRecognitionState>("get_speech_recognition_state");
+    if (sessionId !== speechSessionId) return;
     applySpeechTranscript(state);
 
     if (state.error) {
@@ -76,6 +80,7 @@ async function pollSpeechState(): Promise<void> {
       updateSpeechUi("", false);
     }
   } catch (e) {
+    if (sessionId !== speechSessionId) return;
     isSpeechRecording = false;
     stopSpeechPolling();
     updateSpeechUi(getErrorMessage(e), false);
@@ -85,12 +90,13 @@ async function pollSpeechState(): Promise<void> {
 }
 
 async function startSpeechInput(): Promise<void> {
+  speechSessionId += 1;
   const permissions = await invoke<SpeechRecognitionState>("request_speech_permissions");
   if (!permissions.authorized) {
     throw new Error(permissions.error || "음성 입력 권한이 필요합니다.");
   }
 
-  const savedSpeechLocale = await getSetting(SETTINGS_KEYS.speechLocale, DEFAULTS.speechLocale);
+  const savedSpeechLocale = await getSetting<string>(SETTINGS_KEYS.speechLocale, DEFAULTS.speechLocale);
   const localeIdentifier = savedSpeechLocale === "system"
     ? (navigator.language || "ko-KR")
     : savedSpeechLocale;
@@ -113,6 +119,7 @@ async function startSpeechInput(): Promise<void> {
 }
 
 async function stopSpeechInput(): Promise<void> {
+  speechSessionId += 1;
   stopSpeechPolling();
   isSpeechRecording = false;
 

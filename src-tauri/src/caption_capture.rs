@@ -1,3 +1,4 @@
+use log::warn;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -7,7 +8,9 @@ use tauri::{Emitter, Manager};
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 pub fn init_app_handle(handle: tauri::AppHandle) {
-    APP_HANDLE.set(handle).ok();
+    if APP_HANDLE.set(handle).is_err() {
+        warn!("caption_capture app handle was already initialized");
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -16,12 +19,21 @@ pub extern "C" fn caption_state_changed(json_ptr: *const c_char) {
     let Some(window) = handle.get_webview_window("main") else { return };
 
     if json_ptr.is_null() { return; }
-    let json_str = unsafe { CStr::from_ptr(json_ptr) }
-        .to_str()
-        .unwrap_or("");
+    let json_str = match unsafe { CStr::from_ptr(json_ptr) }.to_str() {
+        Ok(json_str) => json_str,
+        Err(e) => {
+            warn!("Caption state callback returned invalid UTF-8: {e}");
+            return;
+        }
+    };
 
-    if let Ok(state) = serde_json::from_str::<AppCaptionStatus>(json_str) {
-        window.emit("app-caption-update", state).ok();
+    match serde_json::from_str::<AppCaptionStatus>(json_str) {
+        Ok(state) => {
+            if let Err(e) = window.emit("app-caption-update", state) {
+                warn!("Failed to emit app-caption-update event: {e}");
+            }
+        }
+        Err(e) => warn!("Caption state callback returned invalid JSON: {e}"),
     }
 }
 
