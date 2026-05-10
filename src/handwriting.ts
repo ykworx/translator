@@ -1,7 +1,7 @@
 // ─── Handwriting Recognition Module ─────────────────
 import type { HandwritingMode } from "./prompts";
 import { recognizeHandwriting, type HandwritingResult } from "./api";
-import { escapeHtml } from "./utils";
+import { escapeHtml, getErrorMessage } from "./utils";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -189,7 +189,7 @@ async function recognize(): Promise<void> {
     renderResult(result);
   } catch (e) {
     if (requestId !== recognitionRequestId) return;
-    resultArea.innerHTML = `<div class="hw-error">인식 실패: ${escapeHtml(String(e))}</div>`;
+    resultArea.innerHTML = `<div class="hw-error">인식 실패: ${escapeHtml(getErrorMessage(e))}</div>`;
   } finally {
     if (requestId === recognitionRequestId) {
       isRecognizing = false;

@@ -185,3 +185,14 @@ export async function generateImage(prompt: string, imageBase64: string): Promis
     },
   ]);
 }
+
+import type { LlmBackend } from "./llmBackend";
+
+export const geminiNativeBackend: LlmBackend = {
+  id: "gemini-native",
+  label: "Gemini API",
+  supportsVision: true,
+  generateText,
+  generateTextStream,
+  generateImage,
+};

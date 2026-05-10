@@ -1,4 +1,4 @@
-import { generateImage, generateText, generateTextStream } from "./geminiClient";
+import { getActiveBackend } from "./llmBackend";
 import {
   type AutoLangPair,
   type HandwritingMode,
@@ -23,7 +23,8 @@ export interface ImageTranslationResult {
 }
 
 export async function callGemini(prompt: string): Promise<string> {
-  return generateText(prompt);
+  const backend = await getActiveBackend();
+  return backend.generateText(prompt);
 }
 
 function unwrapCodeFence(text: string): string {
@@ -95,7 +96,8 @@ export async function translateStream(
   const prompt = context
     ? buildTranslatePrompt(text, targetLang, autoLangPair, context)
     : buildTranslatePrompt(text, targetLang, autoLangPair);
-  return generateTextStream(prompt, onChunk);
+  const backend = await getActiveBackend();
+  return backend.generateTextStream(prompt, onChunk);
 }
 
 export async function translateTable(tableHtml: string, targetLang: string, autoLangPair?: AutoLangPair): Promise<string> {
@@ -109,7 +111,13 @@ export async function suggestReplies(original: string, translated: string): Prom
 }
 
 export async function translateImage(base64Png: string, targetLang: string, autoLangPair?: AutoLangPair): Promise<ImageTranslationResult> {
-  const raw = await generateImage(buildTranslateImagePrompt(targetLang, autoLangPair), base64Png);
+  const backend = await getActiveBackend();
+  if (!backend.supportsVision) {
+    throw new Error(
+      "현재 백엔드가 이미지 인식을 지원하지 않습니다. Gemini API로 전환하거나 비전 모델(gemma3 등)을 선택하세요.",
+    );
+  }
+  const raw = await backend.generateImage(buildTranslateImagePrompt(targetLang, autoLangPair), base64Png);
   return parseImageTranslationResult(raw);
 }
 
@@ -149,7 +157,13 @@ function normalizeHandwritingResult(raw: unknown, fallbackMeaning: string): Hand
 }
 
 export async function recognizeHandwriting(base64Png: string, mode: HandwritingMode = "kanji"): Promise<HandwritingResult> {
-  const raw = await generateImage(buildHandwritingRecognitionPrompt(mode), base64Png);
+  const backend = await getActiveBackend();
+  if (!backend.supportsVision) {
+    throw new Error(
+      "현재 백엔드가 이미지 인식을 지원하지 않습니다. Gemini API로 전환하거나 비전 모델(gemma3 등)을 선택하세요.",
+    );
+  }
+  const raw = await backend.generateImage(buildHandwritingRecognitionPrompt(mode), base64Png);
   const cleaned = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
   try {
     return normalizeHandwritingResult(JSON.parse(cleaned), raw);

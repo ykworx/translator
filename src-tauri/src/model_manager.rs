@@ -234,14 +234,10 @@ async fn download_file(
 pub async fn delete_whisper_model(app: AppHandle) -> Result<ModelStatus, String> {
     log::info!("[model_manager] delete_whisper_model called");
 
-    // Unload model first (thread-safe, no runOnMain)
+    // Unload model first (thread-safe, drains warm-up before unload)
     #[cfg(target_os = "macos")]
     {
-        unsafe extern "C" {
-            fn whisper_engine_unload_model();
-        }
-        unsafe { whisper_engine_unload_model() };
-        log::info!("[model_manager] whisper_engine_unload_model done");
+        shutdown_whisper();
     }
 
     let dir = models_dir(&app)?;
@@ -310,6 +306,17 @@ pub async fn load_whisper_model(app: AppHandle) -> Result<ModelStatus, String> {
     }
 
     check_whisper_model(app).await
+}
+
+pub fn shutdown_whisper() {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn whisper_engine_shutdown();
+        }
+        unsafe { whisper_engine_shutdown() };
+        log::info!("[model_manager] whisper shutdown done");
+    }
 }
 
 #[tauri::command]

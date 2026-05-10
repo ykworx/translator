@@ -236,6 +236,8 @@ final class WhisperEngine {
 
     // MARK: - Model lifecycle
 
+    fileprivate static let warmupGroup = DispatchGroup()
+
     func loadModel(path: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -265,7 +267,9 @@ final class WhisperEngine {
         // Warm-up encode: run a dummy encode with 0.1s silence to prime
         // CoreML compilation cache + Metal shader cache (~60ms first-encode penalty absorbed here)
         let warmupCtx = newCtx
+        WhisperEngine.warmupGroup.enter()
         DispatchQueue.global(qos: .utility).async {
+            defer { WhisperEngine.warmupGroup.leave() }
             let silenceSamples = [Float](repeating: 0.0, count: 1600) // 0.1s at 16kHz
             var warmParams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
             warmParams.print_realtime = false
@@ -981,4 +985,13 @@ public func whisper_engine_feed_wav(wavPath: UnsafePointer<CChar>?, language: Un
     let lang = language.map { String(cString: $0) }
     let result = WhisperEngine.shared.feedWavFile(path: path, language: lang)
     return jsonCString(result)
+}
+
+@_cdecl("whisper_engine_shutdown")
+public func whisper_engine_shutdown() {
+    let result = WhisperEngine.warmupGroup.wait(timeout: .now() + 2.0)
+    if result == .timedOut {
+        NSLog("[WhisperEngine] shutdown: warmup timeout, proceeding anyway")
+    }
+    whisper_engine_unload_model()
 }

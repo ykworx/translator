@@ -72,6 +72,9 @@ export const SETTINGS_KEYS = {
   clipboardShortcut: "clipboardShortcut",
   domainHint: "domainHint",
   whisperModel: "whisperModel",
+  llmBackendId: "llmBackendId",
+  ollamaBaseUrl: "ollamaBaseUrl",
+  ollamaModel: "ollamaModel",
 } as const;
 
 /** Default settings values */
@@ -88,7 +91,17 @@ export const DEFAULTS = {
   clipboardShortcut: "Super+Ctrl+Shift+KeyT",
   domainHint: "日本語のドラマ、アニメ、映画の会話。日常会話、感情表現、キャラクター名。",
   whisperModel: "large-v3-turbo",
+  llmBackendId: "gemini-native" as "gemini-native" | "ollama",
+  ollamaBaseUrl: "http://localhost:11434",
+  ollamaModel: "gemma3:4b",
 } as const;
+
+export const OLLAMA_DEFAULT_MODELS = [
+  "gemma3:4b",
+  "gemma3:12b",
+  "gemma2:9b",
+  "llava",
+] as const;
 
 /** UI constants */
 export const MAX_TEXTAREA_HEIGHT = 195;

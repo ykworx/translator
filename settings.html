@@ -262,6 +262,29 @@
       text-align: right;
     }
 
+    /* Backend toggle */
+    .backend-toggle {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .backend-toggle label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--fg);
+      cursor: pointer;
+      margin-bottom: 0;
+    }
+    .setting-hint {
+      font-size: 11px;
+      color: var(--fg-dim);
+      margin-top: 4px;
+      min-height: 16px;
+    }
+    .hidden { display: none !important; }
+
     /* About */
     .about-center {
       text-align: center;
@@ -416,13 +439,38 @@
     <!-- API -->
     <div class="tab-pane" id="pane-api">
       <div class="field">
-        <label>Gemini API Key</label>
-        <input type="password" id="api-key" placeholder="API 키를 입력하세요...">
+        <label>LLM 백엔드</label>
+        <div class="backend-toggle">
+          <label><input type="radio" name="llm-backend" value="gemini-native" checked> Gemini API</label>
+          <label><input type="radio" name="llm-backend" value="ollama"> Ollama (로컬)</label>
+        </div>
       </div>
-      <div class="field">
-        <label>모델</label>
-        <select id="model">
-        </select>
+
+      <div id="ollama-section" class="hidden">
+        <div class="field">
+          <label>Ollama URL</label>
+          <div style="display:flex;gap:8px;">
+            <input type="text" id="ollama-baseurl" placeholder="http://localhost:11434" style="flex:1;">
+            <button type="button" id="ollama-detect-btn" style="white-space:nowrap;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg);color:var(--fg);font-size:12px;font-family:inherit;cursor:pointer;">자동 감지</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>모델</label>
+          <select id="ollama-model"></select>
+        </div>
+        <div id="ollama-status" class="setting-hint"></div>
+      </div>
+
+      <div id="gemini-section">
+        <div class="field">
+          <label>Gemini API Key</label>
+          <input type="password" id="api-key" placeholder="API 키를 입력하세요...">
+        </div>
+        <div class="field">
+          <label>모델</label>
+          <select id="model">
+          </select>
+        </div>
       </div>
     </div>
 

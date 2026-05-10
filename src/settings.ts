@@ -1,11 +1,19 @@
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
 
-import { CAPTURE_MODES, DOMAIN_HINTS, LANGUAGES, MODELS, DEFAULTS, SETTINGS_KEYS, SPEECH_LOCALES, WHISPER_MODELS } from "./constants";
+import { CAPTURE_MODES, DOMAIN_HINTS, LANGUAGES, MODELS, DEFAULTS, OLLAMA_DEFAULT_MODELS, SETTINGS_KEYS, SPEECH_LOCALES, WHISPER_MODELS } from "./constants";
 import { getSetting, setSetting } from "./store";
+import { getActiveBackendId, detectOllama } from "./llmProfile";
 import { populateSelect } from "./utils";
 
 // ─── DOM ────────────────────────────────────────────
+const backendRadios = document.querySelectorAll<HTMLInputElement>('input[name="llm-backend"]');
+const ollamaSection = document.getElementById("ollama-section") as HTMLDivElement;
+const geminiSection = document.getElementById("gemini-section") as HTMLDivElement;
+const ollamaBaseurlInput = document.getElementById("ollama-baseurl") as HTMLInputElement;
+const ollamaModelSelect = document.getElementById("ollama-model") as HTMLSelectElement;
+const ollamaDetectBtn = document.getElementById("ollama-detect-btn") as HTMLButtonElement;
+const ollamaStatus = document.getElementById("ollama-status") as HTMLDivElement;
 const apiKeyInput = document.getElementById("api-key") as HTMLInputElement;
 const myLangSelect = document.getElementById("my-lang") as HTMLSelectElement;
 const pairLangSelect = document.getElementById("pair-lang") as HTMLSelectElement;
@@ -38,6 +46,51 @@ tabItems.forEach(item => {
     // Show actions on all tabs except about
     actions.style.display = tab !== "about" ? "flex" : "none";
   });
+});
+
+// ─── Backend toggle ─────────────────────────────────
+function showBackendSection(id: "gemini-native" | "ollama") {
+  if (id === "ollama") {
+    ollamaSection.classList.remove("hidden");
+    geminiSection.classList.add("hidden");
+  } else {
+    ollamaSection.classList.add("hidden");
+    geminiSection.classList.remove("hidden");
+  }
+}
+
+function populateOllamaModels(models: string[], selected?: string) {
+  const items = models.length > 0 ? models : [...OLLAMA_DEFAULT_MODELS];
+  replaceOptions(ollamaModelSelect, items.map(v => ({ value: v, label: v })));
+  if (selected && items.includes(selected)) {
+    ollamaModelSelect.value = selected;
+  } else if (items.length > 0) {
+    ollamaModelSelect.value = items[0];
+  }
+}
+
+backendRadios.forEach(radio => {
+  radio.addEventListener("change", () => {
+    showBackendSection(radio.value as "gemini-native" | "ollama");
+  });
+});
+
+ollamaDetectBtn.addEventListener("click", async () => {
+  const baseUrl = ollamaBaseurlInput.value.trim() || DEFAULTS.ollamaBaseUrl;
+  ollamaDetectBtn.disabled = true;
+  ollamaStatus.textContent = "감지 중...";
+  try {
+    const result = await detectOllama(baseUrl);
+    if (result.available) {
+      const currentModel = ollamaModelSelect.value || DEFAULTS.ollamaModel;
+      populateOllamaModels(result.models, currentModel);
+      ollamaStatus.textContent = `연결됨 — ${result.models.length}개 모델 발견`;
+    } else {
+      ollamaStatus.textContent = result.error ?? "Ollama 서버에 연결할 수 없습니다.";
+    }
+  } finally {
+    ollamaDetectBtn.disabled = false;
+  }
 });
 
 // ─── Shortcut recording ─────────────────────────────
@@ -204,6 +257,16 @@ populateSelect(modelSelect, MODELS);
   clipboardShortcutStr = await getSetting(SETTINGS_KEYS.clipboardShortcut, DEFAULTS.clipboardShortcut);
   shortcutSelectBtn.textContent = shortcutDisplay(selectShortcutStr);
   shortcutClipboardBtn.textContent = shortcutDisplay(clipboardShortcutStr);
+
+  // Load backend settings
+  const savedBackendId = await getActiveBackendId();
+  backendRadios.forEach(r => { r.checked = r.value === savedBackendId; });
+  showBackendSection(savedBackendId);
+
+  const savedOllamaUrl = await getSetting(SETTINGS_KEYS.ollamaBaseUrl, DEFAULTS.ollamaBaseUrl);
+  const savedOllamaModel = await getSetting(SETTINGS_KEYS.ollamaModel, DEFAULTS.ollamaModel);
+  ollamaBaseurlInput.value = savedOllamaUrl;
+  populateOllamaModels([...OLLAMA_DEFAULT_MODELS], savedOllamaModel);
 })();
 
 captureWindowRefreshBtn.addEventListener("click", async () => {
@@ -217,29 +280,61 @@ captureWindowRefreshBtn.addEventListener("click", async () => {
 
 // ─── Save ───────────────────────────────────────────
 btnSave.addEventListener("click", async () => {
-  try {
-    await setSetting(SETTINGS_KEYS.apiKey, apiKeyInput.value.trim());
-    await setSetting(SETTINGS_KEYS.myLang, myLangSelect.value);
-    await setSetting(SETTINGS_KEYS.pairLang, pairLangSelect.value);
-    await setSetting(SETTINGS_KEYS.speechLocale, speechLocaleSelect.value);
-    await setSetting(SETTINGS_KEYS.domainHint, domainHintSelect.value);
-    await setSetting(SETTINGS_KEYS.whisperModel, whisperModelSelect.value);
-    await setSetting(SETTINGS_KEYS.captureMode, captureModeSelect.value);
-    await setSetting(SETTINGS_KEYS.captureWindow, captureWindowSelect.value);
-    await setSetting(SETTINGS_KEYS.model, modelSelect.value);
+  // 1. Read all inputs
+  const apiKey = apiKeyInput.value.trim();
+  const myLang = myLangSelect.value;
+  const pairLang = pairLangSelect.value;
+  const speechLocale = speechLocaleSelect.value;
+  const domainHint = domainHintSelect.value;
+  const whisperModel = whisperModelSelect.value;
+  const captureMode = captureModeSelect.value;
+  const captureWindow = captureWindowSelect.value;
+  const model = modelSelect.value;
+  const selectedBackend = ([...backendRadios].find(r => r.checked)?.value ?? DEFAULTS.llmBackendId) as "gemini-native" | "ollama";
+  const rawBaseUrl = ollamaBaseurlInput.value.trim();
+  const ollamaModel = ollamaModelSelect.value || DEFAULTS.ollamaModel;
 
-    // Validate shortcuts by registering them first; only persist on success
+  // 2. Validate FIRST — no store writes until all checks pass
+  if (selectedBackend === "ollama") {
+    const effectiveUrl = rawBaseUrl || DEFAULTS.ollamaBaseUrl;
+    if (!effectiveUrl.startsWith("http://") && !effectiveUrl.startsWith("https://")) {
+      alert("Ollama URL은 http:// 또는 https://로 시작해야 합니다.");
+      return;
+    }
+    if (!ollamaModel) {
+      alert("Ollama 모델을 선택하세요.");
+      return;
+    }
+  }
+
+  // 3. Register shortcuts first — if this fails, abort before any store writes
+  try {
     await invoke("update_shortcuts", {
       selectShortcut: selectShortcutStr,
       clipboardShortcut: clipboardShortcutStr,
     });
-    await setSetting(SETTINGS_KEYS.selectShortcut, selectShortcutStr);
-    await setSetting(SETTINGS_KEYS.clipboardShortcut, clipboardShortcutStr);
-
-    getCurrentWindow().close();
   } catch (err) {
     alert(`단축키 등록 실패: ${err}\n이전 단축키가 유지됩니다.`);
+    return;
   }
+
+  // 4. Persist — shortcuts registered successfully, now write all settings atomically
+  await setSetting(SETTINGS_KEYS.apiKey, apiKey);
+  await setSetting(SETTINGS_KEYS.myLang, myLang);
+  await setSetting(SETTINGS_KEYS.pairLang, pairLang);
+  await setSetting(SETTINGS_KEYS.speechLocale, speechLocale);
+  await setSetting(SETTINGS_KEYS.domainHint, domainHint);
+  await setSetting(SETTINGS_KEYS.whisperModel, whisperModel);
+  await setSetting(SETTINGS_KEYS.captureMode, captureMode);
+  await setSetting(SETTINGS_KEYS.captureWindow, captureWindow);
+  await setSetting(SETTINGS_KEYS.model, model);
+  await setSetting(SETTINGS_KEYS.llmBackendId, selectedBackend);
+  await setSetting(SETTINGS_KEYS.ollamaBaseUrl, rawBaseUrl || DEFAULTS.ollamaBaseUrl);
+  await setSetting(SETTINGS_KEYS.ollamaModel, ollamaModel);
+  await setSetting(SETTINGS_KEYS.selectShortcut, selectShortcutStr);
+  await setSetting(SETTINGS_KEYS.clipboardShortcut, clipboardShortcutStr);
+
+  getCurrentWindow().close();
 });
 
 // ─── Cancel ─────────────────────────────────────────
