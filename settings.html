@@ -283,6 +283,32 @@
       margin-top: 4px;
       min-height: 16px;
     }
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--fg-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 10px;
+    }
+    .setting-row {
+      margin-bottom: 12px;
+    }
+    .setting-row label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--fg);
+      cursor: pointer;
+    }
+    .setting-row label input[type="checkbox"] {
+      width: auto;
+      padding: 0;
+      border: none;
+      background: none;
+      flex-shrink: 0;
+    }
     .hidden { display: none !important; }
 
     /* About */
@@ -416,6 +442,17 @@
         <select id="capture-window">
           <option value="">열려 있는 창을 불러오는 중…</option>
         </select>
+      </div>
+      <hr class="divider">
+      <h3 class="section-title">실험적 기능</h3>
+      <div class="setting-row">
+        <label>
+          <input type="checkbox" id="experimental-captions-toggle" />
+          자막 (앱 오디오 실시간 번역) — 알파
+        </label>
+        <p class="setting-hint">
+          선택한 앱의 오디오를 실시간으로 인식·번역합니다. 안정성이 검증되지 않았으며 메모리를 추가로 사용합니다.
+        </p>
       </div>
       <hr class="divider">
       <div class="field">

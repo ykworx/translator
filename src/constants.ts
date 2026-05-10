@@ -75,6 +75,7 @@ export const SETTINGS_KEYS = {
   llmBackendId: "llmBackendId",
   ollamaBaseUrl: "ollamaBaseUrl",
   ollamaModel: "ollamaModel",
+  experimentalCaptions: "experimentalCaptions",
 } as const;
 
 /** Default settings values */
@@ -94,6 +95,7 @@ export const DEFAULTS = {
   llmBackendId: "gemini-native" as "gemini-native" | "ollama",
   ollamaBaseUrl: "http://localhost:11434",
   ollamaModel: "gemma3:4b",
+  experimentalCaptions: false,
 } as const;
 
 export const OLLAMA_DEFAULT_MODELS = [

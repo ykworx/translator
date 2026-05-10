@@ -1,3 +1,4 @@
+use crate::model_manager;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -99,7 +100,9 @@ pub fn start_speech_recognition(locale_identifier: Option<String>) -> Result<Spe
 
 #[tauri::command]
 pub fn stop_speech_recognition() -> Result<SpeechStatus, String> {
-    platform::stop_recognition()
+    let result = platform::stop_recognition();
+    model_manager::schedule_unload();
+    result
 }
 
 #[tauri::command]

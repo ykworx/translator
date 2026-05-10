@@ -1,3 +1,4 @@
+use crate::model_manager;
 use log::warn;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
@@ -240,7 +241,9 @@ pub fn start_app_captions(
 
 #[tauri::command]
 pub fn stop_app_captions() -> Result<AppCaptionStatus, String> {
-    platform::stop()
+    let result = platform::stop();
+    model_manager::schedule_unload();
+    result
 }
 
 #[tauri::command]

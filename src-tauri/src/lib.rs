@@ -8,7 +8,6 @@ mod window;
 
 use log::{error, warn};
 use std::sync::Mutex;
-use std::thread::JoinHandle;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconEvent,
@@ -121,7 +120,6 @@ pub fn run() {
             select: parse_default_shortcut(DEFAULT_SELECT_SHORTCUT, "select"),
             clipboard: parse_default_shortcut(DEFAULT_CLIPBOARD_SHORTCUT, "clipboard"),
         }))
-        .manage(Mutex::new(None::<JoinHandle<()>>))
         .invoke_handler(tauri::generate_handler![
             open_handwriting_overlay,
             clipboard::read_clipboard_image,
@@ -144,6 +142,7 @@ pub fn run() {
             model_manager::download_whisper_model,
             model_manager::delete_whisper_model,
             model_manager::load_whisper_model,
+            model_manager::ensure_whisper_loaded,
             model_manager::set_whisper_domain_hint,
             benchmark::run_wav_benchmark,
             benchmark::get_performance_stats,
@@ -287,16 +286,6 @@ pub fn run() {
 
             caption_capture::init_app_handle(app.handle().clone());
 
-            // Auto-load Whisper model if previously downloaded (background thread to avoid blocking startup)
-            {
-                let handle = app.handle().clone();
-                let join = std::thread::spawn(move || {
-                    model_manager::auto_load_model(&handle);
-                });
-                let state = app.state::<Mutex<Option<JoinHandle<()>>>>();
-                *state.lock().unwrap() = Some(join);
-            }
-
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -316,14 +305,9 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("Failed to build Tauri application")
-        .run(|app_handle, event| {
+        .run(|_app_handle, event| {
             if let tauri::RunEvent::Exit = event {
                 log::info!("Tauri exit — shutting down whisper");
-                if let Some(state) = app_handle.try_state::<Mutex<Option<JoinHandle<()>>>>() {
-                    if let Some(join) = state.lock().unwrap().take() {
-                        let _ = join.join();
-                    }
-                }
                 model_manager::shutdown_whisper();
             }
         });

@@ -13,7 +13,7 @@ import { chatHistory, chat, addEntry, clearChat, showEmptyState } from "./ui";
 import { LANGUAGES, DEFAULTS, MAX_TEXTAREA_HEIGHT, SETTINGS_KEYS } from "./constants";
 import { populateSelect, getErrorMessage, escapeHtml } from "./utils";
 import { initSpeechInput } from "./speechInput";
-import { initAppCaptions } from "./appCaptions";
+import { initAppCaptions, forceStopCaptions } from "./appCaptions";
 import { initClipboardListeners } from "./clipboardTranslate";
 import { initHandwriting } from "./handwriting";
 import { migrateLegacySettings } from "./llmProfile";
@@ -264,6 +264,22 @@ function showCopyToast(): void {
   }, 1800);
 }
 
+// ─── Experimental captions visibility ───────────────
+let unlistenExperimentalCaptions: (() => void) | null = null;
+listen<{ enabled: boolean }>("experimental-captions-changed", (e) => {
+  const enabled = e.payload.enabled;
+  if (!enabled) {
+    forceStopCaptions().catch((err) => {
+      console.warn("forceStopCaptions error:", err);
+    });
+  }
+  document.getElementById("btn-zoom-captions")?.classList.toggle("hidden", !enabled);
+}).then((unlisten) => {
+  unlistenExperimentalCaptions = unlisten;
+}).catch((err) => {
+  console.error("Failed to attach experimental-captions-changed listener:", err);
+});
+
 // ─── Handwriting overlay result ──────────────────
 let unlistenHwOverlayResult: (() => void) | null = null;
 let hwToastTimer: number | null = null;
@@ -288,6 +304,8 @@ listen("handwriting-overlay-result", (event) => {
 });
 
 window.addEventListener("beforeunload", () => {
+  unlistenExperimentalCaptions?.();
+  unlistenExperimentalCaptions = null;
   unlistenHwOverlayResult?.();
   unlistenHwOverlayResult = null;
   if (hwToastTimer !== null) {
@@ -334,6 +352,9 @@ populateSelect(langSelect, LANGUAGES);
   await migrateLegacySettings();
   const savedLang = await getSetting(SETTINGS_KEYS.targetLanguage, DEFAULTS.targetLanguage);
   langSelect.value = savedLang;
+
+  const captionsEnabled = await getSetting(SETTINGS_KEYS.experimentalCaptions, DEFAULTS.experimentalCaptions);
+  document.getElementById("btn-zoom-captions")?.classList.toggle("hidden", !captionsEnabled);
 })();
 
 langSelect.addEventListener("change", () => {

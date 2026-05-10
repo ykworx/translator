@@ -592,6 +592,7 @@ body {
   animation: hwSlideUp 0.25s ease-out;
 }
 #handwriting-panel.hidden { display: none; }
+.hidden { display: none !important; }
 @keyframes hwSlideUp {
   from { transform: translateY(100%); }
   to   { transform: translateY(0); }

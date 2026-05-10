@@ -107,6 +107,14 @@ async function startSpeechInput(): Promise<void> {
     await invoke("set_whisper_domain_hint", { hint: domainHint });
   }
 
+  updateSpeechUi("음성 인식 모델 로드 중…", true);
+  try {
+    await invoke("ensure_whisper_loaded");
+  } catch (e) {
+    updateSpeechUi(getErrorMessage(e), false);
+    throw e;
+  }
+
   const state = await invoke<SpeechRecognitionState>("start_speech_recognition", { localeIdentifier });
   if (state.error) {
     throw new Error(state.error);

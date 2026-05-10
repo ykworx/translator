@@ -479,6 +479,15 @@ async function startAppCaptions(): Promise<void> {
   resetAppCaptionSession();
   scheduleRenderCaptions();
 
+  updateAppCaptionUi("음성 인식 모델 로드 중…", true);
+  try {
+    await invoke("ensure_whisper_loaded");
+  } catch (e) {
+    if (sessionId !== captionSessionId) return;
+    throw new Error(getErrorMessage(e));
+  }
+  if (sessionId !== captionSessionId) return;
+
   const state = await invoke<AppCaptionState>("start_app_captions", {
     localeIdentifier,
     captureMode,
@@ -505,19 +514,28 @@ async function startAppCaptions(): Promise<void> {
 }
 
 async function stopAppCaptions(): Promise<void> {
-  captionSessionId += 1;
+  const stopSessionId = ++captionSessionId;
   stopAppCaptionListening();
   isAppCaptionsRunning = false;
 
   try {
     const state = await invoke<AppCaptionState>("stop_app_captions");
+    if (stopSessionId !== captionSessionId) return;
     updateAppCaptionUi(state.error || "", false);
   } catch (e) {
+    if (stopSessionId !== captionSessionId) return;
     updateAppCaptionUi(getErrorMessage(e), false);
   } finally {
-    resetAppCaptionSession();
-    scheduleRenderCaptions();
+    if (stopSessionId === captionSessionId) {
+      resetAppCaptionSession();
+      scheduleRenderCaptions();
+    }
   }
+}
+
+export async function forceStopCaptions(): Promise<void> {
+  if (!isAppCaptionsRunning) return;
+  await stopAppCaptions();
 }
 
 export function initAppCaptions(

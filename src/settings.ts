@@ -1,5 +1,6 @@
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
+const { emit } = window.__TAURI__.event;
 
 import { CAPTURE_MODES, DOMAIN_HINTS, LANGUAGES, MODELS, DEFAULTS, OLLAMA_DEFAULT_MODELS, SETTINGS_KEYS, SPEECH_LOCALES, WHISPER_MODELS } from "./constants";
 import { getSetting, setSetting } from "./store";
@@ -30,6 +31,7 @@ const btnCancel = document.getElementById("btn-cancel") as HTMLButtonElement;
 const actions = document.getElementById("actions") as HTMLDivElement;
 const shortcutSelectBtn = document.getElementById("shortcut-select") as HTMLButtonElement;
 const shortcutClipboardBtn = document.getElementById("shortcut-clipboard") as HTMLButtonElement;
+const experimentalCaptionsToggle = document.getElementById("experimental-captions-toggle") as HTMLInputElement;
 
 // ─── Tabs ───────────────────────────────────────────
 const tabItems = document.querySelectorAll<HTMLButtonElement>(".tab-item");
@@ -263,6 +265,8 @@ populateSelect(modelSelect, MODELS);
   backendRadios.forEach(r => { r.checked = r.value === savedBackendId; });
   showBackendSection(savedBackendId);
 
+  experimentalCaptionsToggle.checked = await getSetting(SETTINGS_KEYS.experimentalCaptions, DEFAULTS.experimentalCaptions);
+
   const savedOllamaUrl = await getSetting(SETTINGS_KEYS.ollamaBaseUrl, DEFAULTS.ollamaBaseUrl);
   const savedOllamaModel = await getSetting(SETTINGS_KEYS.ollamaModel, DEFAULTS.ollamaModel);
   ollamaBaseurlInput.value = savedOllamaUrl;
@@ -333,6 +337,10 @@ btnSave.addEventListener("click", async () => {
   await setSetting(SETTINGS_KEYS.ollamaModel, ollamaModel);
   await setSetting(SETTINGS_KEYS.selectShortcut, selectShortcutStr);
   await setSetting(SETTINGS_KEYS.clipboardShortcut, clipboardShortcutStr);
+
+  const captionsEnabled = experimentalCaptionsToggle.checked;
+  await setSetting(SETTINGS_KEYS.experimentalCaptions, captionsEnabled);
+  await emit("experimental-captions-changed", { enabled: captionsEnabled });
 
   getCurrentWindow().close();
 });

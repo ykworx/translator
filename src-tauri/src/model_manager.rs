@@ -3,7 +3,16 @@ use serde::{Deserialize, Serialize};
 use std::ffi::CString;
 use std::os::raw::c_char;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
+
+static WHISPER_LOADED: AtomicBool = AtomicBool::new(false);
+static LOAD_LOCK: Mutex<()> = Mutex::new(());
+static UNLOAD_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+const GRACE_PERIOD: Duration = Duration::from_secs(30);
 
 const MODEL_DIR_NAME: &str = "models";
 const GGML_MODEL_FILENAME: &str = "ggml-large-v3-turbo.bin";
@@ -11,40 +20,106 @@ const GGML_MODEL_FILENAME_LEGACY: &str = "ggml-medium.bin"; // 이전 버전 호
 const COREML_MODEL_FILENAME: &str = "ggml-large-v3-turbo-encoder.mlmodelc.zip";
 const COREML_MODEL_DIR: &str = "ggml-large-v3-turbo-encoder.mlmodelc";
 
-/// Called at app startup – loads the Whisper model if it was previously downloaded.
-pub fn auto_load_model(handle: &AppHandle) {
-    let dir = match handle.path().app_data_dir() {
-        Ok(d) => d.join(MODEL_DIR_NAME),
-        Err(_) => return,
-    };
-    // Try q5_0 first, fall back to legacy FP16
-    let ggml_path = {
-        let q5 = dir.join(GGML_MODEL_FILENAME);
-        if q5.exists() {
-            q5
-        } else {
-            let legacy = dir.join(GGML_MODEL_FILENAME_LEGACY);
-            if legacy.exists() { legacy } else { return; }
-        }
-    };
 
-    log::info!("[model_manager] Auto-loading Whisper model from {}", ggml_path.display());
+fn ggml_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("앱 데이터 디렉토리를 찾을 수 없습니다: {e}"))?
+        .join(MODEL_DIR_NAME);
+    let q5 = dir.join(GGML_MODEL_FILENAME);
+    if q5.exists() { return Ok(q5); }
+    let legacy = dir.join(GGML_MODEL_FILENAME_LEGACY);
+    if legacy.exists() { return Ok(legacy); }
+    Ok(q5)
+}
+
+#[tauri::command]
+pub async fn ensure_whisper_loaded(app: AppHandle) -> Result<(), String> {
+    cancel_unload();
+
+    if WHISPER_LOADED.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    let _guard = LOAD_LOCK.lock().map_err(|e| format!("lock poisoned: {e}"))?;
+
+    if WHISPER_LOADED.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    let model_path = ggml_path(&app)?;
+    if !model_path.exists() {
+        return Err("Whisper 모델 파일이 없습니다. 설정에서 다운로드해주세요.".to_string());
+    }
 
     #[cfg(target_os = "macos")]
     {
         unsafe extern "C" {
             fn whisper_engine_load_model(model_path: *const c_char) -> *mut c_char;
-            fn speech_free_string(pointer: *mut c_char);
+            fn speech_free_string(p: *mut c_char);
         }
 
-        if let Ok(path_cstr) = CString::new(ggml_path.to_string_lossy().as_bytes()) {
-            let result_ptr = unsafe { whisper_engine_load_model(path_cstr.as_ptr()) };
-            if !result_ptr.is_null() {
-                unsafe { speech_free_string(result_ptr) };
-            }
-            log::info!("[model_manager] Auto-load complete");
+        let path_str = model_path.to_string_lossy().to_string();
+        let path_cstr = CString::new(path_str).map_err(|e| format!("invalid path: {e}"))?;
+        let result_ptr = unsafe { whisper_engine_load_model(path_cstr.as_ptr()) };
+        if result_ptr.is_null() {
+            return Err("Whisper 모델 로드 결과를 가져올 수 없습니다.".to_string());
+        }
+        let raw = unsafe { std::ffi::CStr::from_ptr(result_ptr) }
+            .to_str()
+            .map(str::to_owned)
+            .map_err(|_| "모델 로드 결과가 유효하지 않은 UTF-8입니다.".to_string());
+        unsafe { speech_free_string(result_ptr) };
+        let raw = raw?;
+        let result: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| format!("모델 로드 결과 파싱 실패: {e}"))?;
+        let loaded = result.get("loaded").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !loaded {
+            let error = result.get("error").and_then(|v| v.as_str()).unwrap_or("알 수 없는 오류");
+            return Err(format!("Whisper 모델 로드 실패: {error}"));
         }
     }
+
+    WHISPER_LOADED.store(true, Ordering::SeqCst);
+    log::info!("[model_manager] whisper loaded (lazy)");
+    Ok(())
+}
+
+pub fn schedule_unload() {
+    if !WHISPER_LOADED.load(Ordering::SeqCst) {
+        return;
+    }
+    let my_gen = UNLOAD_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+
+    std::thread::spawn(move || {
+        std::thread::sleep(GRACE_PERIOD);
+        if UNLOAD_GENERATION.load(Ordering::SeqCst) != my_gen {
+            return;
+        }
+
+        let Ok(_guard) = LOAD_LOCK.lock() else { return };
+        if UNLOAD_GENERATION.load(Ordering::SeqCst) != my_gen {
+            return;
+        }
+        if !WHISPER_LOADED.load(Ordering::SeqCst) {
+            return;
+        }
+
+        log::info!("[model_manager] idle unload after grace period");
+        #[cfg(target_os = "macos")]
+        {
+            unsafe extern "C" {
+                fn whisper_engine_shutdown();
+            }
+            unsafe { whisper_engine_shutdown() };
+        }
+        WHISPER_LOADED.store(false, Ordering::SeqCst);
+    });
+}
+
+pub fn cancel_unload() {
+    UNLOAD_GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
 const GGML_MODEL_URL: &str =
@@ -235,10 +310,7 @@ pub async fn delete_whisper_model(app: AppHandle) -> Result<ModelStatus, String>
     log::info!("[model_manager] delete_whisper_model called");
 
     // Unload model first (thread-safe, drains warm-up before unload)
-    #[cfg(target_os = "macos")]
-    {
-        shutdown_whisper();
-    }
+    shutdown_whisper();
 
     let dir = models_dir(&app)?;
     log::info!("[model_manager] models dir: {}", dir.display());
@@ -305,10 +377,14 @@ pub async fn load_whisper_model(app: AppHandle) -> Result<ModelStatus, String> {
         }
     }
 
+    WHISPER_LOADED.store(true, Ordering::SeqCst);
+    cancel_unload();
+
     check_whisper_model(app).await
 }
 
 pub fn shutdown_whisper() {
+    cancel_unload();
     #[cfg(target_os = "macos")]
     {
         unsafe extern "C" {
@@ -317,6 +393,7 @@ pub fn shutdown_whisper() {
         unsafe { whisper_engine_shutdown() };
         log::info!("[model_manager] whisper shutdown done");
     }
+    WHISPER_LOADED.store(false, Ordering::SeqCst);
 }
 
 #[tauri::command]
