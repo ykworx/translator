@@ -480,6 +480,7 @@
         <div class="backend-toggle">
           <label><input type="radio" name="llm-backend" value="gemini-native" checked> Gemini API</label>
           <label><input type="radio" name="llm-backend" value="ollama"> Ollama (로컬)</label>
+          <label><input type="radio" name="llm-backend" value="openai"> OpenAI (GPT)</label>
         </div>
       </div>
 
@@ -507,6 +508,17 @@
           <label>모델</label>
           <select id="model">
           </select>
+        </div>
+      </div>
+
+      <div id="openai-section" class="hidden">
+        <div class="field">
+          <label>OpenAI API Key</label>
+          <input type="password" id="openai-api-key" placeholder="API 키를 입력하세요...">
+        </div>
+        <div class="field">
+          <label>모델</label>
+          <select id="openai-model"></select>
         </div>
       </div>
     </div>

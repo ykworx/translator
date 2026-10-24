@@ -1,13 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { resetTauriStore, setTauriStoreValue } from "./helpers/tauriMock";
 
-import { getActiveBackend, resetOllamaBackendCache, type LlmBackend } from "../src/llmBackend";
+import { getActiveBackend, resetOllamaBackendCache, resetOpenAiBackendCache, type LlmBackend } from "../src/llmBackend";
 import { geminiNativeBackend } from "../src/geminiClient";
 import { getOllamaBackend } from "../src/ollamaClient";
 
+const ALL_BACKEND_IDS = ["gemini-native", "ollama", "openai"];
+
 function assertBackendContract(backend: LlmBackend) {
   expect(typeof backend.id).toBe("string");
-  expect(["gemini-native", "ollama"]).toContain(backend.id);
+  expect(ALL_BACKEND_IDS).toContain(backend.id);
   expect(typeof backend.label).toBe("string");
   expect(backend.label.length).toBeGreaterThan(0);
   expect(typeof backend.supportsVision).toBe("boolean");
@@ -27,6 +29,15 @@ describe("LlmBackend contract", () => {
     const backend = await getOllamaBackend();
     assertBackendContract(backend);
     expect(backend.id).toBe("ollama");
+  });
+
+  it("openaiBackend satisfies interface", async () => {
+    setTauriStoreValue("openaiApiKey", "sk-test");
+    setTauriStoreValue("openaiModel", "gpt-4o-mini");
+    const { getOpenAiBackend } = await import("../src/openaiClient");
+    const backend = await getOpenAiBackend();
+    assertBackendContract(backend);
+    expect(backend.id).toBe("openai");
   });
 });
 
@@ -65,6 +76,72 @@ describe("getActiveBackend", () => {
     const backend = await getActiveBackend();
     expect(backend.id).toBe("ollama");
   });
+
+  it("returns openaiBackend when store has 'openai'", async () => {
+    setTauriStoreValue("llmBackendId", "openai");
+    setTauriStoreValue("openaiApiKey", "sk-test");
+    setTauriStoreValue("openaiModel", "gpt-4o-mini");
+    const backend = await getActiveBackend();
+    expect(backend.id).toBe("openai");
+  });
+});
+
+describe("getActiveBackend — openai cache behaviour", () => {
+  beforeEach(() => {
+    resetTauriStore();
+    resetOpenAiBackendCache();
+    setTauriStoreValue("llmBackendId", "openai");
+    setTauriStoreValue("openaiApiKey", "sk-test");
+    setTauriStoreValue("openaiModel", "gpt-4o-mini");
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetOpenAiBackendCache();
+    resetOllamaBackendCache();
+  });
+
+  it("reuses cached openai backend on second call with same model", async () => {
+    const b1 = await getActiveBackend();
+    const b2 = await getActiveBackend();
+    expect(b1).toBe(b2);
+    expect(b1.id).toBe("openai");
+  });
+
+  it("creates new openai backend when model changes", async () => {
+    const b1 = await getActiveBackend();
+    setTauriStoreValue("openaiModel", "gpt-4o");
+    const b2 = await getActiveBackend();
+    // Different model key — should be a fresh instance
+    expect(b1).not.toBe(b2);
+    expect(b2.id).toBe("openai");
+  });
+
+  it("switching from openai to ollama clears openai cache", async () => {
+    // Stub fetch for ollama /api/show
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(makeJsonResponse({ capabilities: ["completion"] })),
+    );
+
+    const openaiBackend = await getActiveBackend();
+    expect(openaiBackend.id).toBe("openai");
+
+    // Switch to ollama
+    setTauriStoreValue("llmBackendId", "ollama");
+    setTauriStoreValue("ollamaBaseUrl", "http://localhost:11434");
+    setTauriStoreValue("ollamaModel", "gemma3:4b");
+
+    const ollamaBackend = await getActiveBackend();
+    expect(ollamaBackend.id).toBe("ollama");
+  });
+
+  it("switching from openai to gemini clears openai cache and returns gemini", async () => {
+    await getActiveBackend(); // prime the openai cache
+    setTauriStoreValue("llmBackendId", "gemini-native");
+
+    const backend = await getActiveBackend();
+    expect(backend.id).toBe("gemini-native");
+  });
 });
 
 describe("getActiveBackend — cache key behaviour", () => {
@@ -78,6 +155,7 @@ describe("getActiveBackend — cache key behaviour", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     resetOllamaBackendCache();
+    resetOpenAiBackendCache();
   });
 
   it("reuses cached backend on second call with same baseUrl+model", async () => {

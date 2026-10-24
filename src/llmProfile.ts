@@ -1,14 +1,15 @@
 import { DEFAULTS, SETTINGS_KEYS } from "./constants";
 import { getSetting, setSetting } from "./store";
+import type { BackendId } from "./types";
 
-export async function getActiveBackendId(): Promise<"gemini-native" | "ollama"> {
-  return getSetting<"gemini-native" | "ollama">(
+export async function getActiveBackendId(): Promise<BackendId> {
+  return getSetting<BackendId>(
     SETTINGS_KEYS.llmBackendId,
     DEFAULTS.llmBackendId,
   );
 }
 
-export async function setActiveBackendId(id: "gemini-native" | "ollama"): Promise<void> {
+export async function setActiveBackendId(id: BackendId): Promise<void> {
   return setSetting(SETTINGS_KEYS.llmBackendId, id);
 }
 

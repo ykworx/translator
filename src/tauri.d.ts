@@ -12,6 +12,7 @@ interface Window {
     };
     core: {
       invoke: <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+      Channel: new <T = unknown>() => { onmessage: ((message: T) => void) | null; id: number };
     };
     window: {
       getCurrentWindow: () => {

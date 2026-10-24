@@ -28,8 +28,9 @@ regex = "1"
 image = { version = "0.25", features = ["png"] }
 base64 = "0.22"
 log = "0.4"
-reqwest = { version = "0.12", features = ["stream"] }
+reqwest = { version = "0.12", features = ["stream", "json"] }
 futures-util = "0.3"
+tokio = { version = "1", features = ["time"] }
 zip = "2"
 
 [package.metadata.tauri.cli]

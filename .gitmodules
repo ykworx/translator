@@ -1,3 +1,6 @@
 [submodule "src-tauri/vendor/whisper.cpp"]
 	path = src-tauri/vendor/whisper.cpp
 	url = https://github.com/ggerganov/whisper.cpp.git
+[submodule "src-tauri/vendor/rnnoise"]
+	path = src-tauri/vendor/rnnoise
+	url = https://github.com/xiph/rnnoise.git

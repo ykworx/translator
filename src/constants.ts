@@ -1,3 +1,5 @@
+import type { BackendId } from "./types";
+
 /** Supported languages for translation */
 export const LANGUAGES = [
   { value: "한국어", label: "한국어" },
@@ -35,6 +37,14 @@ export const MODELS = [
   { value: "gemini-2.0-flash-lite", label: "gemini-2.0-flash-lite" },
   { value: "gemini-2.5-flash", label: "gemini-2.5-flash" },
   { value: "gemini-2.5-pro", label: "gemini-2.5-pro" },
+];
+
+/** Available OpenAI models (user-selectable in settings) */
+export const OPENAI_MODELS = [
+  { value: "gpt-4o-mini", label: "gpt-4o-mini" },
+  { value: "gpt-4o", label: "gpt-4o" },
+  { value: "gpt-4.1-mini", label: "gpt-4.1-mini" },
+  { value: "gpt-4.1", label: "gpt-4.1" },
 ];
 
 /** Domain hint presets for Whisper speech recognition */
@@ -75,6 +85,8 @@ export const SETTINGS_KEYS = {
   llmBackendId: "llmBackendId",
   ollamaBaseUrl: "ollamaBaseUrl",
   ollamaModel: "ollamaModel",
+  openaiApiKey: "openaiApiKey",
+  openaiModel: "openaiModel",
   experimentalCaptions: "experimentalCaptions",
 } as const;
 
@@ -92,9 +104,11 @@ export const DEFAULTS = {
   clipboardShortcut: "Super+Ctrl+Shift+KeyT",
   domainHint: "日本語のドラマ、アニメ、映画の会話。日常会話、感情表現、キャラクター名。",
   whisperModel: "large-v3-turbo",
-  llmBackendId: "gemini-native" as "gemini-native" | "ollama",
+  llmBackendId: "gemini-native" as BackendId,
   ollamaBaseUrl: "http://localhost:11434",
   ollamaModel: "gemma3:4b",
+  openaiApiKey: "",
+  openaiModel: "gpt-4o-mini",
   experimentalCaptions: false,
 } as const;
 

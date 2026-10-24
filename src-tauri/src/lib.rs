@@ -2,6 +2,7 @@ pub mod benchmark;
 mod clipboard;
 mod caption_capture;
 mod model_manager;
+mod openai;
 mod shortcut;
 mod speech;
 mod window;
@@ -144,6 +145,9 @@ pub fn run() {
             model_manager::load_whisper_model,
             model_manager::ensure_whisper_loaded,
             model_manager::set_whisper_domain_hint,
+            openai::openai_generate_text,
+            openai::openai_generate_image,
+            openai::openai_generate_text_stream,
             benchmark::run_wav_benchmark,
             benchmark::get_performance_stats,
             benchmark::reset_performance_stats,

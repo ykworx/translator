@@ -2,15 +2,19 @@ const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
 const { emit } = window.__TAURI__.event;
 
-import { CAPTURE_MODES, DOMAIN_HINTS, LANGUAGES, MODELS, DEFAULTS, OLLAMA_DEFAULT_MODELS, SETTINGS_KEYS, SPEECH_LOCALES, WHISPER_MODELS } from "./constants";
+import { CAPTURE_MODES, DOMAIN_HINTS, LANGUAGES, MODELS, OPENAI_MODELS, DEFAULTS, OLLAMA_DEFAULT_MODELS, SETTINGS_KEYS, SPEECH_LOCALES, WHISPER_MODELS } from "./constants";
 import { getSetting, setSetting } from "./store";
 import { getActiveBackendId, detectOllama } from "./llmProfile";
+import type { BackendId } from "./types";
 import { populateSelect } from "./utils";
 
 // ─── DOM ────────────────────────────────────────────
 const backendRadios = document.querySelectorAll<HTMLInputElement>('input[name="llm-backend"]');
 const ollamaSection = document.getElementById("ollama-section") as HTMLDivElement;
 const geminiSection = document.getElementById("gemini-section") as HTMLDivElement;
+const openaiSection = document.getElementById("openai-section") as HTMLDivElement;
+const openaiApiKeyInput = document.getElementById("openai-api-key") as HTMLInputElement;
+const openaiModelSelect = document.getElementById("openai-model") as HTMLSelectElement;
 const ollamaBaseurlInput = document.getElementById("ollama-baseurl") as HTMLInputElement;
 const ollamaModelSelect = document.getElementById("ollama-model") as HTMLSelectElement;
 const ollamaDetectBtn = document.getElementById("ollama-detect-btn") as HTMLButtonElement;
@@ -51,12 +55,17 @@ tabItems.forEach(item => {
 });
 
 // ─── Backend toggle ─────────────────────────────────
-function showBackendSection(id: "gemini-native" | "ollama") {
+function showBackendSection(id: BackendId) {
+  ollamaSection.classList.add("hidden");
+  geminiSection.classList.add("hidden");
+  openaiSection.classList.add("hidden");
+
   if (id === "ollama") {
     ollamaSection.classList.remove("hidden");
-    geminiSection.classList.add("hidden");
+  } else if (id === "openai") {
+    openaiSection.classList.remove("hidden");
   } else {
-    ollamaSection.classList.add("hidden");
+    // gemini-native (default)
     geminiSection.classList.remove("hidden");
   }
 }
@@ -73,7 +82,7 @@ function populateOllamaModels(models: string[], selected?: string) {
 
 backendRadios.forEach(radio => {
   radio.addEventListener("change", () => {
-    showBackendSection(radio.value as "gemini-native" | "ollama");
+    showBackendSection(radio.value as BackendId);
   });
 });
 
@@ -239,6 +248,7 @@ populateSelect(domainHintSelect, [...DOMAIN_HINTS]);
 populateSelect(whisperModelSelect, [...WHISPER_MODELS]);
 populateSelect(captureModeSelect, [...CAPTURE_MODES]);
 populateSelect(modelSelect, MODELS);
+populateSelect(openaiModelSelect, OPENAI_MODELS);
 
 // ─── Load settings ──────────────────────────────────
 (async () => {
@@ -271,6 +281,9 @@ populateSelect(modelSelect, MODELS);
   const savedOllamaModel = await getSetting(SETTINGS_KEYS.ollamaModel, DEFAULTS.ollamaModel);
   ollamaBaseurlInput.value = savedOllamaUrl;
   populateOllamaModels([...OLLAMA_DEFAULT_MODELS], savedOllamaModel);
+
+  openaiApiKeyInput.value = await getSetting(SETTINGS_KEYS.openaiApiKey, DEFAULTS.openaiApiKey);
+  openaiModelSelect.value = await getSetting(SETTINGS_KEYS.openaiModel, DEFAULTS.openaiModel);
 })();
 
 captureWindowRefreshBtn.addEventListener("click", async () => {
@@ -294,9 +307,11 @@ btnSave.addEventListener("click", async () => {
   const captureMode = captureModeSelect.value;
   const captureWindow = captureWindowSelect.value;
   const model = modelSelect.value;
-  const selectedBackend = ([...backendRadios].find(r => r.checked)?.value ?? DEFAULTS.llmBackendId) as "gemini-native" | "ollama";
+  const selectedBackend = ([...backendRadios].find(r => r.checked)?.value ?? DEFAULTS.llmBackendId) as BackendId;
   const rawBaseUrl = ollamaBaseurlInput.value.trim();
   const ollamaModel = ollamaModelSelect.value || DEFAULTS.ollamaModel;
+  const openaiApiKey = openaiApiKeyInput.value.trim();
+  const openaiModel = openaiModelSelect.value || DEFAULTS.openaiModel;
 
   // 2. Validate FIRST — no store writes until all checks pass
   if (selectedBackend === "ollama") {
@@ -307,6 +322,13 @@ btnSave.addEventListener("click", async () => {
     }
     if (!ollamaModel) {
       alert("Ollama 모델을 선택하세요.");
+      return;
+    }
+  }
+
+  if (selectedBackend === "openai") {
+    if (!openaiApiKey) {
+      alert("OpenAI API 키를 입력하세요.");
       return;
     }
   }
@@ -335,6 +357,8 @@ btnSave.addEventListener("click", async () => {
   await setSetting(SETTINGS_KEYS.llmBackendId, selectedBackend);
   await setSetting(SETTINGS_KEYS.ollamaBaseUrl, rawBaseUrl || DEFAULTS.ollamaBaseUrl);
   await setSetting(SETTINGS_KEYS.ollamaModel, ollamaModel);
+  await setSetting(SETTINGS_KEYS.openaiApiKey, openaiApiKey);
+  await setSetting(SETTINGS_KEYS.openaiModel, openaiModel);
   await setSetting(SETTINGS_KEYS.selectShortcut, selectShortcutStr);
   await setSetting(SETTINGS_KEYS.clipboardShortcut, clipboardShortcutStr);
 

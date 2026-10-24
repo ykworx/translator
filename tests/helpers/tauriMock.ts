@@ -17,6 +17,26 @@ export function getTauriStoreValue(key: string): unknown {
   return store.get(key);
 }
 
+/** Minimal stand-in for Tauri's `Channel` (used by streaming commands). */
+export class MockChannel<T = unknown> {
+  onmessage: ((message: T) => void) | null = null;
+  id = 0;
+}
+
+// Registry for custom (non-store) invoke command handlers used in tests.
+const commandHandlers = new Map<string, (args?: Record<string, unknown>) => unknown>();
+
+export function registerInvokeCommand(
+  cmd: string,
+  fn: (args?: Record<string, unknown>) => unknown,
+) {
+  commandHandlers.set(cmd, fn);
+}
+
+export function resetInvokeCommands() {
+  commandHandlers.clear();
+}
+
 const mockInvoke = async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
   if (cmd === "plugin:store|load") {
     return 1; // fake rid
@@ -32,6 +52,9 @@ const mockInvoke = async (cmd: string, args?: Record<string, unknown>): Promise<
     store.set(key, value);
     return undefined;
   }
+  if (commandHandlers.has(cmd)) {
+    return commandHandlers.get(cmd)!(args);
+  }
   throw new Error(`Unknown invoke command: ${cmd}`);
 };
 
@@ -39,7 +62,7 @@ export function installTauriMock() {
   // In jsdom, `window` === `globalThis`. We need to set __TAURI__ before
   // any source module that does `const { invoke } = window.__TAURI__.core` is imported.
   const tauri = {
-    core: { invoke: mockInvoke },
+    core: { invoke: mockInvoke, Channel: MockChannel },
     window: { getCurrentWindow: () => ({ close: () => {} }) },
     event: { listen: () => Promise.resolve(() => {}) },
   };

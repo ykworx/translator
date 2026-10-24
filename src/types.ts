@@ -1,3 +1,5 @@
+export type BackendId = "gemini-native" | "ollama" | "openai";
+
 export type SpeechRecognitionState = {
   transcript: string;
   isRunning: boolean;

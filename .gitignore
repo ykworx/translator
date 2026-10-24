@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Local credentials and browser automation artifacts
+.env
+.env.*
+!.env.example
+.playwright-mcp/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
