@@ -309,7 +309,7 @@ async fn download_file(
 pub async fn delete_whisper_model(app: AppHandle) -> Result<ModelStatus, String> {
     log::info!("[model_manager] delete_whisper_model called");
 
-    // Unload model first (thread-safe, drains warm-up before unload)
+    // Request shutdown before deleting files; the bridge waits up to 2s for warm-up.
     shutdown_whisper();
 
     let dir = models_dir(&app)?;
