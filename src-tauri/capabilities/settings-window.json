@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings-window",
+  "description": "Allow the settings window to finish its guarded close flow",
+  "windows": ["settings"],
+  "permissions": ["core:window:allow-destroy"]
+}
