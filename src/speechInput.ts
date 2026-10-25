@@ -22,6 +22,8 @@ function updateSpeechUi(statusText: string, recording: boolean): void {
   speechStatus.classList.toggle("recording", recording);
   btnMic.classList.toggle("recording", recording);
   btnMic.textContent = recording ? "⏹ 중지" : "🎙 음성";
+  btnMic.setAttribute("aria-label", recording ? "이 창의 음성 입력 중지" : "이 창에 음성 입력");
+  btnMic.setAttribute("aria-pressed", String(recording));
 }
 
 function applySpeechTranscript(state: SpeechRecognitionState): void {

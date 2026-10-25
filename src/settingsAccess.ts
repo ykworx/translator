@@ -1,13 +1,21 @@
-let opening: Promise<void> | null = null;
+type SettingsCommand = "open_settings" | "open_dictation_settings";
+const opening = new Map<SettingsCommand, Promise<void>>();
 
-export async function openSettingsFrom(button: HTMLButtonElement, status: HTMLElement): Promise<void> {
-  if (opening) return opening;
+export async function openSettingsFrom(button: HTMLButtonElement, status: HTMLElement, command: SettingsCommand = "open_settings"): Promise<void> {
   button.disabled = true;
   status.textContent = "";
-  opening = window.__TAURI__.core.invoke("open_settings").then(() => {}, () => {
+  let pending = opening.get(command);
+  if (!pending) {
+    pending = window.__TAURI__.core.invoke<void>(command).finally(() => { opening.delete(command); });
+    opening.set(command, pending);
+  }
+  try {
+    await pending;
+  } catch {
     status.textContent = "설정 창을 열지 못했습니다. 다시 눌러주세요.";
-  }).finally(() => { button.disabled = false; opening = null; });
-  return opening;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 export function initSettingsAccess(onConnectionChanged?: () => void): void {

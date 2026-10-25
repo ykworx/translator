@@ -1,5 +1,5 @@
 use log::error;
-use std::sync::Mutex;
+use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
 use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -32,6 +32,9 @@ pub struct CurrentShortcuts {
 }
 
 impl CurrentShortcuts {
+    fn is_registered(&self, action: ShortcutAction, shortcut: &Shortcut) -> bool {
+        self.registered.iter().any(|binding| binding.action == action && &binding.shortcut == shortcut)
+    }
     pub fn new(select: Shortcut, clipboard: Shortcut, dictation: Shortcut) -> Self {
         Self { select, clipboard, dictation, registered: Vec::new(), resume_bindings: Vec::new(),
             suspended: false, last_error: None }
@@ -267,8 +270,11 @@ fn replace_bindings_with(
 fn register_binding(app: &tauri::AppHandle, binding: &Binding) -> Result<(), String> {
     let handle = app.clone();
     let action = binding.action;
+    let dictation_pressed = AtomicBool::new(false);
     app.global_shortcut().on_shortcut(binding.shortcut.clone(), move |_app, _shortcut, event| {
-        if event.state != ShortcutState::Pressed { return; }
+        if action == ShortcutAction::Dictation {
+            if !accept_dictation_press(&dictation_pressed, event.state) { return; }
+        } else if event.state != ShortcutState::Pressed { return; }
         match action {
             ShortcutAction::Select => handle_select_shortcut(handle.clone()),
             ShortcutAction::Clipboard => handle_clipboard_shortcut(handle.clone()),
@@ -284,6 +290,17 @@ fn register_binding(app: &tauri::AppHandle, binding: &Binding) -> Result<(), Str
     }).map_err(|error| error.to_string())
 }
 
+fn accept_dictation_press(pressed: &AtomicBool, state: ShortcutState) -> bool {
+    if state == ShortcutState::Released {
+        pressed.store(false, Ordering::Relaxed);
+        false
+    } else {
+        // Holding the key must not copy a pending result and then start a new
+        // microphone session through autorepeated Pressed notifications.
+        !pressed.swap(true, Ordering::Relaxed)
+    }
+}
+
 fn unregister_binding(app: &tauri::AppHandle, binding: &Binding) -> Result<(), String> {
     app.global_shortcut().unregister(binding.shortcut.clone()).map_err(|error| error.to_string())
 }
@@ -297,6 +314,36 @@ pub fn register_startup_shortcuts(app: &tauri::AppHandle, current: &mut CurrentS
         error!("Some global shortcuts could not be registered: {message}");
         current.last_error = Some(message);
     }
+    refresh_dictation_tray(app, current);
+}
+
+fn dictation_tray_text(current: &CurrentShortcuts) -> String {
+    let mut label = String::new();
+    for (modifier, symbol) in [(Modifiers::CONTROL, "⌃"), (Modifiers::ALT, "⌥"), (Modifiers::SHIFT, "⇧"), (Modifiers::SUPER, "⌘")] {
+        if current.dictation.mods.contains(modifier) { label.push_str(symbol); }
+    }
+    let key = current.dictation.key.to_string();
+    label.push_str(key.strip_prefix("Key").or_else(|| key.strip_prefix("Digit")).unwrap_or(&key));
+    label.push_str(if current.suspended { " · 단축키 일시 중지" }
+        else if current.is_registered(ShortcutAction::Dictation, &current.dictation) { " · 어디서나 받아쓰기" }
+        else { " · 받아쓰기 단축키 등록 확인 필요" });
+    label
+}
+
+fn refresh_dictation_tray(app: &tauri::AppHandle, current: &CurrentShortcuts) {
+    #[cfg(target_os = "macos")]
+    {
+        let text = dictation_tray_text(current);
+        let handle = app.clone();
+        // Do not wait on the UI thread while holding CurrentShortcuts.
+        if let Err(e) = app.run_on_main_thread(move || {
+            if let Some(item) = handle.try_state::<crate::DictationTrayHint>() {
+                if let Err(e) = item.0.set_text(text) { error!("Failed to update dictation tray hint: {e}"); }
+            }
+        }) { error!("Failed to schedule dictation tray hint: {e}"); }
+    }
+    #[cfg(not(target_os = "macos"))]
+    { let _ = (app, current); }
 }
 
 #[derive(serde::Serialize)]
@@ -312,11 +359,10 @@ pub struct ShortcutStatus {
 #[tauri::command]
 pub fn get_shortcut_status(state: tauri::State<'_, Mutex<CurrentShortcuts>>) -> Result<ShortcutStatus, String> {
     let current = state.lock().map_err(|error| error.to_string())?;
-    let registered = |action| current.registered.iter().any(|binding| binding.action == action);
     Ok(ShortcutStatus {
-        select_registered: registered(ShortcutAction::Select),
-        clipboard_registered: registered(ShortcutAction::Clipboard),
-        dictation_registered: registered(ShortcutAction::Dictation),
+        select_registered: current.is_registered(ShortcutAction::Select, &current.select),
+        clipboard_registered: current.is_registered(ShortcutAction::Clipboard, &current.clipboard),
+        dictation_registered: current.is_registered(ShortcutAction::Dictation, &current.dictation),
         suspended: current.suspended, error: current.last_error.clone(),
     })
 }
@@ -346,8 +392,10 @@ pub fn suspend_shortcuts(
     state: tauri::State<'_, Mutex<CurrentShortcuts>>,
 ) -> Result<(), String> {
     let mut current = state.lock().map_err(|error| error.to_string())?;
-    suspend_with(&mut current, &mut |binding| register_binding(&app, binding),
-        &mut |binding| unregister_binding(&app, binding))
+    let result = suspend_with(&mut current, &mut |binding| register_binding(&app, binding),
+        &mut |binding| unregister_binding(&app, binding));
+    refresh_dictation_tray(&app, &current);
+    result
 }
 
 fn resume_suspended_with(
@@ -374,14 +422,18 @@ pub fn resume_shortcuts(
     state: tauri::State<'_, Mutex<CurrentShortcuts>>,
 ) -> Result<(), String> {
     let mut current = state.lock().map_err(|error| error.to_string())?;
-    resume_suspended_with(&mut current, &mut |binding| register_binding(&app, binding))
+    let result = resume_suspended_with(&mut current, &mut |binding| register_binding(&app, binding));
+    refresh_dictation_tray(&app, &current);
+    result
 }
 
 /// Normal close awaits resume in the frontend; this is the webview-destruction fallback.
 pub fn restore_after_settings_destroyed(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<Mutex<CurrentShortcuts>>();
     let mut current = state.lock().map_err(|error| error.to_string())?;
-    resume_suspended_with(&mut current, &mut |binding| register_binding(app, binding))
+    let result = resume_suspended_with(&mut current, &mut |binding| register_binding(app, binding));
+    refresh_dictation_tray(app, &current);
+    result
 }
 
 #[tauri::command]
@@ -404,6 +456,7 @@ pub fn update_shortcuts(
     if let Err(error) = replace_bindings_with(&mut current.registered, &replacement.bindings(),
         &mut |binding| register_binding(&app, binding), &mut |binding| unregister_binding(&app, binding)) {
         current.last_error = Some(error.clone());
+        refresh_dictation_tray(&app, &current);
         return Err(error);
     }
     current.select = replacement.select;
@@ -412,6 +465,7 @@ pub fn update_shortcuts(
     current.suspended = false;
     current.resume_bindings.clear();
     current.last_error = None;
+    refresh_dictation_tray(&app, &current);
     Ok(())
 }
 
@@ -429,6 +483,37 @@ mod tests {
         vec![Binding { shortcut: current.select.clone(), action: ShortcutAction::Select },
             Binding { shortcut: current.clipboard.clone(), action: ShortcutAction::Clipboard },
             Binding { shortcut: current.dictation.clone(), action: ShortcutAction::Dictation }]
+    }
+
+    #[test]
+    fn tray_hint_uses_the_configured_key_and_registration_state() {
+        let mut current = configured();
+        current.dictation = parse_shortcut_str("Super+Alt+F7").unwrap();
+        current.registered = all_bindings(&current);
+        assert_eq!(dictation_tray_text(&current), "⌥⌘F7 · 어디서나 받아쓰기");
+        current.suspended = true;
+        assert_eq!(dictation_tray_text(&current), "⌥⌘F7 · 단축키 일시 중지");
+        current.suspended = false;
+        current.registered.clear();
+        assert_eq!(dictation_tray_text(&current), "⌥⌘F7 · 받아쓰기 단축키 등록 확인 필요");
+    }
+
+    #[test]
+    fn a_remaining_different_binding_never_marks_the_configured_key_ready() {
+        let mut current = configured();
+        current.registered = vec![Binding { action: ShortcutAction::Dictation,
+            shortcut: parse_shortcut_str("Super+Alt+F7").unwrap() }];
+        assert!(!current.is_registered(ShortcutAction::Dictation, &current.dictation));
+        assert_eq!(dictation_tray_text(&current), "⌃⌘D · 받아쓰기 단축키 등록 확인 필요");
+    }
+
+    #[test]
+    fn a_held_dictation_shortcut_cannot_repeat_into_a_new_recording() {
+        let pressed = AtomicBool::new(false);
+        assert!(accept_dictation_press(&pressed, ShortcutState::Pressed));
+        for _ in 0..10 { assert!(!accept_dictation_press(&pressed, ShortcutState::Pressed)); }
+        assert!(!accept_dictation_press(&pressed, ShortcutState::Released));
+        assert!(accept_dictation_press(&pressed, ShortcutState::Pressed));
     }
 
     #[test]
