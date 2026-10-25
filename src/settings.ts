@@ -344,7 +344,7 @@ btnSave.addEventListener("click", async () => {
     return;
   }
 
-  // 4. Persist — shortcuts registered successfully, now write all settings atomically
+  // 4. Persist — shortcuts registered successfully; write settings sequentially
   await setSetting(SETTINGS_KEYS.apiKey, apiKey);
   await setSetting(SETTINGS_KEYS.myLang, myLang);
   await setSetting(SETTINGS_KEYS.pairLang, pairLang);
