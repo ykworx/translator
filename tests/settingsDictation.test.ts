@@ -80,6 +80,24 @@ describe("dictation settings", () => {
     vi.unstubAllGlobals();
   });
 
+  it("does not enumerate screen capture windows on entry and preserves a saved caption target", async () => {
+    store.set("captureWindow", "saved-private-window-id");
+    await boot();
+    expect(invoke.mock.calls.some(([command]) => command === "list_caption_capture_windows")).toBe(false);
+    expect(select("capture-window").value).toBe("saved-private-window-id");
+    button("btn-save").click();
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
+    expect(store.get("captureWindow")).toBe("saved-private-window-id");
+  });
+
+  it("keeps an unavailable saved caption target through explicit refresh", async () => {
+    store.set("captureWindow", "saved-private-window-id");
+    await boot();
+    button("capture-window-refresh").click();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("list_caption_capture_windows"));
+    expect(select("capture-window").value).toBe("saved-private-window-id");
+  });
+
   it.each(["removed-provider", 42])("allows explicit repair of an invalid saved provider (%s)", async invalid => {
     store.set("llmBackendId", invalid);
     store.set("dictationLocale", "en-US");

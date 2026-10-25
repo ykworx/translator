@@ -680,11 +680,14 @@ async function loadCaptureWindows(selectedValue = ""): Promise<void> {
     replaceOptions(captureWindowSelect, [
       { value: "", label: "자동 선택 (현재 첫 번째 창)" },
       ...windows.map(window => ({ value: window.id, label: window.name })),
+      ...(selectedValue && !windows.some(window => window.id === selectedValue)
+        ? [{ value: selectedValue, label: "저장된 자막 창 (목록에 없음)" }] : []),
     ]);
-    captureWindowSelect.value = windows.some(window => window.id === selectedValue) ? selectedValue : "";
+    captureWindowSelect.value = selectedValue;
   } catch {
-    replaceOptions(captureWindowSelect, [{ value: "", label: "자동 선택 (현재 첫 번째 창)" }]);
-    captureWindowSelect.value = "";
+    replaceOptions(captureWindowSelect, [{ value: "", label: "자동 선택 (현재 첫 번째 창)" },
+      ...(selectedValue ? [{ value: selectedValue, label: "저장된 자막 창 (목록 확인 실패)" }] : [])]);
+    captureWindowSelect.value = selectedValue;
   } finally {
     endSettingsOperation();
   }
@@ -705,7 +708,11 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
 (async () => {
   const savedCaptureMode = await getSetting(SETTINGS_KEYS.captureMode, DEFAULTS.captureMode);
   const savedCaptureWindow = await getSetting(SETTINGS_KEYS.captureWindow, DEFAULTS.captureWindow);
-  await loadCaptureWindows(savedCaptureWindow);
+  // Caption window enumeration is unrelated to local dictation preparation.
+  // Preserve the saved choice until the user explicitly refreshes the list.
+  replaceOptions(captureWindowSelect, [{ value: "", label: "자동 선택 (현재 첫 번째 창)" },
+    ...(savedCaptureWindow ? [{ value: savedCaptureWindow, label: "저장된 자막 창 (새로고침으로 확인)" }] : [])]);
+  captureWindowSelect.value = savedCaptureWindow;
 
   myLangSelect.value = await getSetting(SETTINGS_KEYS.myLang, DEFAULTS.myLang);
   pairLangSelect.value = await getSetting(SETTINGS_KEYS.pairLang, DEFAULTS.pairLang);

@@ -79,6 +79,9 @@ final class AppCaptionBridgeState {
     // MARK: - Public API
 
     func listWindows() -> [[String: Any]] {
+        // Listing shareable content may prompt. Settings and local dictation
+        // preparation must never request screen access implicitly.
+        guard CGPreflightScreenCaptureAccess() else { return [] }
         let semaphore = DispatchSemaphore(value: 0)
         var items: [[String: Any]] = []
 
