@@ -114,15 +114,14 @@ final class GlobalDictationController: NSObject {
     private let phaseLabel = NSTextField(labelWithString: "")
     private let activityDot = NSView()
     private let heading = NSTextField(labelWithString: "")
-    private let transcript = NSTextField(wrappingLabelWithString: "")
+    private let transcript = DictationTranscriptView(frame: .zero)
+    private var displayedPhase: DictationSession.Phase?
     private let instruction = NSTextField(labelWithString: "")
     private var stopButton: NSButton!
     private var cancelButton: NSButton!
     private var copyButton: NSButton!
     private var closeButton: NSButton!
     private var fullResultButton: NSButton!
-    private var resultScroll: NSScrollView!
-    private var resultText: NSTextView!
     private var expandedResult = false
     private var discardReset: DispatchWorkItem?
     private var discardPromptGeneration: UInt64 = 0
@@ -137,9 +136,10 @@ final class GlobalDictationController: NSObject {
         guard recovery.canPreview(phase: session.phase) else { return false }
         lastResult = ""
         expandedResult = false
+        transcript.reset()
         repositionOnShow = true
         installEscapeMonitor()
-        show("받아쓰기 상태창 미리보기 · 녹음하지 않습니다", text: "다른 앱의 입력창에서 단축키를 누르면 이 위치에 인식 결과가 표시됩니다. 같은 단축키로 종료하고, Esc로 취소할 수 있습니다.")
+        show("받아쓰기 상태창 미리보기 · 녹음하지 않습니다", text: "말한 내용이 길어지면 창이 함께 늘어납니다.\n더 긴 내용은 이 영역에서 스크롤할 수 있습니다.\n녹음 중에는 마지막 문장을 따라 표시합니다.\n위로 스크롤하면 이전 내용을 읽을 수 있습니다.\n끝으로 내리면 새 내용을 다시 따라갑니다.\n이 미리보기는 마이크를 켜지 않습니다.")
         phaseLabel.stringValue = "미리보기"
         copyButton.isHidden = true
         return true
@@ -209,7 +209,7 @@ final class GlobalDictationController: NSObject {
             if self.heading.stringValue != heading { self.heading.stringValue = heading }
             self.updateTranscript(state["transcript"] as? String ?? "")
             let elapsed = ProcessInfo.processInfo.systemUptime - self.startedAt
-            self.instruction.stringValue = DictationRecordingClock.warning(elapsed) ?? "Esc로 취소"
+            self.updateInstruction()
             if let error = state["error"] as? String {
                 self.captureError = error
                 self.finishRecording()
@@ -236,7 +236,7 @@ final class GlobalDictationController: NSObject {
         guard session.transition(.recording, to: .finalizing, session: id) else { return }
         timer?.invalidate(); timer = nil
         let reason = timeLimit ? "3분 제한으로 녹음을 완료했습니다. " : ""
-        show(timeLimit ? "3분 제한에 도달해 마지막 발화를 인식 중…" : "마지막 발화 인식 중…", text: transcript.stringValue)
+        show(timeLimit ? "3분 제한에 도달해 마지막 발화를 인식 중…" : "마지막 발화 인식 중…", text: transcript.textView.string)
         SpeechBridgeState.shared.stop(expectedOwner: .dictation) { [weak self] state in
             rustDictationStopped()
             guard let self, self.session.transition(.finalizing, to: .result, session: id) else { return }
@@ -391,6 +391,10 @@ final class GlobalDictationController: NSObject {
         if panel == nil { makePanel() }
         resetDiscardPrompt()
         panelMessage = message
+        if displayedPhase != session.phase {
+            if [.idle, .preparing, .result].contains(session.phase) { transcript.reset() }
+            displayedPhase = session.phase
+        }
         heading.stringValue = message
         updateTranscript(text)
         stopButton.isHidden = session.phase != .recording
@@ -401,9 +405,6 @@ final class GlobalDictationController: NSObject {
         let active = [.preparing, .recording, .finalizing].contains(session.phase)
         fullResultButton.isHidden = active || lastResult.isEmpty
         if active || lastResult.isEmpty { expandedResult = false }
-        instruction.stringValue = active ? "Esc로 취소" : (resultPending
-            ? "받아쓰기 단축키로 전체 복사 · 복사 후 다시 눌러 새로 시작"
-            : (lastResult.isEmpty ? "" : "전체 결과는 복사 버튼으로 보관할 수 있습니다."))
         switch session.phase {
         case .preparing:
             phaseLabel.stringValue = "준비 중"
@@ -425,12 +426,23 @@ final class GlobalDictationController: NSObject {
 
     private func updateTranscript(_ text: String) {
         let empty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        transcript.stringValue = empty && session.phase == .recording ? "말씀해주세요…" : Self.preview(text)
-        transcript.textColor = empty ? .secondaryLabelColor : .labelColor
+        transcript.setText(empty && session.phase == .recording ? "말씀해주세요…" : text,
+                           active: session.phase == .recording || session.phase == .finalizing,
+                           placeholder: empty)
+        layoutPanel()
     }
 
-    private static func preview(_ text: String) -> String {
-        text.count > 160 ? "…" + String(text.suffix(160)) : text
+    private func updateInstruction() {
+        if [.preparing, .recording, .finalizing].contains(session.phase) {
+            let base = session.phase == .recording
+                ? DictationRecordingClock.warning(ProcessInfo.processInfo.systemUptime - startedAt) ?? "Esc로 취소"
+                : "Esc로 취소"
+            instruction.stringValue = base + (transcript.overflows ? " · 이전 내용은 위로 스크롤" : "")
+        } else {
+            instruction.stringValue = resultPending
+                ? "받아쓰기 단축키로 전체 복사 · 복사 후 다시 눌러 새로 시작"
+                : (lastResult.isEmpty ? "" : "결과 복사로 전체 내용을 보관할 수 있습니다.")
+        }
     }
 
     private func recordingHeading() -> String {
@@ -440,32 +452,27 @@ final class GlobalDictationController: NSObject {
 
     private func layoutPanel() {
         guard let panel else { return }
-        let height: CGFloat = expandedResult ? 368 : 218
+        let screen = repositionOnShow
+            ? NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
+            : panel.screen ?? NSScreen.main
+        let visible = screen?.visibleFrame
+        let height = DictationPanelSizing.height(textHeight: transcript.measuredHeight(width: 380),
+            expanded: expandedResult, visibleHeight: visible?.height ?? 900)
         var frame = panel.frame
         frame.size.height = height
+        if let visible {
+            frame.origin.y = min(max(frame.minY, visible.minY + 12), visible.maxY - height - 12)
+        }
         panel.setFrame(frame, display: true)
         surface.frame = NSRect(x: 0, y: 0, width: 420, height: height)
         panelTitle.frame = NSRect(x: 20, y: height - 37, width: 240, height: 20)
         activityDot.frame.origin = NSPoint(x: 325, y: height - 30)
         phaseLabel.frame.origin = NSPoint(x: 337, y: height - 35)
         heading.frame = NSRect(x: 20, y: height - 77, width: 380, height: 34)
-        let textFrame = NSRect(x: 20, y: 79, width: 380, height: height - 160)
-        transcript.frame = textFrame
-        transcript.isHidden = expandedResult
-        resultScroll.frame = textFrame
-        resultScroll.isHidden = !expandedResult
-        if expandedResult {
-            if resultText.string != lastResult { resultText.string = lastResult }
-            let width = resultScroll.contentSize.width
-            resultText.setFrameSize(NSSize(width: width, height: resultScroll.contentSize.height))
-            resultText.textContainer?.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
-            if let container = resultText.textContainer, let manager = resultText.layoutManager {
-                manager.ensureLayout(for: container)
-                let contentHeight = manager.usedRect(for: container).height + resultText.textContainerInset.height * 2
-                resultText.setFrameSize(NSSize(width: width, height: max(resultScroll.contentSize.height, contentHeight)))
-            }
-        }
-        fullResultButton.title = expandedResult ? "접기" : "전체 결과"
+        transcript.frame = NSRect(x: 20, y: 79, width: 380, height: max(1, height - DictationPanelSizing.chromeHeight))
+        transcript.fitDocument(active: session.phase == .recording || session.phase == .finalizing)
+        fullResultButton.title = expandedResult ? "접기" : "크게 보기"
+        updateInstruction()
     }
 
     /// Relocate only for a new attempt or preview; recognition updates never move
@@ -474,7 +481,8 @@ final class GlobalDictationController: NSObject {
         guard let panel else { return }
         let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
         guard let visible = screen?.visibleFrame else { return }
-        panel.setFrameOrigin(NSPoint(x: visible.midX - panel.frame.width / 2, y: visible.minY + 40))
+        panel.setFrameOrigin(NSPoint(x: visible.midX - panel.frame.width / 2,
+            y: min(visible.minY + 40, visible.maxY - panel.frame.height - 12)))
     }
 
     private func makePanel() {
@@ -519,43 +527,20 @@ final class GlobalDictationController: NSObject {
         heading.maximumNumberOfLines = 2
         heading.cell?.wraps = true
         heading.cell?.isScrollable = false
-        transcript.frame = NSRect(x: 20, y: 49, width: 380, height: 58)
-        transcript.font = .systemFont(ofSize: 15, weight: .medium)
-        transcript.maximumNumberOfLines = 3
-        transcript.cell?.usesSingleLineMode = false
-        transcript.cell?.wraps = true
-        transcript.cell?.isScrollable = false
-        transcript.cell?.lineBreakMode = .byWordWrapping
-        resultScroll = NSScrollView()
-        resultScroll.hasVerticalScroller = true
-        resultScroll.autohidesScrollers = true
-        resultScroll.drawsBackground = false
-        resultScroll.borderType = .noBorder
-        resultText = NSTextView()
-        resultText.isEditable = false
-        resultText.isSelectable = false
-        resultText.isRichText = false
-        resultText.drawsBackground = false
-        resultText.isVerticallyResizable = true
-        resultText.isHorizontallyResizable = false
-        resultText.textContainer?.widthTracksTextView = true
-        resultText.font = .systemFont(ofSize: 15)
-        resultText.textColor = .labelColor
-        resultText.textContainerInset = NSSize(width: 0, height: 4)
-        resultText.setAccessibilityLabel("받아쓰기 전체 결과. 복사 버튼으로 전체 내용을 복사할 수 있습니다.")
-        resultScroll.documentView = resultText
-        view.addSubview(resultScroll)
+        view.addSubview(transcript)
+
         instruction.frame = NSRect(x: 20, y: 48, width: 380, height: 16)
         instruction.font = .systemFont(ofSize: 11)
         instruction.textColor = .secondaryLabelColor
-        for label in [panelTitle, phaseLabel, heading, transcript, instruction] { view.addSubview(label) }
+        instruction.lineBreakMode = .byTruncatingTail
+        for label in [panelTitle, phaseLabel, heading, instruction] { view.addSubview(label) }
         view.addSubview(activityDot)
 
         stopButton = NSButton(title: "완료하고 입력", target: self, action: #selector(finishRecording))
         cancelButton = NSButton(title: "취소", target: self, action: #selector(cancelRecording))
         copyButton = NSButton(title: "결과 복사", target: self, action: #selector(copyResult))
         closeButton = NSButton(title: "닫기", target: self, action: #selector(dismiss))
-        fullResultButton = NSButton(title: "전체 결과", target: self, action: #selector(toggleFullResult))
+        fullResultButton = NSButton(title: "크게 보기", target: self, action: #selector(toggleFullResult))
         let actions = NSStackView(views: [stopButton!, cancelButton!, fullResultButton!, copyButton!, closeButton!])
         actions.orientation = .horizontal
         actions.spacing = 8
