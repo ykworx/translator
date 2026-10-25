@@ -4,7 +4,7 @@
 
 ## Ollama를 로컬 전용으로 사용하기
 
-기본 주소는 `http://localhost:11434`입니다. 사용자가 저장한 LAN 주소와 reverse proxy 경로도 유지합니다. LAN 서버는 다른 기기에서 실행하므로 같은 Mac의 오프라인 추론과 구분합니다.
+기본 주소는 `http://localhost:11434`입니다. 사용자가 저장한 LAN 주소와 reverse proxy 경로도 유지합니다. LAN 주소는 다른 기기의 서버일 수 있으므로 같은 Mac에서의 오프라인 추론으로 보장하지 않습니다.
 
 Ollama는 cloud 모델도 지원합니다. 따라서 localhost에 연결했다는 사실만으로 추론이 로컬이라고 확정할 수 없습니다. [공식 FAQ](https://docs.ollama.com/faq)는 로컬 전용 사용에 `OLLAMA_NO_CLOUD=1` 또는 `~/.ollama/server.json`의 `disable_ollama_cloud: true`와 서버 재시작을 안내합니다.
 
