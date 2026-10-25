@@ -563,14 +563,16 @@
           <label>Ollama URL</label>
           <div style="display:flex;gap:8px;">
             <input type="text" id="ollama-baseurl" placeholder="http://localhost:11434" style="flex:1;">
-            <button type="button" id="ollama-detect-btn" style="white-space:nowrap;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg);color:var(--fg);font-size:12px;font-family:inherit;cursor:pointer;">자동 감지</button>
+            <button type="button" id="ollama-detect-btn" style="white-space:nowrap;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg);color:var(--fg);font-size:12px;font-family:inherit;cursor:pointer;">모델 목록 조회</button>
           </div>
         </div>
         <div class="field">
-          <label>모델</label>
-          <select id="ollama-model"></select>
+          <label for="ollama-model">모델</label>
+          <input type="text" id="ollama-model" list="ollama-model-list" autocomplete="off" spellcheck="false" placeholder="예: gemma3:4b">
+          <datalist id="ollama-model-list"></datalist>
+          <p class="setting-hint">사용할 모델 이름을 직접 입력하거나 서버의 모델 목록을 조회해 선택하세요. 목록 조회는 모델을 설치하거나 추론을 실행하지 않습니다.</p>
         </div>
-        <div id="ollama-status" class="setting-hint"></div>
+        <div id="ollama-status" class="setting-hint" role="status" aria-live="polite"></div>
       </div>
 
       <div id="gemini-section">
