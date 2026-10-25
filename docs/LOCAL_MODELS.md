@@ -1,6 +1,6 @@
-# 로컬 모델 연결 방향
+# Ollama 로컬 모델 연결
 
-2026-10-25 기준 공식 문서·소스를 조사했습니다. Ollama는 **사용자가 설치한 로컬 모델을 실행하는 연결**로 유지합니다. 이번 연결 구조 변경은 기존 모델·주소를 보존하며, 다른 제공자로 자동 전환하지 않습니다. 서버 설치·모델 다운로드·사용자 서버 설정 변경은 수행하지 않습니다.
+2026-10-25 결정: 로컬 LLM 실행은 **Ollama만 지원**합니다. 다른 로컬 LLM 서버 프리셋이나 앱 내장 LLM runtime은 도입 범위에서 제외합니다. 받아쓰기의 로컬 Whisper 사용은 별도 기능으로 유지합니다. Ollama는 사용자가 설치한 로컬 모델을 실행하는 연결입니다. 이번 연결 구조 변경은 기존 모델·주소를 보존하며, 다른 제공자로 자동 전환하지 않습니다. 서버 설치·모델 다운로드·사용자 서버 설정 변경은 수행하지 않습니다.
 
 ## Ollama를 로컬 전용으로 사용하기
 
@@ -18,26 +18,16 @@ OLLAMA_NO_CLOUD=1 ollama serve
 
 [Ollama Cloud 설명](https://docs.ollama.com/cloud)과 [OpenAI 호환 범위](https://docs.ollama.com/api/openai-compatibility)도 참고하세요. 현재 Transrator는 Ollama의 `/v1/chat/completions`, 모델 목록 `/api/tags`, 이미지 capability 조회 `/api/show`를 사용합니다.
 
-## 대안 비교와 제안
+## Ollama 사용성 개선 방향
 
-| 실행 방법 | 장점과 운영 경계 | Transrator 적용 방향 |
-| --- | --- | --- |
-| **Ollama** | 기존 daemon·모델을 그대로 사용. 모델별 이미지 지원을 확인해야 함 | 현재 기본 로컬 연결 유지 |
-| **LM Studio** | GUI에서 모델 관리, Apple Silicon의 GGUF/MLX runtime, 로컬 OpenAI 호환 서버 | 다음 공통 OpenAI 호환 연결에 프리셋 추가 권장 |
-| **llama.cpp / llama-server** | GGUF·Metal·서버 옵션을 직접 관리. 이미지 모델은 대응 projector 등이 필요할 수 있음 | 사용자가 실행한 서버에 명시적 endpoint로 연결하는 고급 옵션 |
-| **MLX-LM** | Apple Silicon용 MLX 모델을 직접 운영. Python·모델 파일·tokenizer와 버전 관리 필요 | 외부 서버 연결부터 검토하고 앱 내장 runtime은 별도 과제로 평가 |
+[모델 연결 계획 #6](https://github.com/ykworx/translator/issues/6)의 연결 UI 단계에서 Ollama 서버 주소·모델 선택·연결 확인을 쉽게 사용할 수 있도록 개선합니다.
 
-Ollama 유지 후 LM Studio 옵션을 추가하는 순서를 권장합니다. 현재 번역 기능을 유지하면서 모델 관리 UI의 선택지를 늘릴 수 있기 때문입니다. 이는 성능 벤치마크 결론이 아닙니다. 모델·양자화·문맥·cold/warm 상태·Whisper 동시 사용 조건을 맞추기 전에는 특정 runtime이 더 빠르다거나 메모리가 충분하다고 단정하지 않습니다.
+- 저장한 주소·모델을 보존하고 서버 연결 상태와 사용 가능한 모델을 확인할 수 있는 화면
+- 서버 미실행·모델 미설치·통신 지연을 구분하는 안내
+- 선택 모델의 텍스트·이미지·스트림 지원 여부 확인
+- Whisper 받아쓰기와 함께 사용할 때의 응답 시간·메모리 사용 검증
 
-LM Studio·llama-server·MLX 서버는 이번 Registry 기반 PR에서 새로 추가하는 기능이 아닙니다. [모델 연결 계획 #6](https://github.com/ykworx/translator/issues/6)의 공통 호환 adapter·연결 UI 단계에서 다룹니다. OpenAI 호환 endpoint라도 이미지·reasoning·JSON schema 지원은 같지 않으므로 실제 지원 기능을 별도로 확인합니다.
-
-공식 자료:
-
-- [LM Studio 앱·GGUF/MLX](https://lmstudio.ai/docs/app), [로컬 서버](https://lmstudio.ai/docs/developer/core/server), [OpenAI 호환 API](https://lmstudio.ai/docs/developer/openai-compat), [오프라인 사용](https://lmstudio.ai/docs/app/offline)
-- [llama.cpp Metal 빌드](https://github.com/ggml-org/llama.cpp/blob/74bca3950054eed1795f525cb9cf06bfe796492d/docs/build.md#metal-build), [llama-server](https://github.com/ggml-org/llama.cpp/blob/74bca3950054eed1795f525cb9cf06bfe796492d/tools/server/README.md), [이미지 모델](https://github.com/ggml-org/llama.cpp/blob/74bca3950054eed1795f525cb9cf06bfe796492d/tools/mtmd/README.md)
-- [MLX-LM](https://github.com/ml-explore/mlx-lm/blob/4cfc6478473b0668ede3eb0cc93f2a9181a15052/README.md), [서버의 이미지 처리](https://github.com/ml-explore/mlx-lm/blob/4cfc6478473b0668ede3eb0cc93f2a9181a15052/mlx_lm/server.py#L648-L689)
-
-MLX-LM의 현재 소스에는 제한된 processor를 사용하는 이미지 처리도 있습니다. 모든 모델에서 이미지가 지원된다고 가정하거나, 반대로 서버 전체를 항상 텍스트 전용으로 분류하지 않습니다.
+이는 후속 구현 방향입니다. 현재 추가된 기능으로 표시하지 않으며, 서버 설치·모델 다운로드·서버 설정 변경을 자동으로 수행하지 않습니다.
 
 ## 향후 엄격한 로컬 전용 모드
 
