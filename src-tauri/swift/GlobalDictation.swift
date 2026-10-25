@@ -108,8 +108,11 @@ final class GlobalDictationController: NSObject {
     private var captureError: String?
     private var recordingMode = ""
     private var panel: DictationPanel?
+    private let phaseLabel = NSTextField(labelWithString: "")
+    private let activityDot = NSView()
     private let heading = NSTextField(labelWithString: "")
     private let transcript = NSTextField(wrappingLabelWithString: "")
+    private let instruction = NSTextField(labelWithString: "")
     private var stopButton: NSButton!
     private var cancelButton: NSButton!
     private var copyButton: NSButton!
@@ -119,6 +122,7 @@ final class GlobalDictationController: NSObject {
         guard session.phase == .idle else { return false }
         installEscapeMonitor()
         show("받아쓰기 상태창 미리보기 · 녹음하지 않습니다", text: "다른 앱의 입력창에서 단축키를 누르면 이 위치에 인식 결과가 표시됩니다. 같은 단축키로 종료하고, Esc로 취소할 수 있습니다.")
+        phaseLabel.stringValue = "미리보기"
         copyButton.isHidden = true
         return true
     }
@@ -184,7 +188,7 @@ final class GlobalDictationController: NSObject {
             let state = SpeechBridgeState.shared.currentState()
             let heading = self.recordingHeading()
             if self.heading.stringValue != heading { self.heading.stringValue = heading }
-            self.transcript.stringValue = Self.preview(state["transcript"] as? String ?? "")
+            self.updateTranscript(state["transcript"] as? String ?? "")
             if let error = state["error"] as? String {
                 self.captureError = error
                 self.finishRecording()
@@ -319,12 +323,35 @@ final class GlobalDictationController: NSObject {
     private func show(_ message: String, text: String) {
         if panel == nil { makePanel() }
         heading.stringValue = message
-        transcript.stringValue = Self.preview(text)
+        updateTranscript(text)
         stopButton.isHidden = session.phase != .recording
+        stopButton.title = target?.automaticInsertion == true ? "완료하고 입력" : "완료"
         cancelButton.isHidden = ![.preparing, .recording, .finalizing].contains(session.phase)
         copyButton.isHidden = lastResult.isEmpty
         closeButton.isHidden = [.preparing, .recording, .finalizing].contains(session.phase)
+        let active = [.preparing, .recording, .finalizing].contains(session.phase)
+        instruction.stringValue = active ? "Esc로 취소" : ""
+        switch session.phase {
+        case .preparing:
+            phaseLabel.stringValue = "준비 중"
+            activityDot.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        case .recording:
+            phaseLabel.stringValue = "녹음 중"
+            activityDot.layer?.backgroundColor = NSColor.systemRed.cgColor
+        case .finalizing:
+            phaseLabel.stringValue = "인식 중"
+            activityDot.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        default:
+            phaseLabel.stringValue = lastResult.isEmpty ? "안내" : "결과"
+            activityDot.layer?.backgroundColor = NSColor.secondaryLabelColor.cgColor
+        }
         panel?.orderFrontRegardless()
+    }
+
+    private func updateTranscript(_ text: String) {
+        let empty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        transcript.stringValue = empty && session.phase == .recording ? "말씀해주세요…" : Self.preview(text)
+        transcript.textColor = empty ? .secondaryLabelColor : .labelColor
     }
 
     private static func preview(_ text: String) -> String {
@@ -334,40 +361,83 @@ final class GlobalDictationController: NSObject {
     private func recordingHeading() -> String {
         let seconds = Int(Date().timeIntervalSince(startedAt))
         let elapsed = String(format: "%02d:%02d", seconds / 60, seconds % 60)
-        return "● \(target?.appName ?? "선택 앱") · \(elapsed) · \(recordingMode)"
+        return "\(target?.appName ?? "선택 앱") · \(elapsed) · \(recordingMode)"
     }
 
     private func makePanel() {
-        let rect = NSRect(x: 0, y: 0, width: 460, height: 180)
+        let rect = NSRect(x: 0, y: 0, width: 420, height: 188)
         let window = DictationPanel(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isReleasedWhenClosed = false
-        window.hasShadow = true
+        // A borderless panel still has an opaque window background by default.
+        // Clear both backing surfaces so rounded corners do not expose a square
+        // frame; omit the window shadow, which otherwise reads as an outer halo.
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
         window.title = "Transrator 받아쓰기"
+        let root = NSView(frame: rect)
+        root.wantsLayer = true
+        root.layer?.backgroundColor = NSColor.clear.cgColor
         let view = NSVisualEffectView(frame: rect)
-        view.material = .hudWindow
+        view.material = .popover
+        view.blendingMode = .behindWindow
         view.state = .active
         view.wantsLayer = true
-        view.layer?.cornerRadius = 16
+        view.layer?.cornerRadius = 18
+        view.layer?.cornerCurve = .continuous
         view.layer?.masksToBounds = true
-        heading.frame = NSRect(x: 20, y: 126, width: 420, height: 38)
-        heading.font = .systemFont(ofSize: 13, weight: .semibold)
+        view.layer?.borderWidth = 0
+        root.addSubview(view)
+
+        let title = NSTextField(labelWithString: "받아쓰기")
+        title.frame = NSRect(x: 20, y: 151, width: 240, height: 20)
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.textColor = .labelColor
+        activityDot.frame = NSRect(x: 325, y: 158, width: 6, height: 6)
+        activityDot.wantsLayer = true
+        activityDot.layer?.cornerRadius = 3
+        phaseLabel.frame = NSRect(x: 337, y: 153, width: 63, height: 16)
+        phaseLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        phaseLabel.textColor = .secondaryLabelColor
+        heading.frame = NSRect(x: 20, y: 111, width: 380, height: 34)
+        heading.font = .systemFont(ofSize: 12)
+        heading.textColor = .secondaryLabelColor
         heading.maximumNumberOfLines = 2
-        transcript.frame = NSRect(x: 20, y: 50, width: 420, height: 68)
-        transcript.font = .systemFont(ofSize: 15)
+        heading.cell?.wraps = true
+        heading.cell?.isScrollable = false
+        transcript.frame = NSRect(x: 20, y: 49, width: 380, height: 58)
+        transcript.font = .systemFont(ofSize: 15, weight: .medium)
         transcript.maximumNumberOfLines = 3
-        view.addSubview(heading); view.addSubview(transcript)
-        stopButton = NSButton(title: "중지하고 입력", target: self, action: #selector(finishRecording))
+        transcript.cell?.lineBreakMode = .byTruncatingTail
+        instruction.frame = NSRect(x: 20, y: 17, width: 150, height: 16)
+        instruction.font = .systemFont(ofSize: 11)
+        instruction.textColor = .secondaryLabelColor
+        for label in [title, phaseLabel, heading, transcript, instruction] { view.addSubview(label) }
+        view.addSubview(activityDot)
+
+        stopButton = NSButton(title: "완료하고 입력", target: self, action: #selector(finishRecording))
         cancelButton = NSButton(title: "취소", target: self, action: #selector(cancelRecording))
         copyButton = NSButton(title: "결과 복사", target: self, action: #selector(copyResult))
         closeButton = NSButton(title: "닫기", target: self, action: #selector(dismiss))
-        for (index, button) in [stopButton!, cancelButton!, copyButton!, closeButton!].enumerated() {
+        let actions = NSStackView(views: [stopButton!, cancelButton!, copyButton!, closeButton!])
+        actions.orientation = .horizontal
+        actions.spacing = 8
+        actions.detachesHiddenViews = true
+        actions.translatesAutoresizingMaskIntoConstraints = false
+        for button in [stopButton!, cancelButton!, copyButton!, closeButton!] {
             button.bezelStyle = .rounded
-            button.frame = NSRect(x: 18 + index * 108, y: 10, width: 104, height: 30)
-            view.addSubview(button)
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: 12, weight: .medium)
         }
-        window.contentView = view
+        view.addSubview(actions)
+        NSLayoutConstraint.activate([
+            actions.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            actions.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
+            actions.heightAnchor.constraint(equalToConstant: 26),
+        ])
+        window.contentView = root
         let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
         if let visible = screen?.visibleFrame {
             window.setFrameOrigin(NSPoint(x: visible.midX - rect.width / 2, y: visible.minY + 40))
