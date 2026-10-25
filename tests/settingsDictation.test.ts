@@ -122,6 +122,33 @@ describe("dictation settings", () => {
     expect(store.get("ollamaModel")).toBe("custom-local:latest");
   });
 
+  it("uses a current shared Gemini default for a new installation", async () => {
+    await boot();
+    expect(select("model").value).toBe("gemini-3.8-flash");
+    button("btn-save").click();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(store.get("model")).toBe("gemini-3.8-flash");
+  });
+
+  it.each(["gemini-2.0-flash", "models/gemini-2.0-flash-001", "gemini-2.5-pro"])("preserves and explains an existing limited Gemini selection (%s)", async model => {
+    store.set("model", model);
+    await boot();
+    expect(select("model").value).toBe(model);
+    expect(document.getElementById("gemini-model-status")!.textContent).toContain(model.includes("2.0") ? "지원이 종료" : "접근이 제한");
+    button("btn-save").click();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(store.get("model")).toBe(model);
+  });
+
+  it("clears the lifecycle notice only after the user explicitly chooses a current model", async () => {
+    store.set("model", "gemini-2.0-flash");
+    await boot();
+    select("model").value = "gemini-3.8-flash";
+    select("model").dispatchEvent(new Event("change", { bubbles: true }));
+    expect(document.getElementById("gemini-model-status")!.textContent).toBe("");
+    expect(store.get("model")).toBe("gemini-2.0-flash");
+  });
+
   async function boot() {
     await import("../src/settings");
     await vi.waitFor(() => expect(button("btn-save").disabled).toBe(false));

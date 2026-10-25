@@ -45,6 +45,7 @@ const captureWindowField = document.getElementById("capture-window-field") as HT
 const captureWindowSelect = document.getElementById("capture-window") as HTMLSelectElement;
 const captureWindowRefreshBtn = document.getElementById("capture-window-refresh") as HTMLButtonElement;
 const modelSelect = document.getElementById("model") as HTMLSelectElement;
+const geminiModelStatus = document.getElementById("gemini-model-status") as HTMLElement;
 const btnSave = document.getElementById("btn-save") as HTMLButtonElement;
 const btnCancel = document.getElementById("btn-cancel") as HTMLButtonElement;
 const actions = document.getElementById("actions") as HTMLDivElement;
@@ -52,6 +53,18 @@ const shortcutSelectBtn = document.getElementById("shortcut-select") as HTMLButt
 const shortcutClipboardBtn = document.getElementById("shortcut-clipboard") as HTMLButtonElement;
 const shortcutDictationBtn = document.getElementById("shortcut-dictation") as HTMLButtonElement;
 const experimentalCaptionsToggle = document.getElementById("experimental-captions-toggle") as HTMLInputElement;
+
+// Official Developer API lifecycle checked 2026-10-25. Preserve saved choices;
+// notices inform an explicit model change rather than silently routing it.
+function updateGeminiModelStatus(): void {
+  const model = modelSelect.value.replace(/^models\//, "");
+  geminiModelStatus.textContent = ["gemini-2.0-flash", "gemini-2.0-flash-001", "gemini-2.0-flash-lite", "gemini-2.0-flash-lite-001"].includes(model)
+    ? "이 Gemini 모델은 지원이 종료되었습니다. 사용할 모델을 직접 선택해주세요. 저장된 선택은 자동 변경하지 않습니다."
+    : ["gemini-2.5-flash", "gemini-2.5-pro"].includes(model)
+      ? "이 모델은 기존 사용 프로젝트로 접근이 제한됩니다. 현재 프로젝트의 사용 가능 여부를 확인하거나 다른 모델을 선택해주세요."
+      : "";
+}
+modelSelect.addEventListener("change", updateGeminiModelStatus);
 
 // ─── Tabs ───────────────────────────────────────────
 const tabItems = document.querySelectorAll<HTMLButtonElement>(".tab-item");
@@ -615,6 +628,7 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
   whisperModelSelect.value = await getSetting(SETTINGS_KEYS.whisperModel, DEFAULTS.whisperModel);
   captureModeSelect.value = savedCaptureMode;
   restoreSelectedValue(modelSelect, await getSetting(SETTINGS_KEYS.model, DEFAULTS.model), "저장된 사용자 모델");
+  updateGeminiModelStatus();
 
   selectShortcutStr = await getSetting(SETTINGS_KEYS.selectShortcut, DEFAULTS.selectShortcut);
   clipboardShortcutStr = await getSetting(SETTINGS_KEYS.clipboardShortcut, DEFAULTS.clipboardShortcut);

@@ -9,12 +9,28 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_store::Store;
 use uuid::Uuid;
 
 const MAX_RUNTIMES: usize = 128;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderDefaults {
+    gemini_model: String,
+}
+
+fn default_gemini_model() -> &'static str {
+    static DEFAULTS: OnceLock<ProviderDefaults> = OnceLock::new();
+    &DEFAULTS
+        .get_or_init(|| {
+            serde_json::from_str(include_str!("../../src/providerDefaults.json"))
+                .expect("Bundled provider defaults must be valid JSON")
+        })
+        .gemini_model
+}
 const STALE: &str =
     "인증 정보가 다른 창에서 변경되었습니다. 설정을 새로고침한 뒤 다시 시도해주세요.";
 const VAULT_ERROR: &str =
@@ -485,6 +501,21 @@ fn setting(entries: &BTreeMap<String, Value>, key: &str, fallback: &str) -> Resu
         Some(_) => Err("AI 연결 설정 형식이 올바르지 않습니다. 설정을 다시 저장해주세요.".into()),
     }
 }
+fn cloud_model(
+    entries: &BTreeMap<String, Value>,
+    provider: CloudProvider,
+) -> Result<String, String> {
+    let (key, fallback) = match provider {
+        CloudProvider::Gemini => ("model", default_gemini_model()),
+        CloudProvider::OpenAi => ("openaiModel", "gpt-4o-mini"),
+    };
+    let model = setting(entries, key, fallback)?.trim().to_string();
+    if model.is_empty() {
+        return Err("AI 모델 이름을 확인해주세요.".into());
+    }
+    Ok(model)
+}
+
 fn normalize_ollama_url(value: &str) -> Result<String, String> {
     let raw = value.trim();
     let invalid = || {
@@ -749,24 +780,7 @@ pub async fn capture_connection(
         if setting(&entries, "llmBackendId", "gemini-native")? != provider.id() {
             return Err("준비 중 AI 공급자가 변경되었습니다. 다시 시도해주세요.".into());
         }
-        let model = setting(
-            &entries,
-            if provider == CloudProvider::Gemini {
-                "model"
-            } else {
-                "openaiModel"
-            },
-            if provider == CloudProvider::Gemini {
-                "gemini-2.0-flash"
-            } else {
-                "gpt-4o-mini"
-            },
-        )?
-        .trim()
-        .to_string();
-        if model.is_empty() {
-            return Err("AI 모델 이름을 확인해주세요.".into());
-        }
+        let model = cloud_model(&entries, provider)?;
         let mut env = NativeEnvironment::new(&app, store)?;
         let (_, auth_profile) = migrate_provider(&mut env, provider)?;
         let api_key = match &auth_profile {
@@ -1004,6 +1018,28 @@ mod tests {
             },
             credential_ref: reference,
         }
+    }
+
+    #[test]
+    fn cloud_defaults_only_apply_when_the_saved_model_is_absent() {
+        let mut entries = BTreeMap::new();
+        assert_eq!(
+            cloud_model(&entries, CloudProvider::Gemini).unwrap(),
+            "gemini-3.8-flash"
+        );
+        assert_eq!(
+            cloud_model(&entries, CloudProvider::OpenAi).unwrap(),
+            "gpt-4o-mini"
+        );
+        entries.insert("model".into(), Value::String("gemini-2.0-flash".into()));
+        assert_eq!(
+            cloud_model(&entries, CloudProvider::Gemini).unwrap(),
+            "gemini-2.0-flash"
+        );
+        entries.insert("model".into(), Value::String(" ".into()));
+        assert!(cloud_model(&entries, CloudProvider::Gemini).is_err());
+        entries.insert("model".into(), Value::Null);
+        assert!(cloud_model(&entries, CloudProvider::Gemini).is_err());
     }
 
     #[test]

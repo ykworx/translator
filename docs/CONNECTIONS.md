@@ -12,6 +12,14 @@ macOS에서 Gemini·OpenAI API 키는 Keychain에 저장합니다. **설정 → 
 
 다른 창에서 키를 바꾸었다면 오래된 창의 저장·삭제를 거절합니다. 상태를 다시 확인한 뒤 변경하세요. 앱 서명이나 Keychain 설정에 따라 macOS의 접근 허용 창이 나타날 수 있습니다.
 
+## Gemini 모델 선택
+
+2026-10-25 공식 문서 확인 기준, 새 기본값은 `gemini-3.8-flash`이며 선택 목록에는 `gemini-3.5-flash-lite`와 `gemini-3.6-flash`도 제공합니다. 세 모델은 Stable이며 텍스트·이미지 입력과 텍스트 출력, 기존 generateContent/streamGenerateContent API를 지원합니다. 실제 프로젝트의 접근 권한·품질·지연은 별도로 확인해야 하며, 이 변경에서 유료 API 요청이나 성능 비교는 하지 않았습니다. [공식 모델 목록](https://ai.google.dev/gemini-api/docs/models), [API reference](https://ai.google.dev/api/generate-content)
+
+`gemini-2.0-flash`·`gemini-2.0-flash-lite`는 2026-06-01 종료되었습니다. `gemini-2.5-flash`·`gemini-2.5-pro`는 Developer API의 종료일이 발표되지 않았지만 기존 사용 프로젝트로 접근이 제한되어 신규 제안에서 제외했습니다. 두 경우를 같은 종료 상태로 표시하지 않습니다. [공식 수명주기](https://ai.google.dev/gemini-api/docs/deprecations), [공식 변경 기록](https://ai.google.dev/gemini-api/docs/changelog#september-18-2026)
+
+저장된 모델과 사용자 지정 모델은 자동 교체하지 않습니다. 구모델은 설정 화면에 상태를 표시하며, 사용할 모델을 직접 선택해 저장할 수 있습니다. frontend와 Rust의 새 기본값은 `src/providerDefaults.json`을 함께 사용합니다.
+
 ## 기존 키 이전
 
 이전 버전의 `settings.json`에 키가 있으면 해당 cloud 제공자의 **키 상태 확인 또는 첫 사용** 시 이전합니다. 다른 제공자의 키를 함께 읽거나 Ollama 사용 중에 이전하지 않습니다.
