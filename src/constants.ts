@@ -1,4 +1,5 @@
 import type { BackendId } from "./types";
+import providerDefaults from "./providerDefaults.json";
 
 /** Supported languages for translation */
 export const LANGUAGES = [
@@ -33,10 +34,9 @@ export const CAPTURE_MODES = [
 
 /** Available Gemini models */
 export const MODELS = [
-  { value: "gemini-2.0-flash", label: "gemini-2.0-flash" },
-  { value: "gemini-2.0-flash-lite", label: "gemini-2.0-flash-lite" },
-  { value: "gemini-2.5-flash", label: "gemini-2.5-flash" },
-  { value: "gemini-2.5-pro", label: "gemini-2.5-pro" },
+  { value: "gemini-3.8-flash", label: "gemini-3.8-flash" },
+  { value: "gemini-3.5-flash-lite", label: "gemini-3.5-flash-lite" },
+  { value: "gemini-3.6-flash", label: "gemini-3.6-flash" },
 ];
 
 /** Available OpenAI models (user-selectable in settings) */
@@ -100,7 +100,7 @@ export const DEFAULTS = {
   apiKey: "",
   myLang: "한국어",
   pairLang: "日本語",
-  model: "gemini-2.0-flash",
+  model: providerDefaults.geminiModel,
   speechLocale: "ja-JP",
   dictationLocale: "ko-KR",
   dictationHint: "",
