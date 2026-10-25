@@ -2,9 +2,13 @@
 
 ## Overview
 
-Test fixtures and benchmark tools for evaluating Japanese speech recognition quality. Uses audio samples from [ReazonSpeech](https://huggingface.co/datasets/reazon-research/reazonspeech) dataset.
+Test fixtures and benchmark tools for evaluating Japanese speech recognition quality. The checked-in `fixtures/japanese/manifest.json` identifies the current samples as `gtts-generated` synthetic speech. They do not establish accuracy on natural speech or against macOS Dictation.
+
+For the current native Whisper dictation runner, private AppKit clipboard checks, and measured results, see [the global dictation guide](../docs/GLOBAL_DICTATION.md). The Python WER tools below are a separate benchmark path with additional dependencies.
 
 ## Setup
+
+Run the commands in this guide from the `tests` directory.
 
 ```bash
 pip install datasets soundfile librosa jiwer
@@ -20,7 +24,7 @@ pip install mecab-python3 unidic-lite
 python download_japanese_samples.py
 ```
 
-Downloads 10 Japanese audio samples (5-15s each) from ReazonSpeech, converts to 16kHz mono WAV, and creates `fixtures/japanese/manifest.json` with transcripts.
+The optional downloader tries the configured Hugging Face datasets (`ku-nlp/speech-bsd-hf`, then Japanese Common Voice), converts accepted 3–20 second samples to 16kHz mono WAV, and writes `fixtures/japanese/manifest.json` with transcripts. It replaces fixtures at those paths, so preserve any existing benchmark baseline before running it. It is not needed to use the checked-in synthetic samples.
 
 **Output structure:**
 ```
@@ -35,7 +39,7 @@ fixtures/japanese/
 
 ```json
 {
-  "dataset": "reazon-research/reazonspeech",
+  "dataset": "gtts-generated",
   "num_samples": 10,
   "target_sample_rate": 16000,
   "samples": [
