@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Window as TauriWindow } from "@tauri-apps/api/window";
+import type { Event as TauriEvent } from "@tauri-apps/api/event";
 
 const html = readFileSync(resolve("settings.html"), "utf8");
 const installedModel = { downloaded: true, ggmlDownloaded: true, coremlDownloaded: true, sizeBytes: 1_624_555_275, path: "/models/test.bin" };
@@ -9,7 +11,7 @@ describe("dictation settings", () => {
   let store: Map<string, unknown>;
   let credentials: Map<string, { configured: boolean; revision: string | null; error?: string }>;
   let invoke: ReturnType<typeof vi.fn>;
-  let close: ReturnType<typeof vi.fn>;
+  let destroy: ReturnType<typeof vi.fn>;
   let emit: ReturnType<typeof vi.fn>;
   let microphoneList: Array<{ id: string; name: string; isDefault: boolean }>;
   let listeners: Array<[Document | Window, string, EventListenerOrEventListenerObject]>;
@@ -25,7 +27,7 @@ describe("dictation settings", () => {
     store = new Map();
     credentials = new Map();
     let credentialSequence = 0;
-    close = vi.fn().mockResolvedValue(undefined);
+    destroy = vi.fn().mockResolvedValue(undefined);
     emit = vi.fn().mockResolvedValue(undefined);
     microphoneList = [{ id: "built-in", name: "MacBook Pro 마이크", isDefault: true }, { id: "usb-mic", name: "USB 마이크", isDefault: false }];
     listeners = [];
@@ -65,7 +67,7 @@ describe("dictation settings", () => {
     window.__TAURI__ = {
       core: { invoke, Channel: class { onmessage = null; id = 1; } },
       event: { emit, listen: vi.fn().mockResolvedValue(() => {}) },
-      window: { getCurrentWindow: () => ({ close, onCloseRequested: async handler => { closeRequested = handler; return () => {}; } }) },
+      window: { getCurrentWindow: () => ({ destroy, onCloseRequested: async handler => { closeRequested = handler; return () => {}; } }) },
     } as unknown as Window["__TAURI__"];
   });
 
@@ -89,7 +91,7 @@ describe("dictation settings", () => {
     ollama.click();
     expect(button("btn-save").disabled).toBe(false);
     button("btn-save").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(store.get("llmBackendId")).toBe("ollama");
     expect(store.get("dictationLocale")).toBe("en-US");
   });
@@ -117,7 +119,7 @@ describe("dictation settings", () => {
     expect(select("openai-model").value).toBe("gpt-custom-saved");
     expect(select("openai-model").selectedOptions[0].textContent).toContain("gpt-custom-saved");
     button("btn-save").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(store.get("model")).toBe("gemini-custom-saved");
     expect(store.get("openaiModel")).toBe("gpt-custom-saved");
     expect(store.get("ollamaModel")).toBe("custom-local:latest");
@@ -127,7 +129,7 @@ describe("dictation settings", () => {
     await boot();
     expect(select("model").value).toBe("gemini-3.8-flash");
     button("btn-save").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(store.get("model")).toBe("gemini-3.8-flash");
   });
 
@@ -138,7 +140,7 @@ describe("dictation settings", () => {
     expect(select("model").selectedOptions[0].textContent).toContain(model);
     expect(document.getElementById("gemini-model-status")!.textContent).toContain(model.includes("2.0") ? "지원이 종료" : "접근이 제한");
     button("btn-save").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(store.get("model")).toBe(model);
   });
 
@@ -184,7 +186,7 @@ describe("dictation settings", () => {
     select("dictation-microphone").value = "usb-mic";
     (document.getElementById("dictation-hint") as HTMLInputElement).value = "  Transrator, Osolar  ";
     button("btn-save").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(store.get("domainHint")).toBe("프로젝트 전용 사용자 힌트");
     expect(store.get("dictationLocale")).toBe("en-US");
     expect(store.get("dictationMicrophone")).toBe("usb-mic");
@@ -202,7 +204,7 @@ describe("dictation settings", () => {
     });
     button("btn-save").click();
     await vi.waitFor(() => expect(status()).toContain("저장하지 못했습니다"));
-    expect(close).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
     expect([...store]).toEqual([]);
     expect(button("btn-save").disabled).toBe(false);
   });
@@ -223,7 +225,7 @@ describe("dictation settings", () => {
     button("btn-save").click();
     await vi.waitFor(() => expect(status()).toContain("저장하지 못했습니다"));
     expect(store).toEqual(before);
-    expect(close).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
     expect(invoke).toHaveBeenLastCalledWith("update_shortcuts", expect.objectContaining({ dictationShortcut: "Super+Ctrl+KeyR" }));
     expect((document.getElementById("dictation-hint") as HTMLInputElement).value).toBe("새 단어");
   });
@@ -234,9 +236,9 @@ describe("dictation settings", () => {
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("suspend_shortcuts"));
     await vi.waitFor(() => expect(button("shortcut-dictation").classList.contains("recording")).toBe(true));
     button("btn-cancel").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(invoke).toHaveBeenCalledWith("resume_shortcuts");
-    expect(invoke.mock.invocationCallOrder[invoke.mock.calls.findIndex(call => call[0] === "resume_shortcuts")]).toBeLessThan(close.mock.invocationCallOrder[0]);
+    expect(invoke.mock.invocationCallOrder[invoke.mock.calls.findIndex(call => call[0] === "resume_shortcuts")]).toBeLessThan(destroy.mock.invocationCallOrder[0]);
   });
 
   it("cancels shortcut capture with Escape without closing settings", async () => {
@@ -245,8 +247,36 @@ describe("dictation settings", () => {
     await vi.waitFor(() => expect(button("shortcut-dictation").classList.contains("recording")).toBe(true));
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("resume_shortcuts"));
-    expect(close).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
     expect(button("shortcut-dictation").textContent).toBe("⌘⌃D");
+  });
+
+  it("grants the SDK's final destroy permission only to settings", () => {
+    const capability = JSON.parse(readFileSync(resolve("src-tauri/capabilities/settings-window.json"), "utf8"));
+    expect(capability.windows).toEqual(["settings"]);
+    expect(capability.permissions).toContain("core:window:allow-destroy");
+  });
+
+  it("handles SDK close failure visibly and allows a later native close retry", async () => {
+    await boot();
+    destroy.mockRejectedValueOnce(new Error("window destroy denied"));
+    let deliverClose!: (event: TauriEvent<null>) => Promise<void>;
+    const sdkWindow = Object.create(TauriWindow.prototype) as TauriWindow;
+    sdkWindow.destroy = destroy;
+    sdkWindow.listen = vi.fn(async (_event, handler) => {
+      deliverClose = handler as typeof deliverClose;
+      return () => {};
+    });
+    // Use the real SDK listener: it calls destroy automatically unless our
+    // handler prevents the default, unlike a direct close() mock.
+    await sdkWindow.onCloseRequested(closeRequested!);
+    const event = { event: "tauri://close-requested", id: 1, payload: null };
+    await deliverClose(event);
+    expect(status()).toContain("설정 창을 닫지 못했습니다");
+    expect(status()).toContain("window destroy denied");
+    expect(destroy).toHaveBeenCalledOnce();
+    await deliverClose(event);
+    expect(destroy).toHaveBeenCalledTimes(2);
   });
 
   it("restores shortcuts before the native window close action finishes", async () => {
@@ -257,7 +287,7 @@ describe("dictation settings", () => {
     await closeRequested!({ preventDefault });
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(invoke).toHaveBeenCalledWith("resume_shortcuts");
-    expect(close).toHaveBeenCalledOnce();
+    expect(destroy).toHaveBeenCalledOnce();
   });
 
   it("checks the visible model choice instead of the previously saved model", async () => {
@@ -384,7 +414,7 @@ describe("dictation settings", () => {
     finish(microphoneList);
     await vi.waitFor(() => expect(button("btn-save").disabled).toBe(false));
     expect(select("dictation-microphone").disabled).toBe(false);
-    expect(close).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
   });
 
   it("blocks saving and model changes until a download finishes", async () => {
@@ -428,7 +458,7 @@ describe("dictation settings", () => {
     expect(select("dictation-idle-seconds").value).toBe("0");
     select("dictation-idle-seconds").value = "900";
     button("btn-save").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(store.get("dictationIdleSeconds")).toBe(900);
   });
 
@@ -448,10 +478,13 @@ describe("dictation settings", () => {
     });
     button("shortcut-dictation").click();
     button("btn-cancel").click();
-    expect(close).not.toHaveBeenCalled();
+    button("btn-cancel").click();
+    const nativeClose = closeRequested!({ preventDefault: vi.fn() });
+    expect(destroy).not.toHaveBeenCalled();
     suspended();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
-    expect(invoke).toHaveBeenCalledWith("resume_shortcuts");
+    await nativeClose;
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
+    expect(invoke.mock.calls.filter(([command]) => command === "resume_shortcuts")).toHaveLength(1);
   });
 
   it("retries restoring suspended shortcuts before allowing a later close", async () => {
@@ -467,7 +500,7 @@ describe("dictation settings", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
     await vi.waitFor(() => expect(status()).toContain("복구하지 못했습니다"));
     button("btn-cancel").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(attempts).toBe(2);
   });
 
@@ -506,7 +539,7 @@ describe("dictation settings", () => {
     button("btn-save").click();
     expect(invoke.mock.calls.filter(call => call[0] === "update_shortcuts")).toHaveLength(1);
     flush();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
   });
   function typeKey(id: string, value: string) {
     const input = document.getElementById(id) as HTMLInputElement;
@@ -523,7 +556,7 @@ describe("dictation settings", () => {
     expect((document.getElementById("api-key") as HTMLInputElement).value).toBe("");
     expect((document.getElementById("openai-api-key") as HTMLInputElement).value).toBe("");
     button("btn-save").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(invoke.mock.calls.filter(([command, args]) => command.startsWith("settings_") && ["apiKey", "openaiApiKey"].includes(args?.key))).toEqual([]);
     expect(invoke.mock.calls.some(([command]) => command === "save_provider_credential" || command === "delete_provider_credential")).toBe(false);
   });
@@ -535,14 +568,14 @@ describe("dictation settings", () => {
     const input = typeKey("api-key", "  fake-new-key  ");
     expect(invoke.mock.calls.some(([command]) => command === "save_provider_credential")).toBe(false);
     button("btn-save").click();
-    expect(close).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
     expect(status()).toContain("API 키 저장 버튼");
     button("gemini-key-save").click();
     await vi.waitFor(() => expect(input.value).toBe(""));
     expect(invoke).toHaveBeenCalledWith("save_provider_credential", { providerId: "gemini-native", apiKey: "fake-new-key", expectedRevision: "original" });
     expect(document.getElementById("gemini-key-status")!.textContent).toContain("Keychain에 API 키를 저장");
     button("btn-save").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(invoke.mock.calls.filter(([command]) => command === "save_provider_credential")).toHaveLength(1);
   });
 
@@ -560,7 +593,7 @@ describe("dictation settings", () => {
     await vi.waitFor(() => expect(document.getElementById("gemini-key-status")!.textContent).toContain("삭제했습니다"));
     expect(invoke).toHaveBeenCalledWith("delete_provider_credential", { providerId: "gemini-native", expectedRevision: revision });
     button("btn-save").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(invoke.mock.calls.filter(([command]) => command === "delete_provider_credential")).toHaveLength(1);
   });
 
@@ -573,7 +606,7 @@ describe("dictation settings", () => {
     button("gemini-key-save").click();
     await vi.waitFor(() => expect(document.getElementById("gemini-key-status")!.textContent).toContain("입력을 유지"));
     expect(input.value).toBe("replacement");
-    expect(close).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
     button("gemini-key-refresh").click();
     await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
     button("gemini-key-save").click();
@@ -601,7 +634,7 @@ describe("dictation settings", () => {
     await boot();
     select("dictation-locale").value = "en-US";
     button("btn-save").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(store.get("dictationLocale")).toBe("en-US");
     expect(invoke.mock.calls.some(([command]) => command === "get_credential_status")).toBe(false);
   });
@@ -617,7 +650,7 @@ describe("dictation settings", () => {
     expect(button("gemini-key-refresh").disabled).toBe(true);
     select("dictation-locale").value = "en-US";
     button("btn-save").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(store.get("dictationLocale")).toBe("en-US");
     finish({ configured: false, revision: null });
     await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
@@ -647,11 +680,11 @@ describe("dictation settings", () => {
     await vi.waitFor(() => expect(button("btn-cancel").disabled).toBe(true));
     button("btn-cancel").click();
     const preventDefault = vi.fn(); await closeRequested!({ preventDefault });
-    expect(preventDefault).toHaveBeenCalledOnce(); expect(close).not.toHaveBeenCalled();
+    expect(preventDefault).toHaveBeenCalledOnce(); expect(destroy).not.toHaveBeenCalled();
     finish({ configured: true, revision: "committed" });
     await vi.waitFor(() => expect(button("btn-cancel").disabled).toBe(false));
     button("btn-cancel").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
   });
 
   const modelInput = () => document.getElementById("ollama-model") as HTMLInputElement;
@@ -673,7 +706,7 @@ describe("dictation settings", () => {
     expect(modelOptions()).toEqual([]);
     select("dictation-locale").value = "en-US";
     button("btn-save").click();
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(store.get("ollamaModel")).toBe("my/custom-model:latest");
     expect(store.get("ollamaBaseUrl")).toBe("http://192.168.1.40:11434/ollama");
     expect(invoke.mock.calls.some(([command]) => command === "get_credential_status")).toBe(false);
@@ -771,7 +804,7 @@ describe("dictation settings", () => {
       urlInput().value = url;
       button("btn-save").click();
       await vi.waitFor(() => expect(status()).toContain("Ollama URL"));
-      expect(close).not.toHaveBeenCalled();
+      expect(destroy).not.toHaveBeenCalled();
       expect(invoke.mock.calls.some(([command]) => command === "update_shortcuts" || command === "settings_set")).toBe(false);
       expect(fetch).not.toHaveBeenCalled();
       expect(store.get("ollamaModel")).toBe("my/custom-model:latest");
@@ -783,7 +816,7 @@ describe("dictation settings", () => {
     modelInput().value = "";
     button("btn-save").click();
     await vi.waitFor(() => expect(status()).toContain("모델 이름을 입력"));
-    expect(close).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
     expect(store.get("ollamaModel")).toBe("my/custom-model:latest");
   });
 

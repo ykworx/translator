@@ -460,6 +460,7 @@ function finishShortcutRecording(btn: HTMLButtonElement): void {
 
 async function closeSettings(): Promise<void> {
   if (isSaving || closing || pendingCredentialWrites > 0) return;
+  closing = true;
   try {
     if (shortcutOperation) await shortcutOperation;
     if (recordingBtn) await stopRecording(recordingBtn);
@@ -467,8 +468,9 @@ async function closeSettings(): Promise<void> {
       await invoke("resume_shortcuts");
       shortcutsSuspended = false;
     }
-    closing = true;
-    await settingsWindow.close();
+    // onCloseRequested itself uses destroy() after its callback. Keep the
+    // final close here so permission/native errors are visible and retryable.
+    await settingsWindow.destroy();
   } catch (error) {
     closing = false;
     setStatus(`설정 창을 닫지 못했습니다: ${error}`, true);
@@ -477,12 +479,8 @@ async function closeSettings(): Promise<void> {
 
 if (typeof settingsWindow.onCloseRequested === "function") {
   settingsWindow.onCloseRequested(async event => {
-    if (closing) return;
-    if (isSaving || pendingCredentialWrites > 0) { event.preventDefault(); return; }
-    if (recordingBtn || shortcutOperation || shortcutsSuspended) {
-      event.preventDefault();
-      await closeSettings();
-    }
+    event.preventDefault();
+    await closeSettings();
   }).catch(error => console.warn("Could not attach settings close handler:", error));
 }
 
