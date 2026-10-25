@@ -115,6 +115,7 @@ describe("dictation settings", () => {
     await boot();
     expect(select("model").value).toBe("gemini-custom-saved");
     expect(select("openai-model").value).toBe("gpt-custom-saved");
+    expect(select("openai-model").selectedOptions[0].textContent).toContain("gpt-custom-saved");
     button("btn-save").click();
     await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
     expect(store.get("model")).toBe("gemini-custom-saved");
@@ -134,6 +135,7 @@ describe("dictation settings", () => {
     store.set("model", model);
     await boot();
     expect(select("model").value).toBe(model);
+    expect(select("model").selectedOptions[0].textContent).toContain(model);
     expect(document.getElementById("gemini-model-status")!.textContent).toContain(model.includes("2.0") ? "지원이 종료" : "접근이 제한");
     button("btn-save").click();
     await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());

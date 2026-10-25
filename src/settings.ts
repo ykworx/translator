@@ -627,7 +627,8 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
   restoreSelectedValue(domainHintSelect, await getSetting(SETTINGS_KEYS.domainHint, DEFAULTS.domainHint), "저장된 사용자 힌트");
   whisperModelSelect.value = await getSetting(SETTINGS_KEYS.whisperModel, DEFAULTS.whisperModel);
   captureModeSelect.value = savedCaptureMode;
-  restoreSelectedValue(modelSelect, await getSetting(SETTINGS_KEYS.model, DEFAULTS.model), "저장된 사용자 모델");
+  const savedGeminiModel = await getSetting(SETTINGS_KEYS.model, DEFAULTS.model);
+  restoreSelectedValue(modelSelect, savedGeminiModel, `${savedGeminiModel} (저장된 모델)`);
   updateGeminiModelStatus();
 
   selectShortcutStr = await getSetting(SETTINGS_KEYS.selectShortcut, DEFAULTS.selectShortcut);
@@ -655,7 +656,8 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
   ollamaBaseurlInput.value = savedOllamaUrl;
   ollamaModelInput.value = savedOllamaModel;
 
-  restoreSelectedValue(openaiModelSelect, await getSetting(SETTINGS_KEYS.openaiModel, DEFAULTS.openaiModel), "저장된 사용자 모델");
+  const savedOpenAiModel = await getSetting(SETTINGS_KEYS.openaiModel, DEFAULTS.openaiModel);
+  restoreSelectedValue(openaiModelSelect, savedOpenAiModel, `${savedOpenAiModel} (저장된 모델)`);
   dictationShortcutSummary.textContent = shortcutDisplay(dictationShortcutStr);
   settingsReady = true;
   initiallyLoadingControls.forEach(control => { control.disabled = false; });
