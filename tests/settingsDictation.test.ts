@@ -73,6 +73,7 @@ describe("dictation settings", () => {
     window.dispatchEvent(new Event("beforeunload"));
     for (const [target, type, listener] of listeners) target.removeEventListener(type, listener);
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   async function boot() {
@@ -576,6 +577,139 @@ describe("dictation settings", () => {
     await vi.waitFor(() => expect(button("btn-cancel").disabled).toBe(false));
     button("btn-cancel").click();
     await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+  });
+
+  const modelInput = () => document.getElementById("ollama-model") as HTMLInputElement;
+  const urlInput = () => document.getElementById("ollama-baseurl") as HTMLInputElement;
+  const modelOptions = () => [...document.querySelectorAll<HTMLOptionElement>("#ollama-model-list option")].map(option => option.value);
+  const lookupStatus = () => document.getElementById("ollama-status")!.textContent;
+  const tags = (models: string[]) => new Response(JSON.stringify({ models: models.map(name => ({ name })) }));
+  function localSettings() {
+    store.set("llmBackendId", "ollama");
+    store.set("ollamaModel", "my/custom-model:latest");
+    store.set("ollamaBaseUrl", "http://192.168.1.40:11434/ollama/");
+  }
+
+  it("keeps a saved custom Ollama model in a directly editable field on unrelated settings save", async () => {
+    localSettings(); await boot();
+    expect(modelInput().tagName).toBe("INPUT");
+    expect(modelInput().getAttribute("list")).toBe("ollama-model-list");
+    expect(modelInput().value).toBe("my/custom-model:latest");
+    expect(modelOptions()).toEqual([]);
+    select("dictation-locale").value = "en-US";
+    button("btn-save").click();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(store.get("ollamaModel")).toBe("my/custom-model:latest");
+    expect(store.get("ollamaBaseUrl")).toBe("http://192.168.1.40:11434/ollama");
+    expect(invoke.mock.calls.some(([command]) => command === "get_credential_status")).toBe(false);
+  });
+
+  it("updates suggestions only when the explicit lookup succeeds and never substitutes the selected custom model", async () => {
+    localSettings();
+    const fetch = vi.fn().mockResolvedValue(tags(["installed:one", "installed:two"]));
+    vi.stubGlobal("fetch", fetch);
+    await boot();
+    expect(fetch).not.toHaveBeenCalled();
+    button("ollama-detect-btn").click();
+    await vi.waitFor(() => expect(modelOptions()).toEqual(["installed:one", "installed:two"]));
+    expect(modelInput().value).toBe("my/custom-model:latest");
+    expect(urlInput().value).toBe("http://192.168.1.40:11434/ollama/");
+    expect(store.get("ollamaModel")).toBe("my/custom-model:latest");
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0][0]).toBe("http://192.168.1.40:11434/ollama/api/tags");
+    expect(lookupStatus()).toContain("입력한 모델은 유지");
+  });
+
+  it("preserves a model typed while model discovery is pending", async () => {
+    localSettings();
+    let finish: (value: Response) => void = () => {};
+    const fetch = vi.fn(() => new Promise<Response>(resolve => { finish = resolve; }));
+    vi.stubGlobal("fetch", fetch);
+    await boot(); button("ollama-detect-btn").click();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    modelInput().value = "new/typed-model:custom";
+    modelInput().dispatchEvent(new Event("input", { bubbles: true }));
+    finish(tags(["installed:one"]));
+    await vi.waitFor(() => expect(button("ollama-detect-btn").disabled).toBe(false));
+    expect(modelOptions()).toEqual(["installed:one"]);
+    expect(modelInput().value).toBe("new/typed-model:custom");
+  });
+
+  it("does not let a late lookup for an old server replace the current suggestions or status", async () => {
+    localSettings();
+    let finishOld: (value: Response) => void = () => {};
+    const fetch = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { finishOld = resolve; }))
+      .mockResolvedValueOnce(tags(["new-server:one"]));
+    vi.stubGlobal("fetch", fetch);
+    await boot(); button("ollama-detect-btn").click();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    urlInput().value = "http://localhost:11500/proxy/";
+    urlInput().dispatchEvent(new Event("input", { bubbles: true }));
+    expect(button("ollama-detect-btn").disabled).toBe(false);
+    button("ollama-detect-btn").click();
+    await vi.waitFor(() => expect(modelOptions()).toEqual(["new-server:one"]));
+    const currentStatus = lookupStatus();
+    finishOld(tags(["old-server:one", "old-server:two"]));
+    await vi.waitFor(() => expect(button("btn-save").disabled).toBe(false));
+    expect(modelOptions()).toEqual(["new-server:one"]);
+    expect(lookupStatus()).toBe(currentStatus);
+    expect(modelInput().value).toBe("my/custom-model:latest");
+  });
+
+  it("ignores an old failed response after the URL has changed", async () => {
+    localSettings();
+    let failOld: (error: Error) => void = () => {};
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((_resolve, reject) => { failOld = reject; })));
+    await boot(); button("ollama-detect-btn").click();
+    urlInput().value = "http://localhost:11500";
+    urlInput().dispatchEvent(new Event("input", { bubbles: true }));
+    const changedStatus = lookupStatus();
+    failOld(new Error("connection refused"));
+    await vi.waitFor(() => expect(button("btn-save").disabled).toBe(false));
+    expect(lookupStatus()).toBe(changedStatus);
+    expect(modelInput().value).toBe("my/custom-model:latest");
+    expect(modelOptions()).toEqual([]);
+  });
+
+  it("keeps the address and model intact on discovery failure", async () => {
+    localSettings();
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    await boot(); button("ollama-detect-btn").click();
+    await vi.waitFor(() => expect(lookupStatus()).toContain("연결할 수 없습니다"));
+    expect(modelInput().value).toBe("my/custom-model:latest");
+    expect(urlInput().value).toBe("http://192.168.1.40:11434/ollama/");
+    expect(modelOptions()).toEqual([]);
+  });
+
+  it("explains an empty model list without filling or changing the model", async () => {
+    localSettings(); vi.stubGlobal("fetch", vi.fn().mockResolvedValue(tags([])));
+    await boot(); button("ollama-detect-btn").click();
+    await vi.waitFor(() => expect(lookupStatus()).toContain("설치된 모델이 없습니다"));
+    expect(modelInput().value).toBe("my/custom-model:latest");
+    expect(modelOptions()).toEqual([]);
+  });
+
+  it.each(["http://user:password@localhost:11434", "http://localhost:11434?token=value", "http://localhost:11434\\proxy"])(
+    "uses the same URL validation before saving as discovery: %s", async url => {
+      localSettings(); await boot();
+      const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+      urlInput().value = url;
+      button("btn-save").click();
+      await vi.waitFor(() => expect(status()).toContain("Ollama URL"));
+      expect(close).not.toHaveBeenCalled();
+      expect(invoke.mock.calls.some(([command]) => command === "update_shortcuts" || command === "settings_set")).toBe(false);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(store.get("ollamaModel")).toBe("my/custom-model:latest");
+    },
+  );
+
+  it("does not silently substitute a default when the Ollama model field is empty", async () => {
+    localSettings(); await boot();
+    modelInput().value = "";
+    button("btn-save").click();
+    await vi.waitFor(() => expect(status()).toContain("모델 이름을 입력"));
+    expect(close).not.toHaveBeenCalled();
+    expect(store.get("ollamaModel")).toBe("my/custom-model:latest");
   });
 
 });

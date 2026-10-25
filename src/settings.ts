@@ -2,12 +2,12 @@ const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
 const { emit } = window.__TAURI__.event;
 
-import { CAPTURE_MODES, DOMAIN_HINTS, LANGUAGES, MODELS, OPENAI_MODELS, DEFAULTS, OLLAMA_DEFAULT_MODELS, SETTINGS_KEYS, SPEECH_LOCALES, WHISPER_MODELS } from "./constants";
+import { CAPTURE_MODES, DOMAIN_HINTS, LANGUAGES, MODELS, OPENAI_MODELS, DEFAULTS, SETTINGS_KEYS, SPEECH_LOCALES, WHISPER_MODELS } from "./constants";
 import { getSetting, getStoreRid, setSetting } from "./store";
 import { getActiveBackendId, detectOllama } from "./llmProfile";
 import type { BackendId } from "./types";
 import { populateSelect } from "./utils";
-import { getCredentialStatus, saveProviderCredential, deleteProviderCredential, type CloudProviderId, type CredentialStatus } from "./connectionProfiles";
+import { getCredentialStatus, saveProviderCredential, deleteProviderCredential, normalizeOllamaBaseUrl, type CloudProviderId, type CredentialStatus } from "./connectionProfiles";
 
 // ─── DOM ────────────────────────────────────────────
 const backendRadios = document.querySelectorAll<HTMLInputElement>('input[name="llm-backend"]');
@@ -17,7 +17,8 @@ const openaiSection = document.getElementById("openai-section") as HTMLDivElemen
 const openaiApiKeyInput = document.getElementById("openai-api-key") as HTMLInputElement;
 const openaiModelSelect = document.getElementById("openai-model") as HTMLSelectElement;
 const ollamaBaseurlInput = document.getElementById("ollama-baseurl") as HTMLInputElement;
-const ollamaModelSelect = document.getElementById("ollama-model") as HTMLSelectElement;
+const ollamaModelInput = document.getElementById("ollama-model") as HTMLInputElement;
+const ollamaModelList = document.getElementById("ollama-model-list") as HTMLDataListElement;
 const ollamaDetectBtn = document.getElementById("ollama-detect-btn") as HTMLButtonElement;
 const ollamaStatus = document.getElementById("ollama-status") as HTMLDivElement;
 const apiKeyInput = document.getElementById("api-key") as HTMLInputElement;
@@ -87,14 +88,13 @@ function showBackendSection(id: BackendId) {
   if (settingsReady && (id === "gemini-native" || id === "openai")) void refreshCredential(id);
 }
 
-function populateOllamaModels(models: string[], selected?: string) {
-  const items = models.length > 0 ? models : [...OLLAMA_DEFAULT_MODELS];
-  replaceOptions(ollamaModelSelect, items.map(v => ({ value: v, label: v })));
-  if (selected && items.includes(selected)) {
-    ollamaModelSelect.value = selected;
-  } else if (items.length > 0) {
-    ollamaModelSelect.value = items[0];
-  }
+function populateOllamaModels(models: readonly string[]): void {
+  const options = models.map(model => {
+    const option = document.createElement("option");
+    option.value = model;
+    return option;
+  });
+  ollamaModelList.replaceChildren(...options);
 }
 
 backendRadios.forEach(radio => {
@@ -103,23 +103,38 @@ backendRadios.forEach(radio => {
   });
 });
 
+let ollamaQueryGeneration = 0;
+function currentOllamaUrl(): string {
+  return ollamaBaseurlInput.value.trim() || DEFAULTS.ollamaBaseUrl;
+}
+
+ollamaBaseurlInput.addEventListener("input", () => {
+  ollamaQueryGeneration += 1;
+  ollamaDetectBtn.disabled = false;
+  populateOllamaModels([]);
+  ollamaStatus.textContent = "주소가 변경되었습니다. 모델 목록을 다시 조회해주세요. 입력한 모델은 유지됩니다.";
+});
+
 ollamaDetectBtn.addEventListener("click", async () => {
-  if (isSaving || closing || ollamaDetectBtn.disabled) return;
+  if (!settingsReady || isSaving || closing || ollamaDetectBtn.disabled) return;
+  const generation = ++ollamaQueryGeneration;
+  const baseUrl = currentOllamaUrl();
   beginSettingsOperation();
-  const baseUrl = ollamaBaseurlInput.value.trim() || DEFAULTS.ollamaBaseUrl;
   ollamaDetectBtn.disabled = true;
-  ollamaStatus.textContent = "감지 중...";
+  ollamaStatus.textContent = "모델 목록 조회 중…";
   try {
     const result = await detectOllama(baseUrl);
+    if (closing || generation !== ollamaQueryGeneration || currentOllamaUrl() !== baseUrl) return;
     if (result.available) {
-      const currentModel = ollamaModelSelect.value || DEFAULTS.ollamaModel;
-      populateOllamaModels(result.models, currentModel);
-      ollamaStatus.textContent = `연결됨 — ${result.models.length}개 모델 발견`;
+      populateOllamaModels(result.models);
+      ollamaStatus.textContent = result.models.length
+        ? `모델 ${result.models.length}개를 찾았습니다. 목록에서 선택하거나 모델 이름을 직접 입력하세요. 입력한 모델은 유지됩니다.`
+        : "서버에 연결했지만 설치된 모델이 없습니다. 모델을 준비한 뒤 다시 조회하거나 사용할 모델 이름을 직접 입력하세요.";
     } else {
       ollamaStatus.textContent = result.error ?? "Ollama 서버에 연결할 수 없습니다.";
     }
   } finally {
-    ollamaDetectBtn.disabled = false;
+    if (generation === ollamaQueryGeneration) ollamaDetectBtn.disabled = false;
     endSettingsOperation();
   }
 });
@@ -617,7 +632,7 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
   const savedOllamaUrl = await getSetting(SETTINGS_KEYS.ollamaBaseUrl, DEFAULTS.ollamaBaseUrl);
   const savedOllamaModel = await getSetting(SETTINGS_KEYS.ollamaModel, DEFAULTS.ollamaModel);
   ollamaBaseurlInput.value = savedOllamaUrl;
-  populateOllamaModels([...OLLAMA_DEFAULT_MODELS], savedOllamaModel);
+  ollamaModelInput.value = savedOllamaModel;
 
   openaiModelSelect.value = await getSetting(SETTINGS_KEYS.openaiModel, DEFAULTS.openaiModel);
   dictationShortcutSummary.textContent = shortcutDisplay(dictationShortcutStr);
@@ -648,12 +663,17 @@ btnSave.addEventListener("click", async () => {
   if (btnSave.disabled || isSaving) return;
   const selectedBackend = ([...backendRadios].find(r => r.checked)?.value ?? DEFAULTS.llmBackendId) as BackendId;
   const rawBaseUrl = ollamaBaseurlInput.value.trim();
-  const effectiveUrl = rawBaseUrl || DEFAULTS.ollamaBaseUrl;
+  let effectiveUrl = rawBaseUrl || DEFAULTS.ollamaBaseUrl;
   if (selectedBackend === "ollama") {
     try {
-      const url = new URL(effectiveUrl);
-      if (!["http:", "https:"].includes(url.protocol)) throw new Error("protocol");
-    } catch { setStatus("Ollama URL은 http:// 또는 https://로 시작하는 올바른 주소를 입력해주세요.", true); return; }
+      effectiveUrl = normalizeOllamaBaseUrl(effectiveUrl);
+    } catch { setStatus("Ollama URL은 사용자 정보·쿼리·프래그먼트가 없는 올바른 http 또는 https 주소를 입력해주세요.", true); return; }
+    if (!ollamaModelInput.value.trim()) {
+      setStatus("사용할 Ollama 모델 이름을 입력해주세요.", true);
+      activateTab("api");
+      ollamaModelInput.focus();
+      return;
+    }
   }
   if (apiKeyInput.value.trim() || openaiApiKeyInput.value.trim()) {
     setStatus("입력한 API 키는 해당 API 키 저장 버튼으로 먼저 저장하거나 입력칸을 비워주세요.", true);
@@ -676,7 +696,7 @@ btnSave.addEventListener("click", async () => {
     [SETTINGS_KEYS.model, modelSelect.value],
     [SETTINGS_KEYS.llmBackendId, selectedBackend],
     [SETTINGS_KEYS.ollamaBaseUrl, effectiveUrl],
-    [SETTINGS_KEYS.ollamaModel, ollamaModelSelect.value || DEFAULTS.ollamaModel],
+    [SETTINGS_KEYS.ollamaModel, ollamaModelInput.value.trim()],
     [SETTINGS_KEYS.openaiModel, openaiModelSelect.value || DEFAULTS.openaiModel],
     [SETTINGS_KEYS.selectShortcut, selectShortcutStr],
     [SETTINGS_KEYS.clipboardShortcut, clipboardShortcutStr],

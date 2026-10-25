@@ -2,7 +2,7 @@ import { DEFAULTS, SETTINGS_KEYS } from "./constants";
 import { getStoreRid, setSetting } from "./store";
 import { getProvider } from "./providerRegistry";
 import type { BackendId } from "./types";
-import { getCredentialStatus } from "./connectionProfiles";
+import { getCredentialStatus, normalizeOllamaBaseUrl } from "./connectionProfiles";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -41,45 +41,46 @@ export interface OllamaDetectResult {
 }
 
 export async function detectOllama(baseUrl: string): Promise<OllamaDetectResult> {
-  const url = `${baseUrl.replace(/\/$/, "")}/api/tags`;
+  let normalized: string;
   try {
-    const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    normalized = normalizeOllamaBaseUrl(baseUrl);
+  } catch {
+    return { available: false, models: [], error: "Ollama URL은 사용자 정보·쿼리·프래그먼트가 없는 올바른 http 또는 https 주소를 입력해주세요." };
+  }
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 5000);
+  try {
+    const resp = await fetch(`${normalized}/api/tags`, { signal: controller.signal });
     if (!resp.ok) {
-      return { available: false, models: [], error: `Ollama 서버 응답 오류: ${resp.status}` };
+      return { available: false, models: [], error: `Ollama 서버 응답 오류: HTTP ${resp.status}` };
     }
-    const data = await resp.json();
-    if (!data.models || !Array.isArray(data.models)) {
-      return { available: false, models: [], error: "Ollama 응답 형식 오류" };
+    const data: unknown = await resp.json();
+    if (!data || typeof data !== "object" || !Array.isArray((data as { models?: unknown }).models)) {
+      return { available: false, models: [], error: "Ollama 모델 목록 응답 형식이 올바르지 않습니다." };
     }
-    const models: string[] = data.models
-      .map((m: { name?: string } | string) =>
-        typeof m === "string" ? m : (m.name ?? ""),
-      )
-      .filter(Boolean);
+    const models = [...new Set((data as { models: unknown[] }).models.flatMap(entry => {
+      const name = typeof entry === "string" ? entry
+        : entry && typeof entry === "object" && typeof (entry as { name?: unknown }).name === "string"
+          ? (entry as { name: string }).name : "";
+      return name.trim() ? [name.trim()] : [];
+    }))];
     return { available: true, models, error: null };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message.toLowerCase() : String(e).toLowerCase();
-    if (msg.includes("failed to fetch") || msg.includes("networkerror") || msg.includes("network error")) {
-      return {
-        available: false,
-        models: [],
-        error: "Ollama 서버에 연결할 수 없습니다. ollama serve가 실행 중인지 확인하세요.",
-      };
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    if (controller.signal.aborted || message.includes("timeout") || message.includes("timed out") || message.includes("aborted")) {
+      return { available: false, models: [], error: "Ollama 모델 목록 조회 시간이 초과되었습니다. 서버 상태를 확인한 뒤 다시 조회해주세요." };
     }
-    if (msg.includes("timeout") || msg.includes("aborted") || msg.includes("timed out")) {
-      return {
-        available: false,
-        models: [],
-        error: "Ollama 서버 응답 시간이 초과되었습니다.",
-      };
+    if (error instanceof SyntaxError || (error && typeof error === "object" && (error as { name?: string }).name === "SyntaxError")) {
+      return { available: false, models: [], error: "Ollama 모델 목록의 JSON 응답 형식이 올바르지 않습니다." };
     }
-    if (msg.includes("connection refused") || msg.includes("econnrefused")) {
-      return {
-        available: false,
-        models: [],
-        error: "Ollama 서버 연결이 거부되었습니다. 포트와 URL을 확인하세요.",
-      };
+    if (message.includes("connection refused") || message.includes("econnrefused")) {
+      return { available: false, models: [], error: "Ollama 서버 연결이 거부되었습니다. 포트와 URL을 확인하세요." };
     }
-    return { available: false, models: [], error: `Ollama 감지 실패: ${e instanceof Error ? e.message : String(e)}` };
+    if (message.includes("failed to fetch") || message.includes("networkerror") || message.includes("network error")) {
+      return { available: false, models: [], error: "Ollama 서버에 연결할 수 없습니다. ollama serve 실행 상태와 URL을 확인하세요." };
+    }
+    return { available: false, models: [], error: "Ollama 모델 목록 조회에 실패했습니다. 서버 상태와 주소를 확인해주세요." };
+  } finally {
+    window.clearTimeout(timeout);
   }
 }
