@@ -24,6 +24,61 @@ struct DictationSession {
     }
 }
 
+/// Recovery actions use the already registered dictation shortcut, never a new
+/// global key combination that would also reach the user's foreground app.
+struct DictationResultPolicy {
+    enum ShortcutAction { case begin, finish, cancelPreparation, wait, copyResult }
+    private(set) var pending = false
+    private var discardDeadline: TimeInterval?
+    static let discardConfirmationSeconds: TimeInterval = 5
+
+    func shortcutAction(phase: DictationSession.Phase) -> ShortcutAction {
+        switch phase {
+        case .recording: return .finish
+        case .preparing: return .cancelPreparation
+        case .finalizing: return .wait
+        default: return pending ? .copyResult : .begin
+        }
+    }
+
+    func canPreview(phase: DictationSession.Phase) -> Bool { phase == .idle && !pending }
+    mutating func receiveResult() { pending = true; cancelDiscard() }
+    mutating func allowNextSession() { pending = false; cancelDiscard() }
+    mutating func completeCopy(succeeded: Bool) {
+        if succeeded { allowNextSession() } else { receiveResult() }
+    }
+    mutating func cancelDiscard() { discardDeadline = nil }
+
+    /// Only an explicit second close within the confirmation interval discards
+    /// an unhandled result. Merely waiting, previewing, or pressing Esc cannot.
+    mutating func requestClose(now: TimeInterval) -> Bool {
+        guard pending else { return true }
+        if let deadline = discardDeadline, now <= deadline {
+            discardDeadline = nil
+            return true
+        }
+        discardDeadline = now + Self.discardConfirmationSeconds
+        return false
+    }
+}
+
+enum DictationRecordingClock {
+    static let limitSeconds = 180
+    static func elapsedSeconds(_ elapsed: TimeInterval) -> Int {
+        guard elapsed.isFinite else { return 0 }
+        return Int(max(0, min(elapsed, Double(limitSeconds))))
+    }
+    static func reachedLimit(_ elapsed: TimeInterval) -> Bool { elapsed >= Double(limitSeconds) }
+    static func display(_ elapsed: TimeInterval) -> String {
+        let seconds = elapsedSeconds(elapsed)
+        return String(format: "%02d:%02d / 03:00", seconds / 60, seconds % 60)
+    }
+    static func warning(_ elapsed: TimeInterval) -> String? {
+        let remaining = limitSeconds - elapsedSeconds(elapsed)
+        return remaining <= 15 ? "\(remaining)초 후 자동 완료 · Esc로 취소" : nil
+    }
+}
+
 struct DictationTranscript {
     private(set) var finalized: [String] = []
     var partial = ""

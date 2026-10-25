@@ -41,6 +41,7 @@ describe("dictation settings", () => {
     invoke = vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
       if (["settings_get", "settings_set", "settings_delete"].includes(command) && ["apiKey", "openaiApiKey"].includes(args.key as string)) throw new Error("Secret settings access is forbidden");
       switch (command) {
+        case "consume_settings_navigation": return null;
         case "get_build_info": return { version: "0.3.0", revision: "c99594aaa5500dd5e1fef1397573e71fdeb76e47", dirty: false, channel: "development", builtAtUnixSeconds: 1792882800, buildNumber: null };
         case "get_credential_status": return credentials.get(args.providerId as string) ?? { configured: false, revision: null };
         case "save_provider_credential": case "delete_provider_credential": {
@@ -159,6 +160,100 @@ describe("dictation settings", () => {
     await vi.waitFor(() => expect(button("btn-save").disabled).toBe(false));
   }
 
+  it("listens before consuming queued dictation navigation and preserves the existing form", async () => {
+    let finishListening!: () => void;
+    const stop = vi.fn();
+    window.__TAURI__.event.listen = vi.fn((event: string) => event === "settings-navigation"
+      ? new Promise<() => void>(resolve => { finishListening = () => resolve(stop); }) : Promise.resolve(() => {}));
+    const original = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => command === "consume_settings_navigation"
+      ? "dictation" : original(command, args));
+    await boot();
+    const hint = document.getElementById("dictation-hint") as HTMLInputElement;
+    hint.value = "저장하지 않은 용어";
+    expect(invoke.mock.calls.some(([command]) => command === "consume_settings_navigation")).toBe(false);
+    finishListening();
+    await vi.waitFor(() => expect(document.getElementById("pane-dictation")!.classList.contains("active")).toBe(true));
+    expect(hint.value).toBe("저장하지 않은 용어");
+    expect(invoke.mock.calls.some(([command]) => ["get_credential_status", "settings_set", "request_dictation_permissions", "download_whisper_model", "start_speech_recognition", "toggle_global_dictation"].includes(command))).toBe(false);
+    window.dispatchEvent(new Event("beforeunload"));
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it("navigates an open settings form without losing a credential draft or provider selection", async () => {
+    let navigate!: (event: { payload: string }) => void;
+    let destination: string | null = null;
+    const original = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === "consume_settings_navigation") { const pending = destination; destination = null; return pending; }
+      return original(command, args);
+    });
+    window.__TAURI__.event.listen = vi.fn(async (event, handler) => {
+      if (event === "settings-navigation") navigate = handler as typeof navigate;
+      return () => {};
+    });
+    await boot();
+    document.querySelector<HTMLButtonElement>('[data-tab="api"]')!.click();
+    const openai = document.querySelector<HTMLInputElement>('input[name="llm-backend"][value="openai"]')!;
+    openai.click();
+    await vi.waitFor(() => expect(button("openai-key-refresh").disabled).toBe(false));
+    const input = typeKey("openai-api-key", "fake-unsaved-openai-key");
+    destination = "dictation";
+    navigate({ payload: "dictation" });
+    await vi.waitFor(() => expect(document.getElementById("pane-dictation")!.classList.contains("active")).toBe(true));
+    expect(destination).toBeNull();
+    expect(input.value).toBe("fake-unsaved-openai-key");
+    expect(openai.checked).toBe(true);
+    expect(invoke.mock.calls.some(([command]) => command === "save_provider_credential" || command === "settings_set")).toBe(false);
+    document.querySelector<HTMLButtonElement>('[data-tab="general"]')!.click();
+    const consumed = invoke.mock.calls.filter(([command]) => command === "consume_settings_navigation").length;
+    navigate({ payload: "dictation" });
+    await vi.waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === "consume_settings_navigation")).toHaveLength(consumed + 1));
+    expect(document.getElementById("pane-general")!.classList.contains("active")).toBe(true);
+  });
+
+  it("shows real setup requirements without starting downloads, permission requests or recording", async () => {
+    const original = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === "check_whisper_model") return { ...installedModel, downloaded: false, ggmlDownloaded: false };
+      if (command === "get_dictation_permissions") return { microphone: false, microphoneStatus: "denied", accessibility: false, modelLoaded: false };
+      if (command === "get_shortcut_status") return { dictationRegistered: false, suspended: false };
+      return original(command, args);
+    });
+    await boot();
+    expect(document.getElementById("dictation-model-ready")!.textContent).toContain("미설치");
+    expect(document.getElementById("dictation-permission-status")!.textContent).toContain("필요한 권한");
+    expect(document.getElementById("dictation-shortcut-ready")!.textContent).toContain("등록을 확인");
+    expect(document.getElementById("dictation-readiness-summary")!.textContent).toContain("모델을 설치");
+    expect(invoke.mock.calls.some(([command]) => ["get_credential_status", "request_dictation_permissions", "download_whisper_model", "ensure_whisper_loaded", "start_speech_recognition", "toggle_global_dictation"].includes(command))).toBe(false);
+  });
+
+  it("uses the saved shortcut and does not call an unsaved model choice ready", async () => {
+    store.set("dictationShortcut", "Super+Ctrl+KeyR");
+    await boot();
+    expect(document.getElementById("dictation-readiness-summary")!.textContent).toContain("준비가 완료");
+    select("whisper-model").value = "large-v3";
+    select("whisper-model").dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(button("btn-save").disabled).toBe(false));
+    expect(document.getElementById("dictation-model-ready")!.textContent).toContain("아직 저장되지");
+    expect(document.getElementById("dictation-readiness-summary")!.textContent).not.toContain("준비가 완료");
+    button("shortcut-dictation").click();
+    await vi.waitFor(() => expect(button("shortcut-dictation").classList.contains("recording")).toBe(true));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "d", code: "KeyD", metaKey: true, ctrlKey: true, bubbles: true }));
+    await vi.waitFor(() => expect(button("btn-save").disabled).toBe(false));
+    expect(document.getElementById("dictation-shortcut-summary")!.textContent).toBe("⌘⌃R");
+    expect(document.getElementById("dictation-shortcut-ready")!.textContent).toContain("아직 저장되지");
+    expect(store.get("dictationShortcut")).toBe("Super+Ctrl+KeyR");
+  });
+
+  it("asks for an explicit settings save after editing dictation language", async () => {
+    await boot();
+    select("dictation-locale").value = "ja-JP";
+    select("dictation-locale").dispatchEvent(new Event("change", { bubbles: true }));
+    expect(document.getElementById("dictation-readiness-summary")!.textContent).toContain("연결·설정 저장 후 단축키");
+    expect(invoke.mock.calls.some(([command]) => command === "settings_set")).toBe(false);
+  });
+
   it("presents dictation in a dedicated tab with the saved language, microphone and shortcut", async () => {
     store.set("dictationLocale", "ja-JP");
     store.set("dictationMicrophone", "usb-mic");
@@ -178,6 +273,40 @@ describe("dictation settings", () => {
     expect(select("dictation-microphone").value).toBe("missing-device");
     expect(select("dictation-microphone").selectedOptions[0].textContent).toContain("연결 안 됨");
     expect(document.getElementById("dictation-microphone-status")!.textContent).toContain("연결하거나");
+    expect(document.getElementById("dictation-readiness-summary")!.textContent).toContain("마이크를 연결");
+    expect(document.getElementById("dictation-readiness-summary")!.textContent).not.toContain("준비가 완료");
+  });
+
+  it("requires saving a replacement microphone and notices device removal on refresh", async () => {
+    store.set("dictationMicrophone", "missing-device");
+    await boot();
+    select("dictation-microphone").value = "usb-mic";
+    select("dictation-microphone").dispatchEvent(new Event("change", { bubbles: true }));
+    expect(document.getElementById("dictation-microphone-status")!.textContent).toContain("저장 후 적용");
+    expect(document.getElementById("dictation-readiness-summary")!.textContent).toContain("저장 후 단축키");
+    expect(store.get("dictationMicrophone")).toBe("missing-device");
+    microphoneList = microphoneList.filter(device => device.id !== "usb-mic");
+    button("dictation-microphone-refresh").click();
+    await vi.waitFor(() => expect(button("btn-save").disabled).toBe(false));
+    expect(select("dictation-microphone").value).toBe("usb-mic");
+    expect(document.getElementById("dictation-microphone-status")!.textContent).toContain("연결하거나");
+    expect(document.getElementById("dictation-readiness-summary")!.textContent).toContain("마이크를 연결");
+  });
+
+  it("does not declare dictation ready when the microphone inventory is empty or unavailable", async () => {
+    microphoneList = [];
+    await boot();
+    expect(document.getElementById("dictation-readiness-summary")!.textContent).not.toContain("준비가 완료");
+    expect(document.getElementById("dictation-microphone-status")!.textContent).toContain("기본 마이크가 없습니다");
+    const original = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === "list_dictation_microphones") throw new Error("inventory unavailable");
+      return original(command, args);
+    });
+    button("dictation-microphone-refresh").click();
+    await vi.waitFor(() => expect(button("btn-save").disabled).toBe(false));
+    expect(document.getElementById("dictation-microphone-status")!.textContent).toContain("가져오지 못했습니다");
+    expect(document.getElementById("dictation-readiness-summary")!.textContent).not.toContain("준비가 완료");
   });
 
   it("keeps a custom existing speech hint when saving dictation preferences", async () => {
@@ -373,7 +502,7 @@ describe("dictation settings", () => {
       return original(command, args);
     });
     button("preview-dictation-panel").click();
-    await vi.waitFor(() => expect(status()).toContain("받아쓰기를 먼저 종료"));
+    await vi.waitFor(() => expect(status()).toContain("결과 창이 열려 있습니다"));
     expect(button("preview-dictation-panel").disabled).toBe(false);
   });
 
@@ -552,6 +681,7 @@ describe("dictation settings", () => {
 
   it("reveals an unsaved key without changing the selected Ollama connection", async () => {
     await boot();
+    document.querySelector<HTMLButtonElement>('[data-tab="api"]')!.click();
     await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
     const input = typeKey("api-key", "fake-draft-key");
     const ollama = document.querySelector<HTMLInputElement>('input[name="llm-backend"][value="ollama"]')!;
@@ -570,6 +700,7 @@ describe("dictation settings", () => {
 
   it("keeps committed credential changes when the refresh event cannot be delivered", async () => {
     await boot();
+    document.querySelector<HTMLButtonElement>('[data-tab="api"]')!.click();
     await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     emit.mockRejectedValue(new Error("event unavailable"));
@@ -619,6 +750,7 @@ describe("dictation settings", () => {
   it("stores a newly typed key only with its separate explicit button and clears it on success", async () => {
     credentials.set("gemini-native", { configured: true, revision: "original" });
     await boot();
+    document.querySelector<HTMLButtonElement>('[data-tab="api"]')!.click();
     await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
     const input = typeKey("api-key", "  fake-new-key  ");
     expect(invoke.mock.calls.some(([command]) => command === "save_provider_credential")).toBe(false);
@@ -639,6 +771,7 @@ describe("dictation settings", () => {
   it("uses the newly committed revision and removes a saved key only after explicit delete confirmation", async () => {
     credentials.set("gemini-native", { configured: true, revision: "original" });
     await boot();
+    document.querySelector<HTMLButtonElement>('[data-tab="api"]')!.click();
     await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
     const input = typeKey("api-key", "replacement");
     button("gemini-key-save").click();
@@ -660,6 +793,7 @@ describe("dictation settings", () => {
   it("keeps the input on stale credential failure and requires a refreshed revision for retry", async () => {
     credentials.set("gemini-native", { configured: true, revision: "first" });
     await boot();
+    document.querySelector<HTMLButtonElement>('[data-tab="api"]')!.click();
     await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
     credentials.set("gemini-native", { configured: true, revision: "changed-elsewhere" });
     const input = typeKey("api-key", "replacement");
@@ -677,6 +811,7 @@ describe("dictation settings", () => {
 
   it("excludes typed passwords from the form fingerprint", async () => {
     await boot();
+    document.querySelector<HTMLButtonElement>('[data-tab="api"]')!.click();
     await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
     const stringify = vi.spyOn(JSON, "stringify");
     typeKey("api-key", "private-input-must-not-be-fingerprinted");
@@ -708,6 +843,7 @@ describe("dictation settings", () => {
       return original(command, args);
     });
     await boot();
+    document.querySelector<HTMLButtonElement>('[data-tab="api"]')!.click();
     expect(button("gemini-key-refresh").disabled).toBe(true);
     select("dictation-locale").value = "en-US";
     button("btn-save").click();
@@ -720,6 +856,7 @@ describe("dictation settings", () => {
   it("allows explicit repair when metadata exists but the referenced Keychain item is missing", async () => {
     credentials.set("gemini-native", { configured: true, revision: "missing-item", error: "저장된 Keychain 항목을 찾을 수 없습니다." });
     await boot();
+    document.querySelector<HTMLButtonElement>('[data-tab="api"]')!.click();
     await vi.waitFor(() => expect(document.getElementById("gemini-key-status")!.textContent).toContain("찾을 수 없습니다"));
     const input = typeKey("api-key", "repair-key");
     button("gemini-key-save").click();
@@ -729,6 +866,7 @@ describe("dictation settings", () => {
 
   it("waits for a credential mutation before allowing cancellation or native close", async () => {
     await boot();
+    document.querySelector<HTMLButtonElement>('[data-tab="api"]')!.click();
     await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
     const original = invoke.getMockImplementation()!;
     let finish: (value: unknown) => void = () => {};

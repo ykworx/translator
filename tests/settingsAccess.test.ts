@@ -1,6 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerInvokeCommand, resetInvokeCommands, resetTauriStore } from "./helpers/tauriMock";
 
+async function prepareTranslation(showEmptyState: () => Promise<void>): Promise<void> {
+  await showEmptyState();
+  const button = document.querySelector<HTMLButtonElement>(".translation-setup-btn");
+  if (button) {
+    button.click();
+    await vi.waitFor(() => expect(document.querySelector(".translation-setup-btn")).toBeNull());
+  }
+}
+
+async function clickDictationSetup(): Promise<void> {
+  const button = document.querySelector<HTMLButtonElement>(".dictation-setup-btn")!;
+  await vi.waitFor(() => expect(button.disabled).toBe(false));
+  button.click();
+}
+
 beforeEach(() => {
   vi.resetModules(); resetInvokeCommands(); resetTauriStore();
   document.body.innerHTML = '<div id="chat"></div><button id="btn-settings">설정</button><span id="settings-access-status"></span>';
@@ -8,15 +23,50 @@ beforeEach(() => {
 afterEach(() => { window.dispatchEvent(new Event("beforeunload")); vi.restoreAllMocks(); resetInvokeCommands(); });
 
 describe("settings entry and recovery", () => {
-  it.each(["typed", "saving"])("preserves an inline credential form that is %s during settings refresh", async state => {
+  it("does not lose a dictation destination while general settings are still opening", async () => {
+    let finish!: () => void;
+    const open = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    const dictation = vi.fn();
+    registerInvokeCommand("open_settings", open);
+    registerInvokeCommand("open_dictation_settings", dictation);
+    const { openSettingsFrom } = await import("../src/settingsAccess");
+    const status = document.getElementById("settings-access-status")!;
+    const generic = document.getElementById("btn-settings") as HTMLButtonElement;
+    const pending = openSettingsFrom(generic, status);
+    const dictationButton = document.createElement("button");
+    await openSettingsFrom(dictationButton, status, "open_dictation_settings");
+    expect(open).toHaveBeenCalledOnce();
+    expect(dictation).toHaveBeenCalledOnce();
+    expect(dictationButton.disabled).toBe(false);
+    finish();
+    await pending;
+    expect(generic.disabled).toBe(false);
+  });
+
+  it("makes a failed dictation settings action retryable", async () => {
+    const open = vi.fn().mockRejectedValueOnce(new Error("unavailable")).mockResolvedValue(undefined);
+    registerInvokeCommand("open_dictation_settings", open);
     const { showEmptyState } = await import("../src/ui");
     await showEmptyState();
+    const button = document.querySelector<HTMLButtonElement>(".dictation-setup-btn")!;
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    button.click();
+    await vi.waitFor(() => expect(document.querySelector(".dictation-setup-status")!.textContent).toContain("설정 창을 열지 못했습니다"));
+    expect(button.disabled).toBe(false);
+    button.click();
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(2));
+    expect(document.querySelector(".dictation-setup-status")!.textContent).toBe("");
+  });
+
+  it.each(["typed", "saving"])("preserves an inline credential form that is %s during settings refresh", async state => {
+    const { showEmptyState } = await import("../src/ui");
+    await prepareTranslation(showEmptyState);
     const input = document.getElementById("inline-api-key") as HTMLInputElement;
     if (state === "typed") input.value = "fake-unsaved-draft";
     else input.disabled = true;
     const read = vi.fn(() => ({ configured: true, revision: "new" }));
     registerInvokeCommand("get_credential_status", read);
-    await showEmptyState();
+    await prepareTranslation(showEmptyState);
     expect(document.getElementById("inline-api-key")).toBe(input);
     expect(read).not.toHaveBeenCalled();
     expect(input.value).toBe(state === "typed" ? "fake-unsaved-draft" : "");
@@ -24,7 +74,7 @@ describe("settings entry and recovery", () => {
 
   it("preserves a credential draft entered during a pending settings refresh", async () => {
     const { showEmptyState } = await import("../src/ui");
-    await showEmptyState();
+    await prepareTranslation(showEmptyState);
     const input = document.getElementById("inline-api-key") as HTMLInputElement;
     let finish!: (value: unknown) => void;
     const read = vi.fn(() => new Promise(resolve => { finish = resolve; }));
@@ -84,11 +134,12 @@ describe("settings entry and recovery", () => {
     const read = vi.fn(() => new Promise(resolve => { finish = resolve; }));
     registerInvokeCommand("get_credential_status", read);
     const { showEmptyState, renderLoading } = await import("../src/ui");
-    const pending = showEmptyState();
+    await showEmptyState();
+    document.querySelector<HTMLButtonElement>(".translation-setup-btn")!.click();
     await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
     document.getElementById("chat")!.appendChild(renderLoading("작성 중인 번역"));
     finish({ configured: false, revision: null });
-    await pending;
+    await new Promise(resolve => setTimeout(resolve, 0));
     expect(document.getElementById("loading-entry")).not.toBeNull();
     expect(document.getElementById("inline-api-key")).toBeNull();
   });

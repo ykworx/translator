@@ -249,7 +249,19 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
   return div;
 }
 
+function hasActiveCredentialForm(element: Element): boolean {
+  return [...element.querySelectorAll<HTMLInputElement>('input[type="password"]')]
+    .some(input => !!input.value || input.disabled);
+}
+
+export function clearInactiveOnboarding(): void {
+  chat.querySelectorAll(".empty-state, .dictation-onboarding").forEach(element => {
+    if (!hasActiveCredentialForm(element)) element.remove();
+  });
+}
+
 export function renderLoading(original: string): HTMLDivElement {
+  clearInactiveOnboarding();
   const div = document.createElement("div");
   div.className = "entry";
   div.id = "loading-entry";
@@ -275,11 +287,12 @@ export function removeLoading(): void {
 }
 
 export function addEntry(entry: ChatEntry): void {
+  clearInactiveOnboarding();
   if (!entry.timestamp) entry.timestamp = Date.now();
   chatHistory.push(entry);
   if (chatHistory.length > MAX_HISTORY) {
     chatHistory.shift();
-    chat.firstElementChild?.remove();
+    chat.querySelector(".entry")?.remove();
   }
   removeLoading();
   chat.appendChild(renderEntry(entry));
@@ -287,9 +300,64 @@ export function addEntry(entry: ChatEntry): void {
 }
 
 let emptyStateSequence = 0;
+let translationSetupRequested = false;
+let dictationSupport: boolean | undefined;
+let pendingDictationSupport: Promise<boolean> | null = null;
+
+async function readDictationSupport(): Promise<boolean> {
+  if (dictationSupport !== undefined) return dictationSupport;
+  if (!pendingDictationSupport) {
+    pendingDictationSupport = window.__TAURI__.core.invoke<boolean>("supports_global_dictation").then(supported => {
+      if (typeof supported !== "boolean") throw new Error("Invalid dictation support status");
+      dictationSupport = supported;
+      return supported;
+    }).finally(() => { pendingDictationSupport = null; });
+  }
+  return pendingDictationSupport;
+}
+
+function ensureDictationOnboarding(): void {
+  if (chatHistory.length || chat.querySelector(".entry, .dictation-onboarding")) return;
+  const card = document.createElement("section");
+  card.className = "dictation-onboarding";
+  card.setAttribute("aria-labelledby", "dictation-onboarding-title");
+  card.innerHTML = `<h2 id="dictation-onboarding-title">API 키 없이 Mac에서 받아쓰기</h2>
+    <p>다른 앱의 입력창에 말한 내용을 입력하세요. 음성 인식은 Mac에서 처리합니다.</p>
+    <button type="button" class="dictation-setup-btn" disabled>지원 확인 중…</button>
+    <span class="dictation-setup-status" role="status" aria-live="polite"></span>`;
+  const button = card.querySelector<HTMLButtonElement>("button")!;
+  const status = card.querySelector<HTMLElement>("[role=status]")!;
+  let supported: boolean | null = null;
+  const checkSupport = async () => {
+    button.disabled = true;
+    button.textContent = "지원 확인 중…";
+    status.textContent = "이 운영체제의 받아쓰기 지원 여부를 확인합니다.";
+    try {
+      const available = await readDictationSupport();
+      if (!card.isConnected) return;
+      supported = available;
+      button.disabled = !available;
+      button.textContent = available ? "받아쓰기 준비" : "macOS 전용";
+      status.textContent = available ? "" : "다른 앱에서 받아쓰기는 macOS에서만 지원합니다.";
+    } catch {
+      if (!card.isConnected) return;
+      button.disabled = false;
+      button.textContent = "지원 상태 다시 확인";
+      status.textContent = "지원 여부를 확인하지 못했습니다. 다시 확인해주세요.";
+    }
+  };
+  button.addEventListener("click", () => {
+    if (supported === true) void openSettingsFrom(button, status, "open_dictation_settings");
+    else if (supported === null) void checkSupport();
+  });
+  chat.appendChild(card);
+  void checkSupport();
+}
 
 export async function showEmptyState({ preserveCredentialDraft = true } = {}): Promise<void> {
-  if (chatHistory.length > 0) return;
+  if (chatHistory.length > 0 || chat.querySelector(".entry")) return;
+  // Local dictation remains discoverable while a cloud Keychain read waits.
+  ensureDictationOnboarding();
   const hasCredentialDraft = () => {
     const input = document.getElementById("inline-api-key") as HTMLInputElement | null;
     return preserveCredentialDraft && !!input && (!!input.value || input.disabled);
@@ -297,6 +365,21 @@ export async function showEmptyState({ preserveCredentialDraft = true } = {}): P
   if (hasCredentialDraft()) return;
   const sequence = ++emptyStateSequence;
   const current = () => sequence === emptyStateSequence && chatHistory.length === 0 && !chat.querySelector(".entry") && !hasCredentialDraft();
+  if (!translationSetupRequested) {
+    chat.innerHTML = `<div class="empty-state">
+      <div class="empty-title">텍스트를 선택하거나 아래에 입력해 번역하세요</div>
+      <div class="empty-subtitle">번역 연결이 필요하면 공급자와 API 키를 설정할 수 있습니다.</div>
+      <button type="button" class="translation-setup-btn empty-save-btn">번역 연결 준비</button>
+    </div>`;
+    const prepare = chat.querySelector<HTMLButtonElement>(".translation-setup-btn")!;
+    prepare.addEventListener("click", () => {
+      prepare.disabled = true;
+      translationSetupRequested = true;
+      void showEmptyState();
+    });
+    ensureDictationOnboarding();
+    return;
+  }
   try {
     const providerId = await getActiveBackendId();
     const provider = getProvider(providerId);
@@ -317,8 +400,8 @@ export async function showEmptyState({ preserveCredentialDraft = true } = {}): P
       const keyInput = document.getElementById("inline-api-key") as HTMLInputElement;
       const save = document.getElementById("inline-api-save") as HTMLButtonElement;
       const status = document.getElementById("inline-api-status")!;
-      const formCurrent = () => document.getElementById("inline-api-key") === keyInput
-        && chatHistory.length === 0 && !chat.querySelector(".entry");
+      const form = keyInput.closest(".empty-state")!;
+      const formCurrent = () => document.getElementById("inline-api-key") === keyInput;
       save.addEventListener("click", async () => {
         if (save.disabled || !keyInput.value.trim()) return;
         save.disabled = true;
@@ -327,9 +410,10 @@ export async function showEmptyState({ preserveCredentialDraft = true } = {}): P
         try {
           await saveProviderCredential(providerId, keyInput.value.trim(), credential.revision);
           keyInput.value = "";
-          if (formCurrent()) {
+          if (formCurrent() && !chatHistory.length && !chat.querySelector(".entry")) {
             await showEmptyState({ preserveCredentialDraft: false });
           }
+          if (formCurrent() && (chatHistory.length || chat.querySelector(".entry"))) form.remove();
         } catch {
           if (formCurrent()) status.textContent = "API 키 저장 결과를 확인하지 못했습니다. 입력을 유지했습니다. 설정에서 키 상태를 확인해주세요.";
         } finally {
@@ -337,6 +421,7 @@ export async function showEmptyState({ preserveCredentialDraft = true } = {}): P
           keyInput.disabled = false;
         }
       });
+      ensureDictationOnboarding();
       return;
     }
     chat.innerHTML = `
@@ -345,13 +430,18 @@ export async function showEmptyState({ preserveCredentialDraft = true } = {}): P
         <div class="empty-title">텍스트를 선택하고 ⌘+Ctrl+T</div>
         <div class="empty-subtitle">또는 아래에 직접 입력하세요</div>
       </div>`;
+    ensureDictationOnboarding();
   } catch (error) {
-    if (current()) chat.innerHTML = `<div class="empty-state"><div class="empty-title">AI 연결 설정을 확인해주세요</div><div class="empty-hint">${escapeHtml(String(error))}</div><div class="empty-subtitle">트레이 메뉴의 설정에서 API 키 상태를 확인해주세요.</div></div>`;
+    if (current()) {
+      chat.innerHTML = `<div class="empty-state"><div class="empty-title">AI 연결 설정을 확인해주세요</div><div class="empty-hint">${escapeHtml(String(error))}</div><div class="empty-subtitle">설정에서 API 키 상태를 확인해주세요.</div></div>`;
+      ensureDictationOnboarding();
+    }
   }
 }
 
 export function clearChat(): void {
   chatHistory = [];
-  chat.innerHTML = "";
-  showEmptyState();
+  const drafts = [...chat.querySelectorAll(".empty-state")].filter(hasActiveCredentialForm);
+  chat.replaceChildren(...drafts);
+  void showEmptyState();
 }

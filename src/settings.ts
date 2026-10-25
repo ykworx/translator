@@ -36,6 +36,9 @@ const dictationMicrophoneRefreshBtn = document.getElementById("dictation-microph
 const dictationMicrophoneStatus = document.getElementById("dictation-microphone-status") as HTMLParagraphElement;
 const dictationShortcutSummary = document.getElementById("dictation-shortcut-summary") as HTMLElement;
 const dictationShortcutStatus = document.getElementById("dictation-shortcut-status") as HTMLElement;
+const dictationModelReady = document.getElementById("dictation-model-ready") as HTMLElement;
+const dictationShortcutReady = document.getElementById("dictation-shortcut-ready") as HTMLElement;
+const dictationReadinessSummary = document.getElementById("dictation-readiness-summary") as HTMLElement;
 const dictationPermissionStatus = document.getElementById("dictation-permission-status") as HTMLElement;
 const dictationPermissionBtn = document.getElementById("dictation-permission-request") as HTMLButtonElement;
 const dictationPreviewBtn = document.getElementById("preview-dictation-panel") as HTMLButtonElement;
@@ -74,10 +77,18 @@ const tabItems = document.querySelectorAll<HTMLButtonElement>(".tab-item");
 const tabPanes = document.querySelectorAll<HTMLDivElement>(".tab-pane");
 
 function activateTab(tab: string): void {
+  const wasActive = document.getElementById(`pane-${tab}`)?.classList.contains("active");
   tabItems.forEach(item => item.classList.toggle("active", item.dataset.tab === tab));
   tabPanes.forEach(pane => pane.classList.toggle("active", pane.id === `pane-${tab}`));
   actions.style.display = tab !== "about" ? "flex" : "none";
-  if (tab === "dictation" && settingsReady) void refreshDictationPermissions();
+  if (tab === "dictation" && settingsReady) {
+    void refreshDictationPermissions();
+    void loadShortcutStatus();
+  }
+  if (tab === "api" && settingsReady && !wasActive) {
+    const selected = [...backendRadios].find(radio => radio.checked)?.value;
+    if (selected === "gemini-native" || selected === "openai") void refreshCredential(selected);
+  }
 }
 
 tabItems.forEach(item => item.addEventListener("click", () => activateTab(item.dataset.tab!)));
@@ -85,6 +96,10 @@ document.getElementById("show-dictation-shortcut")!.addEventListener("click", ()
   activateTab("shortcuts");
   document.getElementById("dictation-shortcut-row")?.scrollIntoView?.({ block: "center" });
   shortcutDictationBtn.focus();
+});
+document.getElementById("show-dictation-model")!.addEventListener("click", () => {
+  document.getElementById("dictation-model-settings")?.scrollIntoView?.({ block: "start" });
+  whisperModelSelect.focus();
 });
 
 // ─── Backend toggle ─────────────────────────────────
@@ -169,6 +184,14 @@ let pendingSettingsOperations = 0;
 let savedFingerprint = "";
 let closing = false;
 let pendingCredentialWrites = 0;
+let savedWhisperModel: string | null = null;
+let savedDictationShortcut: string | null = null;
+let savedDictationPreferences: string | null = null;
+let savedDictationMicrophone: string | null = null;
+let microphoneReadiness: "checking" | "available" | "missing" | "error" = "checking";
+let modelReadiness: "checking" | "installed" | "missing" | "error" = "checking";
+let dictationPermissionsReady: boolean | null = null;
+let dictationShortcutRegistered: boolean | null = null;
 btnSave.disabled = true;
 const initiallyLoadingControls = [...document.querySelectorAll<HTMLInputElement | HTMLSelectElement>(".tab-content input, .tab-content select")];
 initiallyLoadingControls.forEach(control => { control.disabled = true; });
@@ -177,6 +200,33 @@ setStatus("설정을 불러오는 중…");
 function setStatus(message: string, error = false): void {
   settingsStatus.textContent = message;
   settingsStatus.classList.toggle("error", error);
+}
+
+function dictationPreferencesFingerprint(): string {
+  return JSON.stringify([dictationLocaleSelect.value, dictationHintInput.value.trim(), dictationIdleSelect.value,
+    dictationMicrophoneSelect.value, whisperModelSelect.value, dictationShortcutStr]);
+}
+
+function updateDictationReadiness(): void {
+  const modelChanged = savedWhisperModel !== null && whisperModelSelect.value !== savedWhisperModel;
+  const shortcutChanged = savedDictationShortcut !== null && dictationShortcutStr !== savedDictationShortcut;
+  const modelMessages = { checking: "설치 상태 확인 중…", installed: "선택 모델 설치됨", missing: "선택 모델 미설치 · 아래에서 모델을 다운로드하세요.", error: "모델 상태를 확인하지 못했습니다. 모델을 다시 선택해 확인해주세요." };
+  dictationModelReady.textContent = modelMessages[modelReadiness] + (modelChanged ? " · 모델 변경은 아직 저장되지 않았습니다." : "");
+  dictationShortcutSummary.textContent = savedDictationShortcut ? shortcutDisplay(savedDictationShortcut) : "확인 중…";
+  dictationShortcutReady.textContent = dictationShortcutRegistered === true ? "저장된 단축키 등록됨"
+    : dictationShortcutRegistered === false ? "단축키 등록을 확인해주세요. 충돌한다면 단축키를 변경하고 저장하세요."
+    : "단축키 등록 상태 확인 필요";
+  if (shortcutChanged) dictationShortcutReady.textContent += " · 단축키 변경은 아직 저장되지 않았습니다.";
+  dictationReadinessSummary.textContent = !settingsReady ? "설정을 불러온 뒤 준비 상태를 확인합니다."
+    : microphoneReadiness === "missing" ? "마이크를 연결하거나 사용 가능한 마이크를 선택해주세요."
+    : savedDictationPreferences !== null && savedDictationPreferences !== dictationPreferencesFingerprint()
+      ? "음성 설정 변경은 아직 저장되지 않았습니다. 아래 연결·설정 저장 후 단축키를 사용하세요."
+    : modelReadiness === "missing" ? "1. 먼저 음성 모델을 설치해주세요."
+    : dictationPermissionsReady === false ? "2. 필요한 권한을 확인하고 허용해주세요."
+    : dictationShortcutRegistered === false ? "3. 사용할 단축키를 확인해주세요."
+    : modelReadiness === "installed" && microphoneReadiness === "available" && dictationPermissionsReady === true && dictationShortcutRegistered === true
+      ? "준비가 완료됐습니다. 다른 앱의 입력창에서 저장된 단축키로 시작하세요."
+      : "확인되지 않은 항목이 있습니다. 각 항목의 상태를 확인해주세요.";
 }
 
 function updateSaveButton(): void {
@@ -303,14 +353,18 @@ for (const providerId of ["gemini-native", "openai"] as const) {
 async function loadShortcutStatus(): Promise<void> {
   try {
     const status = await invoke<{ dictationRegistered: boolean; suspended: boolean }>("get_shortcut_status");
+    dictationShortcutRegistered = status.suspended ? false : typeof status.dictationRegistered === "boolean" ? status.dictationRegistered : null;
     const unavailable = status.dictationRegistered === false && !status.suspended;
     dictationShortcutStatus.classList.toggle("hidden", !unavailable);
     dictationShortcutStatus.textContent = unavailable
       ? "받아쓰기 단축키를 등록하지 못했습니다. 다른 앱의 단축키와 겹칠 수 있으니 ‘단축키 변경’에서 새 조합을 지정하고 저장해주세요."
       : "";
   } catch (error) {
+    dictationShortcutRegistered = null;
     // Status discovery is advisory; settings must remain usable if it fails.
     console.warn("Could not check dictation shortcut registration:", error);
+  } finally {
+    updateDictationReadiness();
   }
 }
 
@@ -329,6 +383,7 @@ async function refreshDictationPermissions(request = false): Promise<void> {
   dictationPermissionBtn.disabled = true;
   try {
     const permissions = await invoke<DictationPermissions>(request ? "request_dictation_permissions" : "get_dictation_permissions");
+    dictationPermissionsReady = permissions.microphone === true && permissions.accessibility === true;
     const missing: string[] = [];
     if (!permissions.microphone) missing.push("마이크");
     if (!permissions.accessibility) missing.push("손쉬운 사용");
@@ -340,11 +395,13 @@ async function refreshDictationPermissions(request = false): Promise<void> {
       : missing.length ? "버튼을 눌러 권한을 요청한 뒤 macOS 안내에 따라 허용해주세요." : "";
     dictationPermissionBtn.textContent = missing.length ? "권한 확인/요청" : "다시 확인";
   } catch {
+    dictationPermissionsReady = null;
     dictationPermissionStatus.textContent = "권한을 확인하지 못했습니다. 다시 확인해주세요.";
   } finally {
     checkingPermissions = false;
     dictationPermissionBtn.disabled = false;
     endSettingsOperation();
+    updateDictationReadiness();
   }
 }
 
@@ -355,7 +412,7 @@ dictationPreviewBtn.addEventListener("click", async () => {
   beginSettingsOperation();
   try {
     const shown = await invoke<boolean>("preview_dictation_panel");
-    setStatus(shown ? "상태창 미리보기 · 녹음하지 않습니다." : "진행 중인 받아쓰기를 먼저 종료해주세요.");
+    setStatus(shown ? "상태창 미리보기 · 녹음하지 않습니다." : "녹음·인식 중이거나 결과 창이 열려 있습니다. 먼저 완료하거나 결과 창을 정리해주세요.");
   } catch (error) {
     setStatus(`미리보기를 표시하지 못했습니다: ${error}`, true);
   } finally {
@@ -373,7 +430,7 @@ function formFingerprint(): string {
 
 function markChanged(): void {
   if (!settingsReady || isSaving) return;
-  dictationShortcutSummary.textContent = shortcutDisplay(dictationShortcutStr);
+  updateDictationReadiness();
   setStatus(formFingerprint() === savedFingerprint ? "" : "저장하지 않은 변경사항이 있습니다.");
 }
 
@@ -546,18 +603,40 @@ function restoreSelectedValue(select: HTMLSelectElement, value: string, customLa
 
 type DictationMicrophone = { id: string; name: string; isDefault: boolean };
 let microphoneRequestId = 0;
+let availableMicrophones: DictationMicrophone[] | null = null;
+
+function reflectSelectedMicrophone(): void {
+  if (availableMicrophones !== null) {
+    const selected = dictationMicrophoneSelect.value;
+    const available = selected ? availableMicrophones.some(device => device.id === selected)
+      : availableMicrophones.some(device => device.isDefault);
+    microphoneReadiness = available ? "available" : "missing";
+    dictationMicrophoneStatus.textContent = available
+      ? "연결된 마이크를 확인했습니다. 시스템 기본값은 장치 변경을 자동으로 따릅니다."
+      : selected ? "선택한 마이크를 연결하거나 시스템 기본값을 선택해주세요."
+      : "사용 가능한 기본 마이크가 없습니다. 장치를 연결하고 새로고침해주세요.";
+  }
+  if (savedDictationMicrophone !== null && dictationMicrophoneSelect.value !== savedDictationMicrophone) {
+    dictationMicrophoneStatus.textContent += " 마이크 선택 변경은 아래 연결·설정 저장 후 적용됩니다.";
+  }
+  updateDictationReadiness();
+}
 
 async function loadDictationMicrophones(selectedValue = dictationMicrophoneSelect.value): Promise<void> {
   if (isSaving || closing) return;
   beginSettingsOperation();
   const request = ++microphoneRequestId;
+  microphoneReadiness = "checking";
+  availableMicrophones = null;
+  updateDictationReadiness();
   dictationMicrophoneRefreshBtn.disabled = true;
   dictationMicrophoneSelect.disabled = true;
   dictationMicrophoneStatus.textContent = "마이크를 확인하는 중…";
   try {
     const devices = await invoke<DictationMicrophone[]>("list_dictation_microphones");
     if (request !== microphoneRequestId) return;
-    const valid = devices.filter(device => typeof device.id === "string" && typeof device.name === "string");
+    const valid = devices.filter(device => device && typeof device.id === "string" && typeof device.name === "string");
+    availableMicrophones = valid;
     const defaultName = valid.find(device => device.isDefault)?.name;
     const options = [{ value: "", label: defaultName ? `시스템 기본값 — ${defaultName}` : "시스템 기본 마이크" },
       ...valid.map(device => ({ value: device.id, label: device.name }))];
@@ -565,11 +644,11 @@ async function loadDictationMicrophones(selectedValue = dictationMicrophoneSelec
     if (missing) options.push({ value: selectedValue, label: "이전에 선택한 마이크 (연결 안 됨)" });
     replaceOptions(dictationMicrophoneSelect, options);
     dictationMicrophoneSelect.value = selectedValue;
-    dictationMicrophoneStatus.textContent = missing
-      ? "선택한 마이크를 연결하거나 시스템 기본값을 선택해주세요."
-      : "Mac에 연결된 마이크를 선택합니다. 시스템 기본값은 장치 변경을 자동으로 따릅니다.";
+    reflectSelectedMicrophone();
   } catch {
     if (request !== microphoneRequestId) return;
+    availableMicrophones = null;
+    microphoneReadiness = "error";
     const options = [{ value: "", label: "시스템 기본 마이크" }];
     if (selectedValue) options.push({ value: selectedValue, label: "저장된 마이크 (목록 확인 실패)" });
     replaceOptions(dictationMicrophoneSelect, options);
@@ -581,6 +660,7 @@ async function loadDictationMicrophones(selectedValue = dictationMicrophoneSelec
       dictationMicrophoneSelect.disabled = false;
     }
     endSettingsOperation();
+    updateDictationReadiness();
   }
 }
 
@@ -588,9 +668,8 @@ dictationMicrophoneRefreshBtn.addEventListener("click", () => {
   if (settingsReady) void loadDictationMicrophones();
 });
 dictationMicrophoneSelect.addEventListener("change", () => {
-  dictationMicrophoneStatus.textContent = dictationMicrophoneSelect.value
-    ? "선택한 마이크를 다음 받아쓰기부터 사용합니다. 변경사항을 저장해주세요."
-    : "시스템 기본 마이크를 다음 받아쓰기부터 사용합니다.";
+  if (availableMicrophones === null) dictationMicrophoneStatus.textContent = "마이크 목록을 새로고침해 연결 상태를 확인해주세요.";
+  reflectSelectedMicrophone();
 });
 
 async function loadCaptureWindows(selectedValue = ""): Promise<void> {
@@ -635,9 +714,11 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
   dictationHintInput.value = await getSetting(SETTINGS_KEYS.dictationHint, DEFAULTS.dictationHint);
   const savedIdleSeconds = String(await getSetting(SETTINGS_KEYS.dictationIdleSeconds, DEFAULTS.dictationIdleSeconds));
   dictationIdleSelect.value = ["0", "30", "300", "900"].includes(savedIdleSeconds) ? savedIdleSeconds : String(DEFAULTS.dictationIdleSeconds);
-  await loadDictationMicrophones(await getSetting(SETTINGS_KEYS.dictationMicrophone, DEFAULTS.dictationMicrophone));
+  savedDictationMicrophone = await getSetting(SETTINGS_KEYS.dictationMicrophone, DEFAULTS.dictationMicrophone);
+  await loadDictationMicrophones(savedDictationMicrophone);
   restoreSelectedValue(domainHintSelect, await getSetting(SETTINGS_KEYS.domainHint, DEFAULTS.domainHint), "저장된 사용자 힌트");
-  whisperModelSelect.value = await getSetting(SETTINGS_KEYS.whisperModel, DEFAULTS.whisperModel);
+  savedWhisperModel = await getSetting(SETTINGS_KEYS.whisperModel, DEFAULTS.whisperModel);
+  whisperModelSelect.value = savedWhisperModel;
   captureModeSelect.value = savedCaptureMode;
   const savedGeminiModel = await getSetting(SETTINGS_KEYS.model, DEFAULTS.model);
   restoreSelectedValue(modelSelect, savedGeminiModel, `${savedGeminiModel} (저장된 모델)`);
@@ -648,6 +729,7 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
   shortcutSelectBtn.textContent = shortcutDisplay(selectShortcutStr);
   shortcutClipboardBtn.textContent = shortcutDisplay(clipboardShortcutStr);
   dictationShortcutStr = await getSetting(SETTINGS_KEYS.dictationShortcut, DEFAULTS.dictationShortcut);
+  savedDictationShortcut = dictationShortcutStr;
   shortcutDictationBtn.textContent = shortcutDisplay(dictationShortcutStr);
 
   // Load backend settings
@@ -670,14 +752,15 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
 
   const savedOpenAiModel = await getSetting(SETTINGS_KEYS.openaiModel, DEFAULTS.openaiModel);
   restoreSelectedValue(openaiModelSelect, savedOpenAiModel, `${savedOpenAiModel} (저장된 모델)`);
-  dictationShortcutSummary.textContent = shortcutDisplay(dictationShortcutStr);
+  updateDictationReadiness();
   settingsReady = true;
+  savedDictationPreferences = dictationPreferencesFingerprint();
   initiallyLoadingControls.forEach(control => { control.disabled = false; });
   savedFingerprint = formFingerprint();
   setStatus(providerError, !!providerError);
   updateSaveButton();
   for (const providerId of ["gemini-native", "openai"] as const) updateCredentialControls(providerId);
-  if (savedBackendId === "gemini-native" || savedBackendId === "openai") void refreshCredential(savedBackendId);
+  if (document.getElementById("pane-api")!.classList.contains("active") && (savedBackendId === "gemini-native" || savedBackendId === "openai")) void refreshCredential(savedBackendId);
   void loadShortcutStatus();
   void refreshDictationPermissions();
   await checkModelStatus();
@@ -797,6 +880,11 @@ btnSave.addEventListener("click", async () => {
     return;
   }
   await notifyConnectionSettingsChanged();
+  savedWhisperModel = whisperModelSelect.value;
+  savedDictationShortcut = dictationShortcutStr;
+  savedDictationMicrophone = dictationMicrophoneSelect.value;
+  savedDictationPreferences = dictationPreferencesFingerprint();
+  updateDictationReadiness();
   savedFingerprint = formFingerprint();
   setStatus("설정을 저장했습니다.");
   isSaving = false;
@@ -833,6 +921,25 @@ const modelDownloadBtn = document.getElementById("model-download-btn") as HTMLBu
 const modelDeleteBtn = document.getElementById("model-delete-btn") as HTMLButtonElement;
 let deleteConfirmTimer: number | null = null;
 let unlistenModelDownloadProgress: (() => void) | null = null;
+let unlistenSettingsNavigation: (() => void) | null = null;
+let navigationDisposed = false;
+
+// Register first, then consume the native pending destination so a request
+// arriving while this webview initializes cannot fall between both paths.
+void (async () => {
+  const consumeNavigation = async () => {
+    const destination = await invoke<string | null>("consume_settings_navigation");
+    if (!navigationDisposed && destination === "dictation") activateTab("dictation");
+  };
+  const stop = await window.__TAURI__.event.listen("settings-navigation", event => {
+    if (!navigationDisposed && event.payload === "dictation") {
+      void consumeNavigation().catch(error => console.warn("Could not consume settings navigation:", error));
+    }
+  });
+  if (navigationDisposed) { stop(); return; }
+  unlistenSettingsNavigation = stop;
+  await consumeNavigation();
+})().catch(error => console.warn("Could not restore settings navigation:", error));
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -848,6 +955,8 @@ function modelDownloadLabel(): string {
 }
 
 function updateModelUI(status: ModelStatus) {
+  modelReadiness = status.downloaded ? "installed" : "missing";
+  updateDictationReadiness();
   modelDownloadBtn.textContent = modelDownloadLabel();
   modelDownloadBtn.disabled = false;
   modelDeleteBtn.textContent = "선택 모델 삭제";
@@ -871,6 +980,8 @@ async function checkModelStatus() {
   beginSettingsOperation();
   const request = ++modelStatusRequestId;
   const model = whisperModelSelect.value || DEFAULTS.whisperModel;
+  modelReadiness = "checking";
+  updateDictationReadiness();
   modelStatusText.textContent = "선택한 모델 확인 중…";
   modelDownloadBtn.style.display = "none";
   modelDeleteBtn.style.display = "none";
@@ -878,7 +989,11 @@ async function checkModelStatus() {
     const status = await invoke<ModelStatus>("check_whisper_model", { model });
     if (request === modelStatusRequestId) updateModelUI(status);
   } catch (err) {
-    if (request === modelStatusRequestId) modelStatusText.textContent = `상태 확인 실패: ${err}`;
+    if (request === modelStatusRequestId) {
+      modelStatusText.textContent = `상태 확인 실패: ${err}`;
+      modelReadiness = "error";
+      updateDictationReadiness();
+    }
   } finally {
     endSettingsOperation();
   }
@@ -899,6 +1014,8 @@ modelDownloadBtn.addEventListener("click", async () => {
   modelDeleteBtn.disabled = true;
   modelDownloadBtn.disabled = true;
   modelDownloadBtn.textContent = "다운로드 중…";
+  modelReadiness = "checking";
+  updateDictationReadiness();
   modelProgress.style.display = "flex";
   modelProgressFill.style.width = "0%";
   modelProgressText.textContent = "0%";
@@ -910,6 +1027,8 @@ modelDownloadBtn.addEventListener("click", async () => {
 
   } catch (err) {
     modelStatusText.textContent = `다운로드 실패: ${err}`;
+    modelReadiness = "error";
+    updateDictationReadiness();
     modelDownloadBtn.textContent = modelDownloadLabel();
     modelDownloadBtn.disabled = false;
     modelProgress.style.display = "none";
@@ -953,12 +1072,16 @@ modelDeleteBtn.addEventListener("click", async () => {
   modelDownloadBtn.disabled = true;
   whisperModelSelect.disabled = true;
   modelDeleteBtn.textContent = "삭제 중…";
+  modelReadiness = "checking";
+  updateDictationReadiness();
   modelDeleteBtn.classList.remove("model-btn-confirm");
   try {
     const status = await invoke<ModelStatus>("delete_whisper_model", { model: whisperModelSelect.value });
     updateModelUI(status);
   } catch (err) {
     modelStatusText.textContent = `삭제 실패: ${err}`;
+    modelReadiness = "error";
+    updateDictationReadiness();
     modelDeleteBtn.textContent = "선택 모델 삭제";
   } finally {
     modelDeleteBtn.disabled = false;
@@ -989,6 +1112,9 @@ window.__TAURI__.event.listen("model-download-progress", (event: { payload: Mode
 });
 
 window.addEventListener("beforeunload", () => {
+  navigationDisposed = true;
+  unlistenSettingsNavigation?.();
+  unlistenSettingsNavigation = null;
   if (shortcutsSuspended) {
     void invoke("resume_shortcuts").catch(error => console.warn("Could not resume shortcuts during settings unload:", error));
   }

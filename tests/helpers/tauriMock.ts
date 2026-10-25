@@ -116,6 +116,7 @@ const mockInvoke = async (cmd: string, args?: Record<string, unknown>): Promise<
     return commandHandlers.get(cmd)!(args);
   }
   if (cmd === "capture_connection") return captureConnection();
+  if (cmd === "supports_global_dictation") return true;
   if (cmd === "get_credential_status") {
     const value = credentialFor(args?.providerId as string);
     return { configured: !!value.value, revision: value.revision };

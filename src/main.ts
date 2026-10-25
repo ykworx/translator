@@ -9,7 +9,7 @@ import { writeTextToClipboard } from "./clipboard";
 import { suggestReplies, summarize, translateStream } from "./api";
 import type { HandwritingResult } from "./api";
 import type { ChatEntry } from "./ui";
-import { chatHistory, chat, addEntry, clearChat, showEmptyState } from "./ui";
+import { chatHistory, chat, addEntry, clearChat, showEmptyState, clearInactiveOnboarding } from "./ui";
 import { LANGUAGES, DEFAULTS, MAX_TEXTAREA_HEIGHT, SETTINGS_KEYS } from "./constants";
 import { populateSelect, getErrorMessage, escapeHtml } from "./utils";
 import { initSpeechInput } from "./speechInput";
@@ -64,6 +64,7 @@ async function handleSubmit(sourceText?: string): Promise<void> {
   syncInputHeight();
 
   // Create a streaming entry
+  clearInactiveOnboarding();
   const entry: ChatEntry = { original: text, translated: "", timestamp: Date.now() };
   const div = document.createElement("div");
   div.className = "entry";

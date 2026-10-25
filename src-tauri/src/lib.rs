@@ -9,6 +9,7 @@ mod gemini;
 mod cloud_http;
 mod connections;
 mod settings_store;
+mod settings_navigation;
 mod shortcut;
 mod speech;
 mod dictation;
@@ -20,18 +21,28 @@ use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconEvent,
-    Manager, WindowEvent,
+    Emitter, Manager, WindowEvent,
 };
 use tauri_plugin_global_shortcut::Shortcut;
 
 static SETTINGS_WINDOW_LOCK: Mutex<()> = Mutex::new(());
 
-fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
+#[cfg(target_os = "macos")]
+pub(crate) struct DictationTrayHint(pub tauri::menu::MenuItem<tauri::Wry>);
+
+fn show_settings_window(app: &tauri::AppHandle, tab: Option<settings_navigation::SettingsTab>) -> Result<(), String> {
     // Menu, tray and webview requests can arrive on different async workers.
     let _creation = SETTINGS_WINDOW_LOCK.lock().map_err(|_| "설정 창 상태를 확인하지 못했습니다.")?;
+    if let Some(tab) = tab { app.state::<settings_navigation::SettingsNavigation>().request(tab)?; }
     if let Some(win) = app.get_webview_window("settings") {
         win.show().map_err(|e| e.to_string())?;
-        return win.set_focus().map_err(|e| e.to_string());
+        win.set_focus().map_err(|e| e.to_string())?;
+        if let Some(tab) = tab {
+            // The frontend listens before consuming the queued request, so
+            // navigation works even while a new settings webview is loading.
+            if let Err(e) = win.emit("settings-navigation", tab) { warn!("Failed to notify settings navigation: {e}"); }
+        }
+        return Ok(());
     }
     let win = tauri::WebviewWindowBuilder::new(app, "settings", tauri::WebviewUrl::App("settings.html".into()))
         .title("설정").inner_size(480.0, 520.0)
@@ -43,7 +54,12 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
-    show_settings_window(&app)
+    show_settings_window(&app, None)
+}
+
+#[tauri::command]
+async fn open_dictation_settings(app: tauri::AppHandle) -> Result<(), String> {
+    show_settings_window(&app, Some(settings_navigation::SettingsTab::Dictation))
 }
 
 fn request_settings_window(app: &tauri::AppHandle) {
@@ -153,6 +169,7 @@ fn parse_configured_shortcut(configured: &str, default: &str, shortcut_name: &st
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(settings_navigation::SettingsNavigation::default())
         .manage(connections::ConnectionManager::default())
         .manage(Mutex::new(CurrentShortcuts::new(
             parse_default_shortcut(DEFAULT_SELECT_SHORTCUT, "select"),
@@ -161,9 +178,12 @@ pub fn run() {
         )))
         .invoke_handler(tauri::generate_handler![
             open_settings,
+            open_dictation_settings,
+            settings_navigation::consume_settings_navigation,
             build_info::get_build_info,
             open_handwriting_overlay,
             dictation::toggle_global_dictation,
+            dictation::supports_global_dictation,
             dictation::list_dictation_microphones,
             dictation::get_dictation_permissions,
             dictation::request_dictation_permissions,
@@ -239,11 +259,17 @@ pub fn run() {
             let settings_item = MenuItem::with_id(app, "settings", "설정…", true, None::<&str>)?;
             #[cfg(target_os = "macos")]
             let dictation_hint = MenuItem::with_id(app, "dictation-hint", "⌘+Ctrl+D: 어디서나 받아쓰기", false, None::<&str>)?;
+            #[cfg(target_os = "macos")]
+            let dictation_settings = MenuItem::with_id(app, "dictation-settings", "받아쓰기 준비…", true, None::<&str>)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let quit_item = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&about_item, &sep1, &shortcut_hint, &settings_item, &sep2, &quit_item])?;
             #[cfg(target_os = "macos")]
-            menu.insert(&dictation_hint, 3)?;
+            {
+                menu.insert(&dictation_hint, 3)?;
+                menu.insert(&dictation_settings, 4)?;
+                app.manage(DictationTrayHint(dictation_hint));
+            }
 
             // Get existing tray icon (created from tauri.conf.json)
             let tray = app
@@ -280,6 +306,12 @@ pub fn run() {
                 }
                 "settings" => {
                     request_settings_window(app);
+                }
+                "dictation-settings" => {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = open_dictation_settings(app).await { error!("Failed to open dictation setup: {e}"); }
+                    });
                 }
                 "about" => {
                     #[cfg(target_os = "macos")]

@@ -4,6 +4,10 @@ use tauri::AppHandle;
 use std::sync::OnceLock;
 
 pub const DEFAULT_DICTATION_SHORTCUT: &str = "Super+Ctrl+KeyD";
+
+/// Pure platform capability; never prompts, reads credentials, or starts audio.
+#[tauri::command]
+pub fn supports_global_dictation() -> bool { cfg!(target_os = "macos") }
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
 pub fn init(app: AppHandle) { let _ = APP_HANDLE.set(app); }
