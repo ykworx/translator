@@ -2,6 +2,8 @@ import { DEFAULTS, SETTINGS_KEYS } from "./constants";
 import { getSetting } from "./store";
 import type { LlmBackend } from "./llmBackend";
 
+export type OllamaConfig = Readonly<{ baseUrl: string; model: string }>;
+
 // Fallback heuristic for offline / failed /api/show responses.
 // Primary detection uses Ollama capabilities API.
 export function isVisionCapableModel(modelName: string): boolean {
@@ -83,7 +85,10 @@ async function fetchOllamaWithRetry(url: string, init: RequestInit): Promise<Res
 }
 
 export async function generateText(prompt: string): Promise<string> {
-  const { baseUrl, model } = await getOllamaConfig();
+  return generateTextWithConfig(await getOllamaConfig(), prompt);
+}
+
+async function generateTextWithConfig({ baseUrl, model }: OllamaConfig, prompt: string): Promise<string> {
   const url = `${baseUrl}/v1/chat/completions`;
 
   const resp = await fetchOllamaWithRetry(url, {
@@ -112,7 +117,14 @@ export async function generateTextStream(
   prompt: string,
   onChunk: (accumulated: string) => void,
 ): Promise<string> {
-  const { baseUrl, model } = await getOllamaConfig();
+  return generateTextStreamWithConfig(await getOllamaConfig(), prompt, onChunk);
+}
+
+async function generateTextStreamWithConfig(
+  { baseUrl, model }: OllamaConfig,
+  prompt: string,
+  onChunk: (accumulated: string) => void,
+): Promise<string> {
   const url = `${baseUrl}/v1/chat/completions`;
 
   const resp = await fetchOllamaWithRetry(url, {
@@ -171,7 +183,10 @@ export async function generateTextStream(
 }
 
 export async function generateImage(prompt: string, base64Png: string): Promise<string> {
-  const { baseUrl, model } = await getOllamaConfig();
+  return generateImageWithConfig(await getOllamaConfig(), prompt, base64Png);
+}
+
+async function generateImageWithConfig({ baseUrl, model }: OllamaConfig, prompt: string, base64Png: string): Promise<string> {
   // Vision capability guard is handled by api.ts (backend.supportsVision check).
   // No redundant /api/show probe here — backend instance is the single source of truth.
 
@@ -207,8 +222,12 @@ export async function generateImage(prompt: string, base64Png: string): Promise<
   return (data.choices?.[0]?.message?.content ?? "").trim();
 }
 
-export async function getOllamaBackend(): Promise<LlmBackend> {
-  const { baseUrl, model } = await getOllamaConfig();
+export async function getOllamaBackend(config?: OllamaConfig): Promise<LlmBackend> {
+  const resolved = config
+    ? { baseUrl: normalizeBaseUrl(config.baseUrl), model: config.model }
+    : await getOllamaConfig();
+  const snapshot = Object.freeze({ baseUrl: resolved.baseUrl, model: resolved.model });
+  const { baseUrl, model } = snapshot;
 
   let supportsVision = false;
   try {
@@ -226,8 +245,8 @@ export async function getOllamaBackend(): Promise<LlmBackend> {
     id: "ollama",
     label: "Ollama (로컬)",
     supportsVision,
-    generateText,
-    generateTextStream,
-    generateImage,
+    generateText: prompt => generateTextWithConfig(snapshot, prompt),
+    generateTextStream: (prompt, onChunk) => generateTextStreamWithConfig(snapshot, prompt, onChunk),
+    generateImage: (prompt, base64Png) => generateImageWithConfig(snapshot, prompt, base64Png),
   };
 }

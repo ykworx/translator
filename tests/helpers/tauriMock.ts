@@ -38,6 +38,10 @@ export function resetInvokeCommands() {
 }
 
 const mockInvoke = async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
+  if (cmd === "plugin:store|entries") {
+    if (commandHandlers.has(cmd)) return commandHandlers.get(cmd)!(args);
+    return Array.from(store.entries());
+  }
   if (cmd === "plugin:store|load") {
     return 1; // fake rid
   }

@@ -11,6 +11,7 @@ import {
   generateImage,
   isVisionCapableModel,
   fetchOllamaCapabilities,
+  getOllamaBackend,
 } from "../src/ollamaClient";
 
 const BASE_URL = "http://localhost:11434";
@@ -496,5 +497,92 @@ describe("generateImage — no redundant /api/show after backend is initialised"
     const result = await backend.generateImage("prompt", "imgdata");
     expect(result).toBe("ok");
     expect(showCallCount).toBe(1);
+  });
+});
+
+describe("getOllamaBackend — immutable connection", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setTauriStoreValue("ollamaBaseUrl", BASE_URL);
+    setTauriStoreValue("ollamaModel", "gemma3:4b");
+  });
+
+  function connectionFetch() {
+    return vi.fn().mockImplementation((url: string, init: RequestInit) => {
+      if (url.endsWith("/api/show")) {
+        return Promise.resolve(makeJsonResponse({ capabilities: ["completion", "vision"] }));
+      }
+      if (JSON.parse(init.body as string).stream) {
+        return Promise.resolve(new Response(makeSseStream(['data: {"choices":[{"delta":{"content":"streamed"}}]}\n\n']), { status: 200 }));
+      }
+      return Promise.resolve(makeJsonResponse({ choices: [{ message: { content: "result" } }] }));
+    });
+  }
+
+  it("uses one model and endpoint for capability discovery and all generation after settings change", async () => {
+    setTauriStoreValue("ollamaBaseUrl", "http://original.invalid:11434/");
+    setTauriStoreValue("ollamaModel", "original-vision-model");
+    const mockFetch = connectionFetch();
+    vi.stubGlobal("fetch", mockFetch);
+    const backend = await getOllamaBackend();
+    setTauriStoreValue("ollamaBaseUrl", "http://replacement.invalid:11434");
+    setTauriStoreValue("ollamaModel", "gemma2:9b");
+    expect(backend.supportsVision).toBe(true);
+    expect(await backend.generateText("text")).toBe("result");
+    const onChunk = vi.fn();
+    expect(await backend.generateTextStream("stream", onChunk)).toBe("streamed");
+    expect(onChunk).toHaveBeenCalledWith("streamed");
+    expect(await backend.generateImage("image", "png")).toBe("result");
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+    expect(mockFetch.mock.calls[0][0]).toBe("http://original.invalid:11434/api/show");
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body as string)).toEqual({ name: "original-vision-model" });
+    for (const [url, init] of mockFetch.mock.calls.slice(1)) {
+      expect(url).toBe("http://original.invalid:11434/v1/chat/completions");
+      expect(JSON.parse(init.body as string).model).toBe("original-vision-model");
+    }
+
+    await generateText("current settings");
+    expect(mockFetch.mock.calls[4][0]).toBe("http://replacement.invalid:11434/v1/chat/completions");
+    expect(JSON.parse(mockFetch.mock.calls[4][1].body as string).model).toBe("gemma2:9b");
+  });
+
+  it("copies caller config before an asynchronous capability response completes", async () => {
+    const config = { baseUrl: "http://original.invalid:11434/", model: "original-model" };
+    let finishShow: (response: Response) => void = () => {};
+    const mockFetch = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith("/api/show")) return new Promise<Response>(resolve => { finishShow = resolve; });
+      return Promise.resolve(makeJsonResponse({ choices: [{ message: { content: "result" } }] }));
+    });
+    vi.stubGlobal("fetch", mockFetch);
+    const pending = getOllamaBackend(config);
+    config.baseUrl = "http://mutated.invalid:11434";
+    config.model = "mutated-model";
+    finishShow(makeJsonResponse({ capabilities: ["completion", "vision"] }));
+    const backend = await pending;
+    await backend.generateImage("image", "png");
+    expect(backend.supportsVision).toBe(true);
+    expect(mockFetch.mock.calls[0][0]).toBe("http://original.invalid:11434/api/show");
+    expect(mockFetch.mock.calls[1][0]).toBe("http://original.invalid:11434/v1/chat/completions");
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body as string).model).toBe("original-model");
+  });
+
+  it("retries generation on the same connection after the caller and settings change", async () => {
+    const config = { baseUrl: "http://original.invalid:11434", model: "original-model" };
+    const mockFetch = vi.fn().mockResolvedValueOnce(makeJsonResponse({ capabilities: ["vision"] }))
+      .mockImplementationOnce(() => {
+        config.baseUrl = "http://mutated.invalid:11434";
+        config.model = "mutated-model";
+        setTauriStoreValue("ollamaBaseUrl", "http://replacement.invalid:11434");
+        setTauriStoreValue("ollamaModel", "replacement-model");
+        return Promise.reject(new Error("temporary transport reset"));
+      }).mockResolvedValueOnce(makeJsonResponse({ choices: [{ message: { content: "retried" } }] }));
+    vi.stubGlobal("fetch", mockFetch);
+    const backend = await getOllamaBackend(config);
+    expect(await backend.generateText("retry")).toBe("retried");
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    for (const [url, init] of mockFetch.mock.calls.slice(1)) {
+      expect(url).toBe("http://original.invalid:11434/v1/chat/completions");
+      expect(JSON.parse(init.body as string).model).toBe("original-model");
+    }
   });
 });

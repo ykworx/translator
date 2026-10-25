@@ -212,7 +212,7 @@ describe("isVisionCapableModel", () => {
   });
 });
 
-// ─── getOpenAiBackend (unchanged) ────────────────────────────────────────────
+// ─── getOpenAiBackend ──────────────────────────────────────────────────────
 
 describe("getOpenAiBackend", () => {
   afterEach(() => {
@@ -259,6 +259,72 @@ describe("getOpenAiBackend", () => {
     setTauriStoreValue("openaiModel", "gpt-4o-mini");
 
     await expect(getOpenAiBackend()).rejects.toThrow(
+      "OpenAI API 키가 설정되지 않았습니다.",
+    );
+  });
+});
+
+describe("getOpenAiBackend — immutable connection", () => {
+  afterEach(() => { resetInvokeCommands(); });
+
+  function recordGenerationCalls(): Array<{ command: string; args: Record<string, unknown> | undefined }> {
+    const received: Array<{ command: string; args: Record<string, unknown> | undefined }> = [];
+    for (const command of ["openai_generate_text", "openai_generate_text_stream", "openai_generate_image"]) {
+      registerInvokeCommand(command, args => {
+        received.push({ command, args });
+        if (command === "openai_generate_text_stream") {
+          (args?.onChunk as MockChannel<string>).onmessage?.("streamed");
+        }
+        return "result";
+      });
+    }
+    return received;
+  }
+
+  it("binds capabilities and every generation method to the settings resolved at creation", async () => {
+    setTauriStoreValue("openaiApiKey", "original-key");
+    setTauriStoreValue("openaiModel", "gpt-4o-mini");
+    const backend = await getOpenAiBackend();
+    setTauriStoreValue("openaiApiKey", "replacement-key");
+    setTauriStoreValue("openaiModel", "gpt-3.5-turbo");
+    const received = recordGenerationCalls();
+    expect(backend.supportsVision).toBe(true);
+    expect(await backend.generateText("text")).toBe("result");
+    const chunks: string[] = [];
+    expect(await backend.generateTextStream("stream", chunk => chunks.push(chunk))).toBe("result");
+    expect(chunks).toEqual(["streamed"]);
+    expect(await backend.generateImage("image", "png")).toBe("result");
+    expect(received).toHaveLength(3);
+    for (const { args } of received) {
+      expect(args).toMatchObject({ apiKey: "original-key", model: "gpt-4o-mini" });
+    }
+
+    // Direct exports retain their per-operation settings lookup.
+    await generateText("current settings");
+    expect(received[3].args).toMatchObject({ apiKey: "replacement-key", model: "gpt-3.5-turbo" });
+  });
+
+  it("copies an explicit config synchronously instead of rereading settings or the caller's object", async () => {
+    setTauriStoreValue("openaiApiKey", "");
+    const config = { apiKey: "explicit-key", model: "gpt-4o-mini" };
+    const pending = getOpenAiBackend(config);
+    config.apiKey = "mutated-key";
+    config.model = "gpt-3.5-turbo";
+    const backend = await pending;
+    const received = recordGenerationCalls();
+    expect(backend.supportsVision).toBe(true);
+    await backend.generateText("text");
+    await backend.generateTextStream("stream", () => {});
+    await backend.generateImage("image", "png");
+    expect(received).toHaveLength(3);
+    for (const { args } of received) {
+      expect(args).toMatchObject({ apiKey: "explicit-key", model: "gpt-4o-mini" });
+    }
+  });
+
+  it("rejects an explicitly missing API key rather than borrowing a configured credential", async () => {
+    setTauriStoreValue("openaiApiKey", "unrelated-configured-key");
+    await expect(getOpenAiBackend({ apiKey: "", model: "gpt-4o-mini" })).rejects.toThrow(
       "OpenAI API 키가 설정되지 않았습니다.",
     );
   });
