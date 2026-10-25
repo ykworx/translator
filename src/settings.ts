@@ -129,7 +129,7 @@ ollamaDetectBtn.addEventListener("click", async () => {
       populateOllamaModels(result.models);
       ollamaStatus.textContent = result.models.length
         ? `모델 ${result.models.length}개를 찾았습니다. 목록에서 선택하거나 모델 이름을 직접 입력하세요. 입력한 모델은 유지됩니다.`
-        : "서버에 연결했지만 설치된 모델이 없습니다. 모델을 준비한 뒤 다시 조회하거나 사용할 모델 이름을 직접 입력하세요.";
+        : "서버에 연결했지만 모델 목록이 비어 있습니다. 모델을 준비한 뒤 다시 조회하거나 사용할 모델 이름을 직접 입력하세요.";
     } else {
       ollamaStatus.textContent = result.error ?? "Ollama 서버에 연결할 수 없습니다.";
     }
@@ -614,7 +614,7 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
   restoreSelectedValue(domainHintSelect, await getSetting(SETTINGS_KEYS.domainHint, DEFAULTS.domainHint), "저장된 사용자 힌트");
   whisperModelSelect.value = await getSetting(SETTINGS_KEYS.whisperModel, DEFAULTS.whisperModel);
   captureModeSelect.value = savedCaptureMode;
-  modelSelect.value = await getSetting(SETTINGS_KEYS.model, DEFAULTS.model);
+  restoreSelectedValue(modelSelect, await getSetting(SETTINGS_KEYS.model, DEFAULTS.model), "저장된 사용자 모델");
 
   selectShortcutStr = await getSetting(SETTINGS_KEYS.selectShortcut, DEFAULTS.selectShortcut);
   clipboardShortcutStr = await getSetting(SETTINGS_KEYS.clipboardShortcut, DEFAULTS.clipboardShortcut);
@@ -641,7 +641,7 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
   ollamaBaseurlInput.value = savedOllamaUrl;
   ollamaModelInput.value = savedOllamaModel;
 
-  openaiModelSelect.value = await getSetting(SETTINGS_KEYS.openaiModel, DEFAULTS.openaiModel);
+  restoreSelectedValue(openaiModelSelect, await getSetting(SETTINGS_KEYS.openaiModel, DEFAULTS.openaiModel), "저장된 사용자 모델");
   dictationShortcutSummary.textContent = shortcutDisplay(dictationShortcutStr);
   settingsReady = true;
   initiallyLoadingControls.forEach(control => { control.disabled = false; });

@@ -107,6 +107,21 @@ describe("dictation settings", () => {
     expect(invoke.mock.calls.some(([command]) => command === "settings_set")).toBe(false);
   });
 
+  it("preserves saved custom cloud models when saving Ollama or voice preferences", async () => {
+    store.set("llmBackendId", "ollama");
+    store.set("model", "gemini-custom-saved");
+    store.set("openaiModel", "gpt-custom-saved");
+    store.set("ollamaModel", "custom-local:latest");
+    await boot();
+    expect(select("model").value).toBe("gemini-custom-saved");
+    expect(select("openai-model").value).toBe("gpt-custom-saved");
+    button("btn-save").click();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(store.get("model")).toBe("gemini-custom-saved");
+    expect(store.get("openaiModel")).toBe("gpt-custom-saved");
+    expect(store.get("ollamaModel")).toBe("custom-local:latest");
+  });
+
   async function boot() {
     await import("../src/settings");
     await vi.waitFor(() => expect(button("btn-save").disabled).toBe(false));
@@ -715,7 +730,7 @@ describe("dictation settings", () => {
   it("explains an empty model list without filling or changing the model", async () => {
     localSettings(); vi.stubGlobal("fetch", vi.fn().mockResolvedValue(tags([])));
     await boot(); button("ollama-detect-btn").click();
-    await vi.waitFor(() => expect(lookupStatus()).toContain("설치된 모델이 없습니다"));
+    await vi.waitFor(() => expect(lookupStatus()).toContain("모델 목록이 비어 있습니다"));
     expect(modelInput().value).toBe("my/custom-model:latest");
     expect(modelOptions()).toEqual([]);
   });
