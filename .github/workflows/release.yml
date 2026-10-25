@@ -1,0 +1,205 @@
+name: macOS release
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'scripts/check_release_version.py'
+      - 'tests/release/**'
+      - 'src-tauri/**'
+      - 'src/**'
+      - 'package*.json'
+      - 'vite.config.*'
+      - 'tsconfig.json'
+      - '*.html'
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+      - run: python3 -B -m unittest discover -s tests/release
+      - name: Check app versions and release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python3 scripts/check_release_version.py --tag "$RELEASE_TAG"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  build-only:
+    if: github.event_name != 'push'
+    needs: validate
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - run: rustup target add aarch64-apple-darwin
+      - run: cmake --version
+      - run: npm ci
+      - run: bash tests/run_native_dictation_tests.sh
+      - run: npm run build
+      - run: cargo test --release --target aarch64-apple-darwin --locked --manifest-path src-tauri/Cargo.toml --lib
+      - name: Build ad-hoc signed app without release credentials
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+        with:
+          args: --ci --target aarch64-apple-darwin --bundles app,dmg --config "${{ github.workspace }}/src-tauri/tauri.ci.conf.json" -- --locked
+          uploadUpdaterJson: false
+          uploadWorkflowArtifacts: true
+          workflowArtifactNamePattern: 'validation-[name]-[arch]-[mode]-[bundle]'
+      - run: codesign --verify --deep --strict src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Transrator.app
+
+  draft-release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: validate
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: Require distribution signing and notarization credentials
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          python3 - <<'PY'
+          import os
+          required = ("APPLE_CERTIFICATE", "APPLE_CERTIFICATE_PASSWORD", "APPLE_SIGNING_IDENTITY",
+                      "APPLE_ID", "APPLE_PASSWORD", "APPLE_TEAM_ID")
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit("Missing release secrets: " + ", ".join(missing))
+          if not os.environ["APPLE_SIGNING_IDENTITY"].startswith("Developer ID Application: "):
+              raise SystemExit("APPLE_SIGNING_IDENTITY must be a Developer ID Application identity")
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+          fetch-depth: 0
+      - name: Require a tag pointing to reviewed main history
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - run: rustup target add aarch64-apple-darwin
+      - run: cmake --version
+      - run: npm ci
+      - run: bash tests/run_native_dictation_tests.sh
+      - run: npm run build
+      - run: cargo test --release --target aarch64-apple-darwin --locked --manifest-path src-tauri/Cargo.toml --lib
+      - name: Override the local signing identity with the distribution identity
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          config = {"bundle": {"macOS": {
+              "signingIdentity": os.environ["APPLE_SIGNING_IDENTITY"],
+              "entitlements": str(Path(os.environ["GITHUB_WORKSPACE"]) / "src-tauri/Entitlements.release.plist"),
+              "hardenedRuntime": True,
+          }}}
+          (Path(os.environ["RUNNER_TEMP"]) / "transrator-release-config.json").write_text(json.dumps(config))
+          PY
+      - name: Build Developer ID signed and notarized DMG
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          args: --ci --target aarch64-apple-darwin --bundles dmg --config "${{ runner.temp }}/transrator-release-config.json" -- --locked
+          uploadUpdaterJson: false
+      - name: Notarize and staple the DMG container
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          shopt -s nullglob
+          dmgs=(src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          test "${#dmgs[@]}" -eq 1
+          xcrun notarytool submit "${dmgs[0]}" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "${dmgs[0]}"
+          xcrun stapler validate "${dmgs[0]}"
+      - name: Verify app signature, notarization ticket and DMG signature
+        run: |
+          app="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Transrator.app"
+          codesign --verify --deep --strict "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          shopt -s nullglob
+          dmgs=(src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          test "${#dmgs[@]}" -eq 1
+          codesign --verify --strict "${dmgs[0]}"
+      - name: Create or refresh a draft only after verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          tag = os.environ["RELEASE_TAG"]
+          files = list(Path("src-tauri/target/aarch64-apple-darwin/release/bundle/dmg").glob("*.dmg"))
+          if len(files) != 1:
+              raise SystemExit("Expected exactly one DMG")
+          existing = subprocess.run(["gh", "release", "view", tag, "--json", "isDraft"],
+                                    capture_output=True, text=True)
+          if existing.returncode == 0:
+              if json.loads(existing.stdout)["isDraft"] is not True:
+                  raise SystemExit("Refusing to modify a published release")
+          else:
+              subprocess.run(["gh", "release", "create", tag, "--verify-tag", "--draft",
+                              "--title", "Transrator " + tag, "--generate-notes"], check=True)
+          digest = hashlib.sha256(files[0].read_bytes()).hexdigest()
+          checksums = files[0].parent / "SHA256SUMS.txt"
+          checksums.write_text(digest + "  " + files[0].name + "\n")
+          subprocess.run(["gh", "release", "upload", tag, str(files[0]), str(checksums),
+                          "--clobber"], check=True)
+          print("Draft prepared; review the DMG and notes before publishing.")
+          PY
+
