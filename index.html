@@ -10,6 +10,7 @@
   <!-- Titlebar drag region -->
   <div id="titlebar" data-tauri-drag-region>
     <span class="title">팝업 번역기</span>
+    <button id="btn-settings" type="button" class="toolbar-btn" aria-label="설정 열기" title="설정 열기 (⌘,)">⚙ 설정</button>
   </div>
 
   <!-- Chat area -->
@@ -18,7 +19,7 @@
   <!-- Bottom area -->
   <div id="bottom-area">
     <div id="input-area">
-      <textarea id="input-field" aria-label="번역할 내용 입력" placeholder="번역할 내용을 입력하세요" rows="1"></textarea>
+      <textarea id="input-field" aria-label="번역할 내용 입력" aria-describedby="input-hint" placeholder="번역할 내용을 입력하세요" rows="1"></textarea>
       <div id="input-toolbar">
         <div id="toolbar-left">
           <button id="btn-mic" class="toolbar-btn" title="음성 입력">🎙 음성</button>
@@ -36,6 +37,11 @@
           </select>
         </div>
       </div>
+      <div id="input-footer">
+        <span id="input-hint">Enter로 번역 · Shift+Enter로 줄바꿈</span>
+        <button id="btn-translate" type="button" aria-busy="false" disabled>번역</button>
+      </div>
+      <div id="settings-access-status" role="status" aria-live="polite"></div>
       <div id="speech-status" aria-live="polite"></div>
       <div id="zoom-status" aria-live="polite"></div>
     </div>

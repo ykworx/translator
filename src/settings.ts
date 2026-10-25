@@ -196,8 +196,8 @@ function endSettingsOperation(): void {
 }
 
 const credentialFields = {
-  "gemini-native": { input: apiKeyInput, prefix: "gemini" },
-  openai: { input: openaiApiKeyInput, prefix: "openai" },
+  "gemini-native": { input: apiKeyInput, prefix: "gemini", label: "Gemini", section: geminiSection },
+  openai: { input: openaiApiKeyInput, prefix: "openai", label: "OpenAI", section: openaiSection },
 };
 const credentialStates: Record<CloudProviderId, { status: CredentialStatus | null; busy: boolean; confirmingDelete: boolean }> = {
   "gemini-native": { status: null, busy: false, confirmingDelete: false },
@@ -243,6 +243,15 @@ async function refreshCredential(providerId: CloudProviderId): Promise<void> {
   }
 }
 
+async function notifyConnectionSettingsChanged(): Promise<void> {
+  try {
+    // Receivers re-read safe state; never put credentials or form values on events.
+    await emit("connection-settings-changed");
+  } catch (error) {
+    console.warn("Could not notify connection settings change:", error);
+  }
+}
+
 async function changeCredential(providerId: CloudProviderId, remove: boolean): Promise<void> {
   const state = credentialStates[providerId];
   const controls = credentialControls(providerId);
@@ -265,8 +274,10 @@ async function changeCredential(providerId: CloudProviderId, remove: boolean): P
     state.status = remove ? await deleteProviderCredential(providerId, state.status.revision)
       : await saveProviderCredential(providerId, value, state.status.revision);
     if (!remove && controls.input.value.trim() === value) controls.input.value = "";
-    controls.status.textContent = remove ? "Keychain에서 API 키를 삭제했습니다." : "Keychain에 API 키를 저장했습니다. 일반 설정과 별도로 적용됐습니다.";
+    controls.status.textContent = remove ? "Keychain에서 API 키를 삭제했습니다. 아래 취소로 되돌릴 수 없습니다."
+      : "Keychain에 API 키를 저장했습니다. 공급자·모델 선택은 아래 연결·설정 저장으로 적용하세요. 키 저장은 취소로 되돌릴 수 없습니다.";
     markChanged();
+    await notifyConnectionSettingsChanged();
   } catch (error) {
     controls.status.textContent = `API 키 변경 결과를 확인하지 못했습니다. 입력을 유지했습니다. 키 상태를 다시 확인한 뒤 시도해주세요: ${error}`;
   } finally {
@@ -284,7 +295,7 @@ for (const providerId of ["gemini-native", "openai"] as const) {
   controls.remove.addEventListener("click", () => void changeCredential(providerId, true));
   controls.input.addEventListener("input", () => {
     credentialStates[providerId].confirmingDelete = false;
-    controls.status.textContent = controls.input.value.trim() ? "새 API 키를 입력했습니다. API 키 저장 버튼을 눌러 적용하세요." : "입력칸을 비워도 저장된 키는 유지됩니다.";
+    controls.status.textContent = controls.input.value.trim() ? "새 API 키를 입력했습니다. 키만 즉시 저장 버튼을 눌러 적용하세요." : "입력칸을 비워도 저장된 키는 유지됩니다.";
     updateCredentialControls(providerId);
   });
 }
@@ -699,9 +710,13 @@ btnSave.addEventListener("click", async () => {
       return;
     }
   }
-  if (apiKeyInput.value.trim() || openaiApiKeyInput.value.trim()) {
-    setStatus("입력한 API 키는 해당 API 키 저장 버튼으로 먼저 저장하거나 입력칸을 비워주세요.", true);
+  const pendingKeys = Object.values(credentialFields).filter(field => field.input.value.trim());
+  if (pendingKeys.length) {
+    setStatus(`${pendingKeys.map(field => field.label).join(" · ")}에 미저장 API 키가 있습니다. 키만 즉시 저장 버튼을 누르거나 입력칸을 비워주세요. 연결 선택은 유지됩니다.`, true);
     activateTab("api");
+    // Reveal the draft without selecting a different active provider.
+    pendingKeys.forEach(field => field.section.classList.remove("hidden"));
+    pendingKeys[0].input.focus();
     return;
   }
   const values: Array<[string, unknown]> = [
@@ -781,6 +796,7 @@ btnSave.addEventListener("click", async () => {
     updateSaveButton();
     return;
   }
+  await notifyConnectionSettingsChanged();
   savedFingerprint = formFingerprint();
   setStatus("설정을 저장했습니다.");
   isSaving = false;

@@ -208,6 +208,7 @@ describe("dictation settings", () => {
     expect(destroy).not.toHaveBeenCalled();
     expect([...store]).toEqual([]);
     expect(button("btn-save").disabled).toBe(false);
+    expect(emit).not.toHaveBeenCalledWith("connection-settings-changed");
   });
 
   it("rolls back partial persistence and restores previous shortcuts after a disk failure", async () => {
@@ -549,6 +550,59 @@ describe("dictation settings", () => {
     return input;
   }
 
+  it("reveals an unsaved key without changing the selected Ollama connection", async () => {
+    await boot();
+    await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
+    const input = typeKey("api-key", "fake-draft-key");
+    const ollama = document.querySelector<HTMLInputElement>('input[name="llm-backend"][value="ollama"]')!;
+    ollama.click();
+    expect(document.getElementById("gemini-section")!.classList.contains("hidden")).toBe(true);
+    button("btn-save").click();
+    expect(status()).toContain("Gemini에 미저장 API 키");
+    expect(document.getElementById("gemini-section")!.classList.contains("hidden")).toBe(false);
+    expect(document.getElementById("ollama-section")!.classList.contains("hidden")).toBe(false);
+    expect(document.activeElement).toBe(input);
+    expect(ollama.checked).toBe(true);
+    expect(invoke.mock.calls.some(([command]) => command === "settings_set" || command === "save_provider_credential")).toBe(false);
+    expect(emit).not.toHaveBeenCalledWith("connection-settings-changed");
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("keeps committed credential changes when the refresh event cannot be delivered", async () => {
+    await boot();
+    await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    emit.mockRejectedValue(new Error("event unavailable"));
+    const input = typeKey("api-key", "fake-replacement");
+    button("gemini-key-save").click();
+    await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
+    expect(input.value).toBe("");
+    expect(credentials.get("gemini-native")?.configured).toBe(true);
+    expect(document.getElementById("gemini-key-status")!.textContent).toContain("Keychain에 API 키를 저장했습니다");
+    expect(warn).toHaveBeenCalled();
+    button("gemini-key-delete").click();
+    button("gemini-key-delete").click();
+    await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
+    expect(credentials.get("gemini-native")?.configured).toBe(false);
+    expect(document.getElementById("gemini-key-status")!.textContent).toContain("삭제했습니다");
+    expect(invoke.mock.calls.filter(([command]) => command === "save_provider_credential")).toHaveLength(1);
+    expect(invoke.mock.calls.filter(([command]) => command === "delete_provider_credential")).toHaveLength(1);
+  });
+
+  it("keeps saved settings and closes after an advisory connection event failure", async () => {
+    await boot();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    emit.mockImplementation(async (event: string) => {
+      if (event === "connection-settings-changed") throw new Error("event unavailable");
+    });
+    select("dictation-locale").value = "ja-JP";
+    button("btn-save").click();
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
+    expect(store.get("dictationLocale")).toBe("ja-JP");
+    expect(emit).toHaveBeenCalledWith("connection-settings-changed");
+    expect(invoke.mock.calls.some(([command]) => command === "settings_delete")).toBe(false);
+  });
+
   it("never reads, prefills, writes or rolls back plaintext keys through ordinary settings", async () => {
     store.set("apiKey", "private-legacy-key");
     store.set("openaiApiKey", "private-other-key");
@@ -570,11 +624,13 @@ describe("dictation settings", () => {
     expect(invoke.mock.calls.some(([command]) => command === "save_provider_credential")).toBe(false);
     button("btn-save").click();
     expect(destroy).not.toHaveBeenCalled();
-    expect(status()).toContain("API 키 저장 버튼");
+    expect(status()).toContain("키만 즉시 저장 버튼");
     button("gemini-key-save").click();
     await vi.waitFor(() => expect(input.value).toBe(""));
     expect(invoke).toHaveBeenCalledWith("save_provider_credential", { providerId: "gemini-native", apiKey: "fake-new-key", expectedRevision: "original" });
     expect(document.getElementById("gemini-key-status")!.textContent).toContain("Keychain에 API 키를 저장");
+    expect(emit).toHaveBeenCalledWith("connection-settings-changed");
+    expect(emit.mock.calls.every(call => !JSON.stringify(call).includes("fake-new-key"))).toBe(true);
     button("btn-save").click();
     await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(invoke.mock.calls.filter(([command]) => command === "save_provider_credential")).toHaveLength(1);
@@ -593,6 +649,9 @@ describe("dictation settings", () => {
     button("gemini-key-delete").click();
     await vi.waitFor(() => expect(document.getElementById("gemini-key-status")!.textContent).toContain("삭제했습니다"));
     expect(invoke).toHaveBeenCalledWith("delete_provider_credential", { providerId: "gemini-native", expectedRevision: revision });
+    expect(emit.mock.calls.filter(([event]) => event === "connection-settings-changed")).toEqual([
+      ["connection-settings-changed"], ["connection-settings-changed"],
+    ]);
     button("btn-save").click();
     await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
     expect(invoke.mock.calls.filter(([command]) => command === "delete_provider_credential")).toHaveLength(1);
@@ -607,6 +666,7 @@ describe("dictation settings", () => {
     button("gemini-key-save").click();
     await vi.waitFor(() => expect(document.getElementById("gemini-key-status")!.textContent).toContain("입력을 유지"));
     expect(input.value).toBe("replacement");
+    expect(emit).not.toHaveBeenCalledWith("connection-settings-changed");
     expect(destroy).not.toHaveBeenCalled();
     button("gemini-key-refresh").click();
     await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));

@@ -24,6 +24,35 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::Shortcut;
 
+static SETTINGS_WINDOW_LOCK: Mutex<()> = Mutex::new(());
+
+fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
+    // Menu, tray and webview requests can arrive on different async workers.
+    let _creation = SETTINGS_WINDOW_LOCK.lock().map_err(|_| "설정 창 상태를 확인하지 못했습니다.")?;
+    if let Some(win) = app.get_webview_window("settings") {
+        win.show().map_err(|e| e.to_string())?;
+        return win.set_focus().map_err(|e| e.to_string());
+    }
+    let win = tauri::WebviewWindowBuilder::new(app, "settings", tauri::WebviewUrl::App("settings.html".into()))
+        .title("설정").inner_size(480.0, 520.0)
+        .resizable(false).minimizable(false).maximizable(false)
+        .build().map_err(|e| e.to_string())?;
+    center_window_on_cursor(&win, 480.0, 520.0);
+    win.set_focus().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
+    show_settings_window(&app)
+}
+
+fn request_settings_window(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = open_settings(app).await { error!("Failed to open settings: {e}"); }
+    });
+}
+
 #[tauri::command]
 fn open_handwriting_overlay(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("handwriting-overlay") {
@@ -131,6 +160,7 @@ pub fn run() {
             parse_default_shortcut(dictation::DEFAULT_DICTATION_SHORTCUT, "dictation"),
         )))
         .invoke_handler(tauri::generate_handler![
+            open_settings,
             build_info::get_build_info,
             open_handwriting_overlay,
             dictation::toggle_global_dictation,
@@ -186,6 +216,15 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            {
+                let menu = Menu::default(app.handle())?;
+                if let Some(app_menu) = menu.items()?.first().and_then(|item| item.as_submenu()) {
+                    app_menu.insert(&MenuItem::with_id(app, "app-settings", "설정…", true, Some("CmdOrCtrl+,"))?, 2)?;
+                    app_menu.insert(&PredefinedMenuItem::separator(app)?, 3)?;
+                }
+                app.set_menu(menu)?;
+            }
             // Native-only Store: block plaintext credential IPC and auto-save.
             settings_store::store(app.handle()).map_err(std::io::Error::other)?;
             // Tray menu
@@ -240,31 +279,7 @@ pub fn run() {
                     app.exit(0);
                 }
                 "settings" => {
-                    // Reuse existing settings window if open
-                    if let Some(win) = app.get_webview_window("settings") {
-                        win.show().ok();
-                        win.set_focus().ok();
-                        return;
-                    }
-                    // Create a new settings window
-                    match tauri::WebviewWindowBuilder::new(
-                        app,
-                        "settings",
-                        tauri::WebviewUrl::App("settings.html".into()),
-                    )
-                    .title("설정")
-                    .inner_size(480.0, 520.0)
-                    .resizable(false)
-                    .minimizable(false)
-                    .maximizable(false)
-                    .build()
-                    {
-                        Ok(win) => {
-                            center_window_on_cursor(&win, 480.0, 520.0);
-                            win.set_focus().ok();
-                        }
-                        Err(e) => error!("Failed to create settings window: {e}"),
-                    }
+                    request_settings_window(app);
                 }
                 "about" => {
                     #[cfg(target_os = "macos")]
@@ -333,6 +348,9 @@ pub fn run() {
 
             Ok(())
         })
+        .on_menu_event(|app, event| {
+            if event.id.as_ref() == "app-settings" { request_settings_window(app); }
+        })
         .on_window_event(|window, event| {
             if window.label() == "settings" && matches!(event, WindowEvent::Destroyed) {
                 if let Err(error) = shortcut::restore_after_settings_destroyed(window.app_handle()) {
@@ -357,6 +375,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Failed to build Tauri application")
         .run(|app_handle, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(settings) = app_handle.get_webview_window("settings").filter(|win| win.is_visible().unwrap_or(false)) {
+                    settings.set_focus().ok();
+                } else if let Some(main) = app_handle.get_webview_window("main") {
+                    show_window_centered(&main);
+                }
+            }
             if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
                 settings_store::prepare_exit(app_handle);
             }

@@ -8,6 +8,24 @@ beforeEach(() => {
 afterEach(() => { resetInvokeCommands(); });
 
 describe("provider-aware credential onboarding", () => {
+  it("finishes an inline save after a connection refresh arrives during the save", async () => {
+    let finish!: () => void;
+    registerInvokeCommand("save_provider_credential", () => new Promise(resolve => { finish = () => {
+      setNativeCredential("gemini-native", "fake-saved-key");
+      resolve({ configured: true, revision: "new" });
+    }; }));
+    const { showEmptyState } = await import("../src/ui");
+    await showEmptyState();
+    const input = document.getElementById("inline-api-key") as HTMLInputElement;
+    input.value = "fake-save-draft";
+    document.querySelector<HTMLButtonElement>("#inline-api-save")!.click();
+    await vi.waitFor(() => expect(input.disabled).toBe(true));
+    await showEmptyState();
+    expect(document.getElementById("inline-api-key")).toBe(input);
+    finish();
+    await vi.waitFor(() => expect(document.getElementById("inline-api-key")).toBeNull());
+    expect(document.getElementById("chat")!.textContent).toContain("텍스트를 선택");
+  });
   it("does not prompt for a Gemini key or read Keychain when Ollama is selected", async () => {
     setTauriStoreValue("llmBackendId", "ollama");
     const status = vi.fn(() => { throw new Error("Keychain 잠김"); });
