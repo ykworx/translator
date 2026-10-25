@@ -11,6 +11,7 @@
 | 재사용·배포 조건 | [MIT 라이선스](../LICENSE) |
 | 외부 코드·모델의 출처와 고지 | [외부 구성 요소](../THIRD_PARTY_NOTICES.md) |
 | Hermes 모델 연결 도입 계획 | [이슈 #6](https://github.com/ykworx/translator/issues/6) |
+| Keychain 키 저장·이전·복구와 지원 범위 | [연결·인증](CONNECTIONS.md) |
 | Ollama 설정과 로컬 전용 사용 | [로컬 모델 연결](LOCAL_MODELS.md) |
 
 루트의 기존 설계·조사 보고서는 작성 당시의 기록이며, 현재 사용·개발·배포 안내는 위 문서를 기준으로 합니다. 음성 인식 벤치마크 도구는 [tests 안내](../tests/README.md)도 참고하세요.

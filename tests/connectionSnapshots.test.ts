@@ -73,10 +73,11 @@ describe("connection snapshot routing", () => {
     expect(current).not.toBe(old);
     await old.generateText("원래 요청");
     await current.generateText("새 요청");
-    expect(invoke.mock.calls.map(call => call[0])).toEqual([
-      expect.objectContaining({ apiKey: "fake-original-key", model: "gpt-4o-mini" }),
-      expect.objectContaining({ apiKey: "fake-replacement-key", model: "gpt-4o-mini" }),
-    ]);
+    expect(invoke.mock.calls[0][0]).toEqual({ runtimeId: expect.any(String), prompt: "원래 요청" });
+    expect(invoke.mock.calls[1][0]).toEqual({ runtimeId: expect.any(String), prompt: "새 요청" });
+    expect(invoke.mock.calls[0][0]?.runtimeId).not.toBe(invoke.mock.calls[1][0]?.runtimeId);
+    expect(JSON.stringify(invoke.mock.calls)).not.toContain("fake-original-key");
+    expect(JSON.stringify(invoke.mock.calls)).not.toContain("fake-replacement-key");
     setTauriStoreValue("openaiApiKey", "");
     await expect(getActiveBackend()).rejects.toThrow();
   });
@@ -130,7 +131,7 @@ describe("connection snapshot routing", () => {
     localConnection();
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
-    registerInvokeCommand("plugin:store|entries", () => { throw new Error("disk unavailable"); });
+    registerInvokeCommand("capture_connection", () => { throw new Error("disk unavailable"); });
     await expect(getActiveBackend()).rejects.toThrow();
     expect(fetch).not.toHaveBeenCalled();
   });

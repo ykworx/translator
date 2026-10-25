@@ -61,7 +61,7 @@ npm run dev
 
 API 번역을 실제로 실행하려면 해당 공급자의 키 또는 실행 중인 Ollama 서버가 필요합니다. 기본 테스트는 모의 응답을 사용합니다. Whisper 음성을 직접 확인할 때는 설정에서 모델을 다운로드하고, 기능에 필요한 macOS 권한을 허용합니다. 모델·마이크·권한과 실앱 점검 순서는 [받아쓰기 안내](GLOBAL_DICTATION.md)에 있습니다.
 
-설정과 API 키는 현재 앱 데이터 디렉토리의 `settings.json`에 저장되며 Keychain 저장은 아직 구현되어 있지 않습니다. 개발 중 생성한 설정 파일과 실제 인증값을 저장소나 재현 자료에 추가하지 마세요.
+일반 설정은 앱 데이터 디렉토리의 `settings.json`, macOS API 키는 Keychain, 인증 참조는 `auth-profiles.json`에 저장합니다. 기존 평문 키는 해당 cloud 연결의 상태 확인 또는 첫 사용 시 검증 후 이전합니다. 실패·지원 범위와 실제 서명 검증은 [연결·인증 안내](CONNECTIONS.md)를 참고하세요. 개발 중 생성한 설정 파일과 실제 인증값을 저장소나 재현 자료에 추가하지 마세요.
 
 ## 빌드와 서명
 
@@ -130,7 +130,7 @@ src/
   api.ts / prompts.ts     번역·요약·필기 인식 작업과 프롬프트
   llmBackend.ts           백엔드 선택과 snapshot 기준 캐시
   providerRegistry.ts     공급자별 protocol·인증 종류·factory
-  connectionProfiles.ts   기존 설정의 읽기 전용 프로필과 runtime snapshot
+  connectionProfiles.ts   native snapshot과 인증 상태·저장·삭제 IPC
   *Client.ts              Gemini·OpenAI·Ollama 요청과 스트림 처리
   clipboardTranslate.ts   클립보드 번역 흐름
   ui.ts / styles.css      대화 렌더링, 표 처리, 테마
@@ -144,14 +144,20 @@ src-tauri/
   src/dictation.rs        전역 받아쓰기 네이티브 조정
   src/model_manager.rs    Whisper 다운로드·로드·유휴 해제
   src/openai.rs           Rust의 OpenAI HTTP·스트리밍
+  src/gemini.rs           Rust의 Gemini HTTP·재시도·스트리밍
+  src/cloud_http.rs       redirect 차단과 비밀값 없는 오류
+  src/connections.rs      Keychain·인증 참조·native runtime
+  src/settings_store.rs   일반 설정 IPC와 atomic 파일 저장
   swift/                  음성 캡처, Whisper·VAD, 받아쓰기 패널과 입력
   build.rs                Whisper·RNNoise·Swift 빌드와 연결
   vendor/                 네이티브 서브모듈과 VAD 리소스
 tests/                    프런트엔드·네이티브 검사와 음성 fixture
 ```
 
-프런트엔드는 프레임워크 없이 DOM을 조작하고 CSS 변수로 테마를 적용합니다. 명령은 Tauri `invoke`, 실시간 알림은 이벤트와 IPC Channel로 주고받습니다. Gemini·Ollama HTTP는 프런트엔드에서, OpenAI HTTP는 Rust에서 실행합니다.
+프런트엔드는 프레임워크 없이 DOM을 조작하고 CSS 변수로 테마를 적용합니다. 명령은 Tauri `invoke`, 실시간 알림은 이벤트와 IPC Channel로 주고받습니다. Ollama HTTP는 프런트엔드에서, Gemini·OpenAI HTTP는 Rust에서 실행합니다. 저장된 API 키는 프런트엔드에 반환하지 않습니다.
 
-현재 ConnectionProfile은 기존 설정을 한 번의 `store:entries` 호출로 읽어 투영합니다. 별도 프로필 레코드를 저장해 기존 설정 UI와 경쟁하지 않으며, capability 조회와 텍스트·스트림·이미지 생성은 동일한 고정 설정을 사용합니다. 공개 프로필에는 인증 참조만 있고 원문 키는 runtime의 비공개 값으로 분리합니다. API 키의 영속 저장 위치는 아직 기존 Store이며 Keychain 이전은 후속 단계입니다. 로컬 LLM은 Ollama만 지원하며, 설정 방법과 cloud 구분은 [로컬 모델 안내](LOCAL_MODELS.md)에 정리했습니다.
+ConnectionProfile은 Rust의 `capture_connection`에서 일반 설정과 인증 상태를 캡처합니다. 모델·endpoint·키를 고정한 native runtime은 불투명한 ID로만 참조하며, 텍스트·스트림·이미지 생성에서 같은 snapshot을 사용합니다. Keychain 접근은 blocking worker에서 실행하고, Ollama는 인증 mutex·metadata·Keychain을 사용하지 않습니다. 런타임 ID는 프로세스 안에서만 유효하며 최대 128개를 보관합니다. 명시적 키 삭제는 해당 provider의 runtime을 무효화하지만 이미 시작한 요청을 취소하지는 않습니다.
+
+일반 설정 IPC는 고정 파일과 비밀값을 제외한 허용 키 목록만 제공합니다. Store 플러그인은 네이티브 내부에서만 사용하며 generic Store IPC 권한은 노출하지 않습니다. 설정 파일과 인증 metadata는 임시 파일 쓰기·동기화·rename 방식으로 저장합니다. 여러 일반 설정 키를 하나의 transaction으로 저장하거나 복수 연결 프로필을 관리하는 UI는 아직 구현하지 않았습니다. 로컬 LLM은 Ollama만 지원하며, 설정 방법과 cloud 구분은 [로컬 모델 안내](LOCAL_MODELS.md)에 정리했습니다.
 
 전역 받아쓰기는 숨겨진 webview의 polling에 의존하지 않는 네이티브 세션입니다. 마이크 입력·전역 받아쓰기·앱 자막은 Whisper 엔진을 공유합니다. 취소된 세션의 결과가 새 세션으로 전달되지 않도록 generation과 소유권 검사를 유지하며, 모델의 추론·교체·해제를 동시에 수행하지 않습니다. 자세한 코드 작업 규칙은 [AGENTS.md](../AGENTS.md)에 있습니다.

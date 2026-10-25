@@ -1,6 +1,8 @@
+use crate::cloud_http;
+use crate::connections::{resolve_runtime, ConnectionManager};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
-use tauri::ipc::Channel;
+use tauri::{ipc::Channel, State};
 
 const OPENAI_API_URL: &str = "https://api.openai.com/v1/chat/completions";
 
@@ -79,12 +81,15 @@ async fn post_json_with_retry(
     loop {
         let resp = client
             .post(OPENAI_API_URL)
-            .header("Authorization", format!("Bearer {api_key}"))
+            .header(
+                "Authorization",
+                cloud_http::sensitive_header(&format!("Bearer {api_key}"))?,
+            )
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("OpenAI 요청 실패: {e}"))?;
+            .map_err(|e| cloud_http::network_error("OpenAI", e))?;
 
         let status = resp.status();
         if status.is_success() {
@@ -100,7 +105,12 @@ async fn post_json_with_retry(
         let should_retry = is_retryable(status.as_u16()) && attempt < MAX_RETRY_ATTEMPTS;
         if !should_retry {
             let text = resp.text().await.unwrap_or_default();
-            return Err(format!("OpenAI API error: {} {}", status.as_u16(), text));
+            return Err(cloud_http::api_error(
+                "OpenAI",
+                status.as_u16(),
+                &text,
+                api_key,
+            ));
         }
 
         let backoff_ms = retry_after_ms
@@ -116,7 +126,7 @@ async fn post_json_with_retry(
 /// `buffer`. Splitting on the newline byte (0x0A, which never appears inside a
 /// UTF-8 multi-byte sequence) means characters split across chunk boundaries —
 /// e.g. Korean/Japanese — are reassembled before decoding and never corrupted.
-fn drain_complete_lines(buffer: &mut Vec<u8>) -> Vec<String> {
+pub(crate) fn drain_complete_lines(buffer: &mut Vec<u8>) -> Vec<String> {
     let mut lines = Vec::new();
     while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
         let line_bytes: Vec<u8> = buffer.drain(..=pos).collect();
@@ -138,15 +148,14 @@ fn extract_message_content(data: &Value) -> String {
 
 #[tauri::command]
 pub async fn openai_generate_text(
-    api_key: String,
-    model: String,
+    state: State<'_, ConnectionManager>,
+    runtime_id: String,
     prompt: String,
 ) -> Result<String, String> {
-    if api_key.is_empty() {
-        return Err("OpenAI API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.".into());
-    }
-
-    let client = reqwest::Client::new();
+    let runtime = resolve_runtime(state.inner(), &runtime_id, "openai")?;
+    let api_key = runtime.api_key;
+    let model = runtime.model;
+    let client = cloud_http::client()?;
     let body = json!({
         "model": model,
         "messages": [{ "role": "user", "content": prompt }],
@@ -157,22 +166,21 @@ pub async fn openai_generate_text(
     let data: Value = resp
         .json()
         .await
-        .map_err(|e| format!("OpenAI 응답 파싱 실패: {e}"))?;
+        .map_err(|_| "OpenAI 응답 형식이 올바르지 않습니다.".to_string())?;
     Ok(extract_message_content(&data))
 }
 
 #[tauri::command]
 pub async fn openai_generate_image(
-    api_key: String,
-    model: String,
+    state: State<'_, ConnectionManager>,
+    runtime_id: String,
     prompt: String,
     image_base64: String,
 ) -> Result<String, String> {
-    if api_key.is_empty() {
-        return Err("OpenAI API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.".into());
-    }
-
-    let client = reqwest::Client::new();
+    let runtime = resolve_runtime(state.inner(), &runtime_id, "openai")?;
+    let api_key = runtime.api_key;
+    let model = runtime.model;
+    let client = cloud_http::client()?;
     // OpenAI uses image_url as an object { url: "..." }, unlike Ollama's bare string.
     let body = json!({
         "model": model,
@@ -193,22 +201,21 @@ pub async fn openai_generate_image(
     let data: Value = resp
         .json()
         .await
-        .map_err(|e| format!("OpenAI 응답 파싱 실패: {e}"))?;
+        .map_err(|_| "OpenAI 응답 형식이 올바르지 않습니다.".to_string())?;
     Ok(extract_message_content(&data))
 }
 
 #[tauri::command]
 pub async fn openai_generate_text_stream(
-    api_key: String,
-    model: String,
+    state: State<'_, ConnectionManager>,
+    runtime_id: String,
     prompt: String,
     on_chunk: Channel<String>,
 ) -> Result<String, String> {
-    if api_key.is_empty() {
-        return Err("OpenAI API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.".into());
-    }
-
-    let client = reqwest::Client::new();
+    let runtime = resolve_runtime(state.inner(), &runtime_id, "openai")?;
+    let api_key = runtime.api_key;
+    let model = runtime.model;
+    let client = cloud_http::client()?;
     let body = json!({
         "model": model,
         "messages": [{ "role": "user", "content": prompt }],
@@ -225,7 +232,7 @@ pub async fn openai_generate_text_stream(
     let mut accumulated = String::new();
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("OpenAI 스트리밍 오류: {e}"))?;
+        let chunk = chunk.map_err(|e| cloud_http::network_error("OpenAI 스트리밍", e))?;
         buffer.extend_from_slice(&chunk);
 
         for line in drain_complete_lines(&mut buffer) {
@@ -291,7 +298,10 @@ mod tests {
     #[test]
     fn is_retryable_false_for_non_retryable_statuses() {
         for status in [200, 400, 401, 403, 404, 422, 501] {
-            assert!(!is_retryable(status), "expected {status} to be non-retryable");
+            assert!(
+                !is_retryable(status),
+                "expected {status} to be non-retryable"
+            );
         }
     }
 

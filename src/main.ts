@@ -16,7 +16,6 @@ import { initSpeechInput } from "./speechInput";
 import { initAppCaptions, forceStopCaptions } from "./appCaptions";
 import { initClipboardListeners } from "./clipboardTranslate";
 import { initHandwriting } from "./handwriting";
-import { migrateLegacySettings } from "./llmProfile";
 
 // ─── DOM References ──────────────────────────────────
 const inputField = document.getElementById("input-field") as HTMLTextAreaElement;
@@ -349,7 +348,6 @@ populateSelect(langSelect, LANGUAGES);
 
 // ─── Restore language preference ────────────────────
 (async () => {
-  await migrateLegacySettings();
   const savedLang = await getSetting(SETTINGS_KEYS.targetLanguage, DEFAULTS.targetLanguage);
   langSelect.value = savedLang;
 

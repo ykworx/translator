@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { resetTauriStore, setTauriStoreValue } from "./helpers/tauriMock";
+import { resetTauriStore, setTauriStoreValue, setNativeCredential } from "./helpers/tauriMock";
 
 import { getActiveBackend, resetOllamaBackendCache, resetOpenAiBackendCache, type LlmBackend } from "../src/llmBackend";
 import { geminiNativeBackend } from "../src/geminiClient";
@@ -19,6 +19,12 @@ function assertBackendContract(backend: LlmBackend) {
 }
 
 describe("LlmBackend contract", () => {
+  beforeEach(() => {
+    resetTauriStore();
+    vi.stubGlobal("fetch", vi.fn(async () => makeJsonResponse({ capabilities: ["completion", "vision"] })));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
   it("geminiNativeBackend satisfies interface", () => {
     assertBackendContract(geminiNativeBackend);
     expect(geminiNativeBackend.id).toBe("gemini-native");
@@ -32,6 +38,7 @@ describe("LlmBackend contract", () => {
   });
 
   it("openaiBackend satisfies interface", async () => {
+    setTauriStoreValue("llmBackendId", "openai");
     setTauriStoreValue("openaiApiKey", "sk-test");
     setTauriStoreValue("openaiModel", "gpt-4o-mini");
     const { getOpenAiBackend } = await import("../src/openaiClient");
@@ -51,6 +58,7 @@ function makeJsonResponse(body: unknown, status = 200): Response {
 describe("getActiveBackend", () => {
   beforeEach(() => {
     resetTauriStore();
+    setNativeCredential("gemini-native", "fake-default-key");
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(makeJsonResponse({ capabilities: ["completion", "vision"] })),
@@ -89,6 +97,7 @@ describe("getActiveBackend", () => {
 describe("getActiveBackend — openai cache behaviour", () => {
   beforeEach(() => {
     resetTauriStore();
+    setNativeCredential("gemini-native", "fake-default-key");
     resetOpenAiBackendCache();
     setTauriStoreValue("llmBackendId", "openai");
     setTauriStoreValue("openaiApiKey", "sk-test");
@@ -147,6 +156,7 @@ describe("getActiveBackend — openai cache behaviour", () => {
 describe("getActiveBackend — cache key behaviour", () => {
   beforeEach(() => {
     resetTauriStore();
+    setNativeCredential("gemini-native", "fake-default-key");
     resetOllamaBackendCache();
     setTauriStoreValue("llmBackendId", "ollama");
     setTauriStoreValue("ollamaBaseUrl", "http://localhost:11434");

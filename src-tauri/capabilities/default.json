@@ -2,7 +2,11 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main", "settings", "handwriting-overlay"],
+  "windows": [
+    "main",
+    "settings",
+    "handwriting-overlay"
+  ],
   "permissions": [
     "core:default",
     "opener:default",
@@ -15,12 +19,6 @@
     "core:window:allow-hide",
     "core:window:allow-set-focus",
     "core:window:allow-close",
-    "store:allow-load",
-    "store:allow-get",
-    "store:allow-entries",
-    "store:allow-set",
-    "store:allow-delete",
-    "store:allow-save",
     "core:event:allow-listen",
     "core:event:allow-emit"
   ]

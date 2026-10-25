@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { resetTauriStore, setTauriStoreValue, getTauriStoreValue } from "./helpers/tauriMock";
+import { resetTauriStore, setTauriStoreValue, getTauriStoreValue, registerInvokeCommand, resetInvokeCommands } from "./helpers/tauriMock";
 
 import { getActiveBackendId, setActiveBackendId, migrateLegacySettings, detectOllama } from "../src/llmProfile";
 
 describe("llmProfile", () => {
   beforeEach(() => {
     resetTauriStore();
+    resetInvokeCommands();
   });
 
   describe("getActiveBackendId", () => {
@@ -55,6 +56,26 @@ describe("llmProfile", () => {
 
       // No backend id should be set
       expect(getTauriStoreValue("llmBackendId")).toBeUndefined();
+    });
+
+    it("does not overwrite a provider selected while legacy credential status is pending", async () => {
+      let finish: (value: unknown) => void = () => {};
+      const read = vi.fn(() => new Promise(resolve => { finish = resolve; }));
+      registerInvokeCommand("get_credential_status", read);
+      const migration = migrateLegacySettings();
+      await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+      await setActiveBackendId("ollama");
+      finish({ configured: true, revision: "legacy-migrated" });
+      await migration;
+      expect(getTauriStoreValue("llmBackendId")).toBe("ollama");
+    });
+
+    it("keeps selection and local settings intact when Keychain access fails", async () => {
+      registerInvokeCommand("get_credential_status", () => { throw new Error("Keychain 잠김"); });
+      setTauriStoreValue("dictationLocale", "ko-KR");
+      await migrateLegacySettings();
+      expect(getTauriStoreValue("llmBackendId")).toBeUndefined();
+      expect(getTauriStoreValue("dictationLocale")).toBe("ko-KR");
     });
   });
 });

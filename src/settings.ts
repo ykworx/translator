@@ -4,9 +4,10 @@ const { emit } = window.__TAURI__.event;
 
 import { CAPTURE_MODES, DOMAIN_HINTS, LANGUAGES, MODELS, OPENAI_MODELS, DEFAULTS, OLLAMA_DEFAULT_MODELS, SETTINGS_KEYS, SPEECH_LOCALES, WHISPER_MODELS } from "./constants";
 import { getSetting, getStoreRid, setSetting } from "./store";
-import { getActiveBackendId, detectOllama } from "./llmProfile";
+import { getActiveBackendId, detectOllama, InvalidBackendSettingError } from "./llmProfile";
 import type { BackendId } from "./types";
 import { populateSelect } from "./utils";
+import { getCredentialStatus, saveProviderCredential, deleteProviderCredential, type CloudProviderId, type CredentialStatus } from "./connectionProfiles";
 
 // ─── DOM ────────────────────────────────────────────
 const backendRadios = document.querySelectorAll<HTMLInputElement>('input[name="llm-backend"]');
@@ -70,7 +71,7 @@ document.getElementById("show-dictation-shortcut")!.addEventListener("click", ()
 });
 
 // ─── Backend toggle ─────────────────────────────────
-function showBackendSection(id: BackendId) {
+function showBackendSection(id: BackendId | null) {
   ollamaSection.classList.add("hidden");
   geminiSection.classList.add("hidden");
   openaiSection.classList.add("hidden");
@@ -79,10 +80,10 @@ function showBackendSection(id: BackendId) {
     ollamaSection.classList.remove("hidden");
   } else if (id === "openai") {
     openaiSection.classList.remove("hidden");
-  } else {
-    // gemini-native (default)
+  } else if (id === "gemini-native") {
     geminiSection.classList.remove("hidden");
   }
+  if (settingsReady && (id === "gemini-native" || id === "openai")) void refreshCredential(id);
 }
 
 function populateOllamaModels(models: string[], selected?: string) {
@@ -98,6 +99,7 @@ function populateOllamaModels(models: string[], selected?: string) {
 backendRadios.forEach(radio => {
   radio.addEventListener("change", () => {
     showBackendSection(radio.value as BackendId);
+    updateSaveButton();
   });
 });
 
@@ -135,6 +137,7 @@ let isSaving = false;
 let pendingSettingsOperations = 0;
 let savedFingerprint = "";
 let closing = false;
+let pendingCredentialWrites = 0;
 btnSave.disabled = true;
 const initiallyLoadingControls = [...document.querySelectorAll<HTMLInputElement | HTMLSelectElement>(".tab-content input, .tab-content select")];
 initiallyLoadingControls.forEach(control => { control.disabled = true; });
@@ -146,8 +149,9 @@ function setStatus(message: string, error = false): void {
 }
 
 function updateSaveButton(): void {
-  btnSave.disabled = !settingsReady || isSaving || pendingSettingsOperations > 0 || !!recordingBtn || !!shortcutOperation;
-  btnCancel.disabled = isSaving;
+  btnSave.disabled = !settingsReady || isSaving || pendingSettingsOperations > 0 || !!recordingBtn || !!shortcutOperation
+    || ![...backendRadios].some(radio => radio.checked);
+  btnCancel.disabled = isSaving || pendingCredentialWrites > 0;
 }
 
 function beginSettingsOperation(): void {
@@ -158,6 +162,100 @@ function beginSettingsOperation(): void {
 function endSettingsOperation(): void {
   pendingSettingsOperations -= 1;
   updateSaveButton();
+}
+
+const credentialFields = {
+  "gemini-native": { input: apiKeyInput, prefix: "gemini" },
+  openai: { input: openaiApiKeyInput, prefix: "openai" },
+};
+const credentialStates: Record<CloudProviderId, { status: CredentialStatus | null; busy: boolean; confirmingDelete: boolean }> = {
+  "gemini-native": { status: null, busy: false, confirmingDelete: false },
+  openai: { status: null, busy: false, confirmingDelete: false },
+};
+
+function credentialControls(providerId: CloudProviderId) {
+  const field = credentialFields[providerId];
+  return { input: field.input,
+    save: document.getElementById(`${field.prefix}-key-save`) as HTMLButtonElement,
+    remove: document.getElementById(`${field.prefix}-key-delete`) as HTMLButtonElement,
+    refresh: document.getElementById(`${field.prefix}-key-refresh`) as HTMLButtonElement,
+    status: document.getElementById(`${field.prefix}-key-status`) as HTMLElement };
+}
+
+function updateCredentialControls(providerId: CloudProviderId): void {
+  const state = credentialStates[providerId];
+  const controls = credentialControls(providerId);
+  controls.save.disabled = !settingsReady || isSaving || state.busy || !state.status || !controls.input.value.trim();
+  controls.remove.disabled = !settingsReady || isSaving || state.busy || !state.status?.configured;
+  controls.refresh.disabled = !settingsReady || isSaving || state.busy;
+  controls.input.disabled = !settingsReady || isSaving || state.busy;
+  controls.remove.textContent = state.confirmingDelete ? "다시 눌러 키 삭제" : "저장된 키 삭제";
+}
+
+async function refreshCredential(providerId: CloudProviderId): Promise<void> {
+  const state = credentialStates[providerId];
+  if (!settingsReady || isSaving || closing || state.busy) return;
+  const controls = credentialControls(providerId);
+  state.busy = true;
+  state.confirmingDelete = false;
+  controls.status.textContent = "Keychain의 키 상태를 확인하는 중…";
+  updateCredentialControls(providerId);
+  try {
+    state.status = await getCredentialStatus(providerId);
+    controls.status.textContent = state.status.error || (state.status.configured ? "Keychain에 API 키가 저장되어 있습니다. 새 키를 입력하면 교체할 수 있습니다." : "저장된 API 키가 없습니다.");
+  } catch (error) {
+    state.status = null;
+    controls.status.textContent = `키 상태를 확인하지 못했습니다. 키 상태 확인 버튼으로 다시 시도해주세요: ${error}`;
+  } finally {
+    state.busy = false;
+    updateCredentialControls(providerId);
+  }
+}
+
+async function changeCredential(providerId: CloudProviderId, remove: boolean): Promise<void> {
+  const state = credentialStates[providerId];
+  const controls = credentialControls(providerId);
+  if (!settingsReady || isSaving || closing || state.busy || !state.status) return;
+  const value = controls.input.value.trim();
+  if (remove && !state.confirmingDelete) {
+    state.confirmingDelete = true;
+    controls.status.textContent = "저장된 API 키를 삭제하려면 삭제 버튼을 한 번 더 누르세요.";
+    updateCredentialControls(providerId);
+    return;
+  }
+  if (!remove && !value) return;
+  state.busy = true;
+  state.confirmingDelete = false;
+  pendingCredentialWrites += 1;
+  beginSettingsOperation();
+  updateCredentialControls(providerId);
+  controls.status.textContent = remove ? "API 키 삭제 중…" : "API 키 저장 중…";
+  try {
+    state.status = remove ? await deleteProviderCredential(providerId, state.status.revision)
+      : await saveProviderCredential(providerId, value, state.status.revision);
+    if (!remove && controls.input.value.trim() === value) controls.input.value = "";
+    controls.status.textContent = remove ? "Keychain에서 API 키를 삭제했습니다." : "Keychain에 API 키를 저장했습니다. 일반 설정과 별도로 적용됐습니다.";
+    markChanged();
+  } catch (error) {
+    controls.status.textContent = `API 키 변경 결과를 확인하지 못했습니다. 입력을 유지했습니다. 키 상태를 다시 확인한 뒤 시도해주세요: ${error}`;
+  } finally {
+    state.busy = false;
+    pendingCredentialWrites -= 1;
+    endSettingsOperation();
+    updateCredentialControls(providerId);
+  }
+}
+
+for (const providerId of ["gemini-native", "openai"] as const) {
+  const controls = credentialControls(providerId);
+  controls.refresh.addEventListener("click", () => void refreshCredential(providerId));
+  controls.save.addEventListener("click", () => void changeCredential(providerId, false));
+  controls.remove.addEventListener("click", () => void changeCredential(providerId, true));
+  controls.input.addEventListener("input", () => {
+    credentialStates[providerId].confirmingDelete = false;
+    controls.status.textContent = controls.input.value.trim() ? "새 API 키를 입력했습니다. API 키 저장 버튼을 눌러 적용하세요." : "입력칸을 비워도 저장된 키는 유지됩니다.";
+    updateCredentialControls(providerId);
+  });
 }
 
 async function loadShortcutStatus(): Promise<void> {
@@ -226,6 +324,7 @@ dictationPreviewBtn.addEventListener("click", async () => {
 
 function formFingerprint(): string {
   const values = [...document.querySelectorAll<HTMLInputElement | HTMLSelectElement>("input, select")]
+    .filter(el => !(el instanceof HTMLInputElement && el.type === "password"))
     .map(el => [el.id || `${el.name}:${el.value}`, el instanceof HTMLInputElement && ["checkbox", "radio"].includes(el.type) ? el.checked : el.value]);
   return JSON.stringify([values, selectShortcutStr, clipboardShortcutStr, dictationShortcutStr]);
 }
@@ -332,7 +431,7 @@ function finishShortcutRecording(btn: HTMLButtonElement): void {
 }
 
 async function closeSettings(): Promise<void> {
-  if (isSaving || closing) return;
+  if (isSaving || closing || pendingCredentialWrites > 0) return;
   try {
     if (shortcutOperation) await shortcutOperation;
     if (recordingBtn) await stopRecording(recordingBtn);
@@ -351,7 +450,7 @@ async function closeSettings(): Promise<void> {
 if (typeof settingsWindow.onCloseRequested === "function") {
   settingsWindow.onCloseRequested(async event => {
     if (closing) return;
-    if (isSaving) { event.preventDefault(); return; }
+    if (isSaving || pendingCredentialWrites > 0) { event.preventDefault(); return; }
     if (recordingBtn || shortcutOperation || shortcutsSuspended) {
       event.preventDefault();
       await closeSettings();
@@ -489,7 +588,6 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
   const savedCaptureWindow = await getSetting(SETTINGS_KEYS.captureWindow, DEFAULTS.captureWindow);
   await loadCaptureWindows(savedCaptureWindow);
 
-  apiKeyInput.value = await getSetting(SETTINGS_KEYS.apiKey, DEFAULTS.apiKey);
   myLangSelect.value = await getSetting(SETTINGS_KEYS.myLang, DEFAULTS.myLang);
   pairLangSelect.value = await getSetting(SETTINGS_KEYS.pairLang, DEFAULTS.pairLang);
   speechLocaleSelect.value = await getSetting(SETTINGS_KEYS.speechLocale, DEFAULTS.speechLocale);
@@ -511,7 +609,13 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
   shortcutDictationBtn.textContent = shortcutDisplay(dictationShortcutStr);
 
   // Load backend settings
-  const savedBackendId = await getActiveBackendId();
+  let savedBackendId: BackendId | null = null;
+  let providerError = "";
+  try { savedBackendId = await getActiveBackendId(); }
+  catch (error) {
+    if (!(error instanceof InvalidBackendSettingError)) throw error;
+    providerError = "저장된 AI 공급자가 올바르지 않습니다. API 탭에서 사용할 공급자를 직접 선택한 뒤 저장해주세요.";
+  }
   backendRadios.forEach(r => { r.checked = r.value === savedBackendId; });
   showBackendSection(savedBackendId);
 
@@ -522,14 +626,15 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
   ollamaBaseurlInput.value = savedOllamaUrl;
   populateOllamaModels([...OLLAMA_DEFAULT_MODELS], savedOllamaModel);
 
-  openaiApiKeyInput.value = await getSetting(SETTINGS_KEYS.openaiApiKey, DEFAULTS.openaiApiKey);
   openaiModelSelect.value = await getSetting(SETTINGS_KEYS.openaiModel, DEFAULTS.openaiModel);
   dictationShortcutSummary.textContent = shortcutDisplay(dictationShortcutStr);
   settingsReady = true;
   initiallyLoadingControls.forEach(control => { control.disabled = false; });
   savedFingerprint = formFingerprint();
-  setStatus("");
+  setStatus(providerError, !!providerError);
   updateSaveButton();
+  for (const providerId of ["gemini-native", "openai"] as const) updateCredentialControls(providerId);
+  if (savedBackendId === "gemini-native" || savedBackendId === "openai") void refreshCredential(savedBackendId);
   void loadShortcutStatus();
   void refreshDictationPermissions();
   await checkModelStatus();
@@ -557,14 +662,12 @@ btnSave.addEventListener("click", async () => {
       if (!["http:", "https:"].includes(url.protocol)) throw new Error("protocol");
     } catch { setStatus("Ollama URL은 http:// 또는 https://로 시작하는 올바른 주소를 입력해주세요.", true); return; }
   }
-  if (selectedBackend === "openai" && !openaiApiKeyInput.value.trim()) {
-    setStatus("OpenAI API 키를 입력해주세요.", true);
+  if (apiKeyInput.value.trim() || openaiApiKeyInput.value.trim()) {
+    setStatus("입력한 API 키는 해당 API 키 저장 버튼으로 먼저 저장하거나 입력칸을 비워주세요.", true);
     activateTab("api");
-    openaiApiKeyInput.focus();
     return;
   }
   const values: Array<[string, unknown]> = [
-    [SETTINGS_KEYS.apiKey, apiKeyInput.value.trim()],
     [SETTINGS_KEYS.myLang, myLangSelect.value],
     [SETTINGS_KEYS.pairLang, pairLangSelect.value],
     [SETTINGS_KEYS.speechLocale, speechLocaleSelect.value],
@@ -581,7 +684,6 @@ btnSave.addEventListener("click", async () => {
     [SETTINGS_KEYS.llmBackendId, selectedBackend],
     [SETTINGS_KEYS.ollamaBaseUrl, effectiveUrl],
     [SETTINGS_KEYS.ollamaModel, ollamaModelSelect.value || DEFAULTS.ollamaModel],
-    [SETTINGS_KEYS.openaiApiKey, openaiApiKeyInput.value.trim()],
     [SETTINGS_KEYS.openaiModel, openaiModelSelect.value || DEFAULTS.openaiModel],
     [SETTINGS_KEYS.selectShortcut, selectShortcutStr],
     [SETTINGS_KEYS.clipboardShortcut, clipboardShortcutStr],
@@ -599,7 +701,7 @@ btnSave.addEventListener("click", async () => {
   try {
     rid = await getStoreRid();
     for (const [key] of values) {
-      previous.set(key, await invoke<[unknown, boolean]>("plugin:store|get", { rid, key }));
+      previous.set(key, await invoke<[unknown, boolean]>("settings_get", { rid, key }));
     }
     await invoke("update_shortcuts", {
       selectShortcut: selectShortcutStr,
@@ -610,18 +712,18 @@ btnSave.addEventListener("click", async () => {
     shortcutsSuspended = false;
     // Save sequentially, then explicitly flush before closing the window.
     for (const [key, value] of values) await setSetting(key, value);
-    await invoke("plugin:store|save", { rid });
+    await invoke("settings_save", { rid });
     await emit("experimental-captions-changed", { enabled: experimentalCaptionsToggle.checked });
   } catch (error) {
     let restored = true;
     if (shortcutsChanged && rid !== null) {
       for (const [key, [value, exists]] of previous) {
         try {
-          if (exists) await invoke("plugin:store|set", { rid, key, value });
-          else await invoke("plugin:store|delete", { rid, key });
+          if (exists) await invoke("settings_set", { rid, key, value });
+          else await invoke("settings_delete", { rid, key });
         } catch { restored = false; }
       }
-      try { await invoke("plugin:store|save", { rid }); } catch { restored = false; }
+      try { await invoke("settings_save", { rid }); } catch { restored = false; }
       const old = (key: string, fallback: string) => {
         const [value, exists] = previous.get(key) ?? [null, false];
         return exists && typeof value === "string" ? value : fallback;
@@ -638,6 +740,7 @@ btnSave.addEventListener("click", async () => {
       : `일부 설정을 복구하지 못했습니다. 내용을 확인하고 다시 저장해주세요: ${error}`, true);
     isSaving = false;
     controlState.forEach(([control, disabled]) => { control.disabled = disabled; });
+    for (const providerId of ["gemini-native", "openai"] as const) updateCredentialControls(providerId);
     updateSaveButton();
     return;
   }
@@ -645,6 +748,7 @@ btnSave.addEventListener("click", async () => {
   setStatus("설정을 저장했습니다.");
   isSaving = false;
   controlState.forEach(([control, disabled]) => { control.disabled = disabled; });
+  for (const providerId of ["gemini-native", "openai"] as const) updateCredentialControls(providerId);
   updateSaveButton();
   await closeSettings();
 });

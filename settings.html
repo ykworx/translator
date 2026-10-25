@@ -576,7 +576,14 @@
       <div id="gemini-section">
         <div class="field">
           <label>Gemini API Key</label>
-          <input type="password" id="api-key" placeholder="API 키를 입력하세요...">
+          <input type="password" id="api-key" autocomplete="off" spellcheck="false" placeholder="새 API 키 (비워두면 기존 키 유지)">
+          <p class="setting-hint" id="gemini-key-status" role="status">키 상태는 연결 선택 후 확인합니다.</p>
+          <div class="dictation-intro-actions">
+            <button type="button" class="field-refresh" id="gemini-key-save" disabled>API 키 저장</button>
+            <button type="button" class="field-refresh" id="gemini-key-delete" disabled>저장된 키 삭제</button>
+            <button type="button" class="field-refresh" id="gemini-key-refresh">키 상태 확인</button>
+          </div>
+          <p class="setting-hint">API 키는 별도 버튼으로 Keychain에 즉시 저장·삭제합니다. 아래 설정 저장·취소와 별도로 적용됩니다.</p>
         </div>
         <div class="field">
           <label>모델</label>
@@ -588,7 +595,14 @@
       <div id="openai-section" class="hidden">
         <div class="field">
           <label>OpenAI API Key</label>
-          <input type="password" id="openai-api-key" placeholder="API 키를 입력하세요...">
+          <input type="password" id="openai-api-key" autocomplete="off" spellcheck="false" placeholder="새 API 키 (비워두면 기존 키 유지)">
+          <p class="setting-hint" id="openai-key-status" role="status">키 상태는 연결 선택 후 확인합니다.</p>
+          <div class="dictation-intro-actions">
+            <button type="button" class="field-refresh" id="openai-key-save" disabled>API 키 저장</button>
+            <button type="button" class="field-refresh" id="openai-key-delete" disabled>저장된 키 삭제</button>
+            <button type="button" class="field-refresh" id="openai-key-refresh">키 상태 확인</button>
+          </div>
+          <p class="setting-hint">비어 있는 입력칸은 저장된 키를 지우지 않습니다. 삭제하려면 별도 삭제 버튼을 사용하세요.</p>
         </div>
         <div class="field">
           <label>모델</label>

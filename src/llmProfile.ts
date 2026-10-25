@@ -1,25 +1,40 @@
 import { DEFAULTS, SETTINGS_KEYS } from "./constants";
-import { getSetting, setSetting } from "./store";
+import { getStoreRid, setSetting } from "./store";
+import { getProvider } from "./providerRegistry";
 import type { BackendId } from "./types";
+import { getCredentialStatus } from "./connectionProfiles";
+
+const { invoke } = window.__TAURI__.core;
+
+export class InvalidBackendSettingError extends Error {}
+
+async function savedBackendId(): Promise<string | null> {
+  const rid = await getStoreRid();
+  const [value, exists] = await invoke<[unknown, boolean]>("settings_get", { rid, key: SETTINGS_KEYS.llmBackendId });
+  if (!exists) return null;
+  if (typeof value !== "string") throw new InvalidBackendSettingError("AI 공급자 설정 형식이 올바르지 않습니다.");
+  return value;
+}
 
 export async function getActiveBackendId(): Promise<BackendId> {
-  return getSetting<BackendId>(
-    SETTINGS_KEYS.llmBackendId,
-    DEFAULTS.llmBackendId,
-  );
+  const id = await savedBackendId() ?? DEFAULTS.llmBackendId;
+  try { return getProvider(id).id; }
+  catch { throw new InvalidBackendSettingError("지원하지 않는 AI 공급자입니다."); }
 }
 
 export async function setActiveBackendId(id: BackendId): Promise<void> {
+  getProvider(id);
   return setSetting(SETTINGS_KEYS.llmBackendId, id);
 }
 
 export async function migrateLegacySettings(): Promise<void> {
-  const existingBackendId = await getSetting<string | null>(SETTINGS_KEYS.llmBackendId, null);
-  if (existingBackendId !== null) return;
-
-  const apiKey = await getSetting<string>(SETTINGS_KEYS.apiKey, "");
-  if (apiKey) {
-    await setSetting(SETTINGS_KEYS.llmBackendId, "gemini-native");
+  try {
+    if (await savedBackendId() !== null) return;
+    const status = await getCredentialStatus("gemini-native");
+    if (status.configured && await savedBackendId() === null) await setSetting(SETTINGS_KEYS.llmBackendId, "gemini-native");
+  } catch {
+    // Migration is advisory. Keep selection intact; connection/status commands
+    // surface native credential errors without blocking local or voice setup.
   }
 }
 

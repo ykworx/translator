@@ -1,4 +1,4 @@
-// ─── Store (settings persistence via invoke) ────────
+// Fixed-path non-secret settings bridge; credentials use native commands.
 const { invoke } = window.__TAURI__.core;
 
 let storeRid: number | null = null;
@@ -10,10 +10,7 @@ export async function getStoreRid(): Promise<number> {
   }
 
   if (!storeRidPromise) {
-    storeRidPromise = invoke<number>("plugin:store|load", {
-      path: "settings.json",
-      options: { autoSave: true },
-    }).then((rid) => {
+    storeRidPromise = invoke<number>("settings_load").then((rid) => {
       storeRid = rid;
       return rid;
     }).finally(() => {
@@ -27,7 +24,7 @@ export async function getStoreRid(): Promise<number> {
 export async function getSetting<T>(key: string, defaultValue: T): Promise<T> {
   try {
     const rid = await getStoreRid();
-    const [value, exists] = await invoke<[T, boolean]>("plugin:store|get", { rid, key });
+    const [value, exists] = await invoke<[T, boolean]>("settings_get", { rid, key });
     return exists ? value : defaultValue;
   } catch (e) {
     console.error("getSetting error:", e);
@@ -37,5 +34,5 @@ export async function getSetting<T>(key: string, defaultValue: T): Promise<T> {
 
 export async function setSetting<T>(key: string, value: T): Promise<void> {
   const rid = await getStoreRid();
-  await invoke("plugin:store|set", { rid, key, value });
+  await invoke("settings_set", { rid, key, value });
 }
