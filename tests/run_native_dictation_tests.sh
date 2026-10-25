@@ -20,4 +20,10 @@ xcrun swiftc \
   -framework AppKit \
   -o "$test_dir/clipboard-tests"
 "$test_dir/clipboard-tests"
+xcrun swiftc \
+  "$project_dir/src-tauri/swift/DictationTranscriptView.swift" \
+  "$project_dir/tests/nativePanel/main.swift" \
+  -framework AppKit \
+  -o "$test_dir/panel-tests"
+"$test_dir/panel-tests"
 python3 -B -m unittest discover -s "$project_dir/tests/native" -p 'test_*.py'
