@@ -3,6 +3,9 @@ const { getCurrentWindow } = window.__TAURI__.window;
 const { emit } = window.__TAURI__.event;
 
 import { CAPTURE_MODES, DOMAIN_HINTS, LANGUAGES, MODELS, OPENAI_MODELS, DEFAULTS, SETTINGS_KEYS, SPEECH_LOCALES, WHISPER_MODELS } from "./constants";
+import { showBuildInfo } from "./buildInfo";
+
+void showBuildInfo();
 import { getSetting, getStoreRid, setSetting } from "./store";
 import { getActiveBackendId, detectOllama, InvalidBackendSettingError } from "./llmProfile";
 import type { BackendId } from "./types";

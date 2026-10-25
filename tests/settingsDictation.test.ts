@@ -41,6 +41,7 @@ describe("dictation settings", () => {
     invoke = vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
       if (["settings_get", "settings_set", "settings_delete"].includes(command) && ["apiKey", "openaiApiKey"].includes(args.key as string)) throw new Error("Secret settings access is forbidden");
       switch (command) {
+        case "get_build_info": return { version: "0.3.0", revision: "c99594aaa5500dd5e1fef1397573e71fdeb76e47", dirty: false, channel: "development", builtAtUnixSeconds: 1792882800, buildNumber: null };
         case "get_credential_status": return credentials.get(args.providerId as string) ?? { configured: false, revision: null };
         case "save_provider_credential": case "delete_provider_credential": {
           const previous = credentials.get(args.providerId as string) ?? { configured: false, revision: null };

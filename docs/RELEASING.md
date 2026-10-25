@@ -8,7 +8,7 @@ Transrator의 첫 배포 경로는 **검토한 main 커밋 → 버전 태그 →
 | --- | --- |
 | 앱·빌드·릴리즈 관련 PR | 버전 일치, 프런트엔드·네이티브 검사, ad-hoc 서명 app·DMG 빌드, workflow artifact 업로드 |
 | Actions에서 수동 실행 | 선택한 ref를 같은 build-only 경로로 검사하며 Release를 만들지 않음 |
-| vX.Y.Z 태그 push | 세 가지 앱 버전 및 npm lock 버전을 비교하고, 태그 커밋이 main 이력에 포함되는지 확인한 뒤 배포 서명·공증·Draft 작성 |
+| vX.Y.Z 태그 push | npm·Cargo·Tauri·각 lock 버전과 태그를 비교하고, 태그 커밋이 main 이력에 포함되는지 확인한 뒤 배포 서명·공증·Draft 작성 |
 
 빌드는 GitHub의 ARM64 macos-15에서 aarch64-apple-darwin 대상으로 수행합니다. npm ci와 Cargo --locked를 사용하고, 네이티브 서브모듈은 저장소가 지정한 커밋으로 재귀 초기화합니다. 현재 Actions에 고정한 action SHA는 업데이트 PR에서 검토해 변경합니다.
 
@@ -37,7 +37,18 @@ GITHUB_TOKEN은 Actions가 제공하므로 별도의 개인 토큰을 등록하�
 
 ## 버전 준비와 태그
 
-버전 변경을 PR로 올리고 검사 후 main에 머지합니다. package.json, package-lock.json, src-tauri/Cargo.toml, src-tauri/Cargo.lock, src-tauri/tauri.conf.json을 함께 갱신합니다. 태그는 stable vX.Y.Z 형식만 사용하며 beta·rc 태그는 현재 절차에서 거절합니다.
+`src-tauri/tauri.conf.json`의 version이 기준입니다. 아래 명령으로 package.json, package-lock.json, src-tauri/Cargo.toml, src-tauri/Cargo.lock까지 동기화하고 [CHANGELOG](../CHANGELOG.md)에 사용자에게 보이는 변경을 작성합니다. 스크립트는 커밋이나 태그를 만들지 않습니다. 버전 변경을 Release PR로 올리고 검사·독립 리뷰 후 main에 머지합니다.
+
+```bash
+python3.11 scripts/prepare_release.py --version 0.3.0
+python3.11 scripts/check_release_version.py
+```
+
+SemVer의 `MAJOR.MINOR.PATCH`를 사용합니다. 새 기능은 `0.2.0 → 0.3.0`, 호환되는 오류 수정은 `0.3.0 → 0.3.1`, 안정된 공개 계약을 약속하는 시점에 `1.0.0`으로 올립니다. 0.x에서 호환되지 않는 설정·연결 변경은 minor를 올리고 이전 방법과 마이그레이션을 기록합니다. 공개한 버전·태그·파일은 바꾸지 않고 새 버전을 냅니다. 태그는 stable vX.Y.Z 형식만 사용하며 beta·rc 태그는 현재 절차에서 거절합니다.
+
+설정의 정보 탭은 실행 파일에 포함된 버전·커밋·빌드 시각을 표시합니다. 로컬 빌드는 `개발 빌드`와 추적 중인 소스의 수정 여부를 표시합니다(추적하지 않는 파일은 제외). 소스 압축본처럼 Git 정보가 없으면 이를 명시합니다. CI는 `검증 빌드`와 `릴리스 빌드`를 구분하고, macOS CFBundleVersion과 내장 메타데이터에 `workflow run_number.run_attempt`를 넣습니다. 예: `42.1`, 재시도 `42.2`. 빌드 번호는 앱의 SemVer와 별개이며 동일 워크플로의 다음 실행에서 증가합니다. run_number 1..9999, run_attempt 1..99만 허용하며 한계에 도달하기 전에 번호 정책을 갱신해야 합니다. 워크플로를 새로 만들거나 이름을 바꿀 때도 카운터 연속성을 검토합니다. 로컬 macOS 번들의 기본 CFBundleVersion은 Tauri의 기본 버전 매핑을 사용합니다.
+
+CI는 clean Git 소스와 빌드 번호를 요구하고, 패키지의 Info.plist와 실행 파일의 `--build-info` 출력까지 비교합니다. 이 진단 명령은 앱·마이크·설정·Keychain을 초기화하지 않습니다.
 
 Python 3.11 이상으로 버전과 태그를 로컬에서도 검사할 수 있습니다. 아래 버전은 예시이며, 이 절차를 추가한다고 자동으로 태그를 발행하지 않습니다.
 
@@ -49,7 +60,7 @@ git tag -a v0.3.0 -m "Transrator 0.3.0"
 git push origin v0.3.0
 ```
 
-태그 job은 모델을 다운로드하거나 마이크를 녹음하지 않습니다. 테스트 통과 후 Tauri가 앱 서명·공증을 수행하고, DMG 컨테이너도 별도로 공증·staple합니다. 앱 codesign·stapler·Gatekeeper 검사와 DMG codesign·stapler 검사가 성공한 다음 Draft와 SHA256SUMS.txt를 만듭니다. 앱 버전 검사는 lock 파일의 npm root version까지 확인하며, Rust lock 파일은 Cargo --locked 검사로 확인합니다.
+태그 job은 모델을 다운로드하거나 마이크를 녹음하지 않습니다. 테스트 통과 후 Tauri가 앱 서명·공증을 수행하고, DMG 컨테이너도 별도로 공증·staple합니다. 앱 codesign·stapler·Gatekeeper 검사와 DMG codesign·stapler 검사, 번들의 버전·빌드 식별 검증이 성공한 다음 Draft와 SHA256SUMS.txt를 만듭니다.
 
 ## Draft 검토와 공개
 
@@ -70,4 +81,8 @@ Actions 성공 후 저장소 Releases의 Draft에서 변경 내역을 확인하�
 - [Tauri macOS 서명·공증](https://v2.tauri.app/distribute/sign/macos/)
 - [GitHub 호스티드 runner 아키텍처](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 - [Apple Audio Input entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.device.audio-input)
+- [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
+- [Tauri version 설정](https://v2.tauri.app/reference/config/#version)
+
+Release Please 같은 자동 Release PR 도구는 추후 검토합니다. 현재는 버전 준비 스크립트와 명시적 Release PR을 사용합니다. 자동화할 때는 GITHUB_TOKEN으로 만든 태그가 일반 push workflow를 다시 실행하지 않는 제약을 고려해 workflow 호출 방식을 함께 설계해야 합니다.
 

@@ -12,21 +12,41 @@ except ModuleNotFoundError:
 STABLE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 
 
+def stable_version(value: object) -> str:
+    if not isinstance(value, str) or STABLE.fullmatch(value) is None:
+        raise ValueError("Expected stable X.Y.Z app version without a v prefix or suffix")
+    return value
+
+
+def cargo_root_package(cargo: dict, lock: dict) -> dict:
+    name = cargo["package"]["name"]
+    if not isinstance(name, str) or not name:
+        raise ValueError("Cargo.toml must name the root app package")
+    packages = lock.get("package")
+    if not isinstance(packages, list) or any(not isinstance(package, dict) for package in packages):
+        raise ValueError("Cargo.lock must contain the root app package")
+    matches = [package for package in packages if package.get("name") == name and "source" not in package]
+    if len(matches) != 1:
+        raise ValueError("Cargo.lock must contain exactly one source-free root app package")
+    return matches[0]
+
+
 def check_versions(root: Path, tag: str = "") -> str:
     package = json.loads((root / "package.json").read_text())
     lock = json.loads((root / "package-lock.json").read_text())
     cargo = tomllib.loads((root / "src-tauri/Cargo.toml").read_text())
+    cargo_lock = tomllib.loads((root / "src-tauri/Cargo.lock").read_text())
     tauri = json.loads((root / "src-tauri/tauri.conf.json").read_text())
     values = {
         "package.json": package["version"],
         "package-lock.json": lock["version"],
         "package-lock.json root package": lock["packages"][""]["version"],
         "Cargo.toml": cargo["package"]["version"],
+        "Cargo.lock root app": cargo_root_package(cargo, cargo_lock)["version"],
         "tauri.conf.json": tauri["version"],
     }
-    version = values["package.json"]
-    if not isinstance(version, str) or STABLE.fullmatch(version) is None:
-        raise ValueError("Expected stable X.Y.Z app version")
+    # Tauri owns the product version; npm and Cargo are synchronized projections.
+    version = stable_version(values["tauri.conf.json"])
     if any(value != version for value in values.values()):
         raise ValueError("Version mismatch: " + ", ".join(f"{key}={value}" for key, value in values.items()))
     if tag and tag != "v" + version:
