@@ -19,6 +19,12 @@ function assertBackendContract(backend: LlmBackend) {
 }
 
 describe("LlmBackend contract", () => {
+  beforeEach(() => {
+    resetTauriStore();
+    vi.stubGlobal("fetch", vi.fn(async () => makeJsonResponse({ capabilities: ["completion", "vision"] })));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
   it("geminiNativeBackend satisfies interface", () => {
     assertBackendContract(geminiNativeBackend);
     expect(geminiNativeBackend.id).toBe("gemini-native");

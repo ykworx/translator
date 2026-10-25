@@ -75,6 +75,37 @@ describe("dictation settings", () => {
     vi.restoreAllMocks();
   });
 
+  it.each(["removed-provider", 42])("allows explicit repair of an invalid saved provider (%s)", async invalid => {
+    store.set("llmBackendId", invalid);
+    store.set("dictationLocale", "en-US");
+    await import("../src/settings");
+    const ollama = document.querySelector<HTMLInputElement>('input[name="llm-backend"][value="ollama"]')!;
+    await vi.waitFor(() => expect(ollama.disabled).toBe(false));
+    expect(status()).toContain("공급자를 직접 선택");
+    expect([...document.querySelectorAll<HTMLInputElement>('input[name="llm-backend"]')].some(radio => radio.checked)).toBe(false);
+    expect(button("btn-save").disabled).toBe(true);
+    expect(invoke.mock.calls.some(([command]) => command === "get_credential_status")).toBe(false);
+    ollama.click();
+    expect(button("btn-save").disabled).toBe(false);
+    button("btn-save").click();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(store.get("llmBackendId")).toBe("ollama");
+    expect(store.get("dictationLocale")).toBe("en-US");
+  });
+
+  it("does not enable settings writes after a provider read transport failure", async () => {
+    const original = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === "settings_get" && args.key === "llmBackendId") throw new Error("IPC unavailable");
+      return original(command, args);
+    });
+    await import("../src/settings");
+    await vi.waitFor(() => expect(status()).toContain("설정을 불러오지 못했습니다"));
+    expect(button("btn-save").disabled).toBe(true);
+    expect([...document.querySelectorAll<HTMLInputElement>('input[name="llm-backend"]')].every(radio => radio.disabled)).toBe(true);
+    expect(invoke.mock.calls.some(([command]) => command === "settings_set")).toBe(false);
+  });
+
   async function boot() {
     await import("../src/settings");
     await vi.waitFor(() => expect(button("btn-save").disabled).toBe(false));

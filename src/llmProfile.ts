@@ -6,16 +6,20 @@ import { getCredentialStatus } from "./connectionProfiles";
 
 const { invoke } = window.__TAURI__.core;
 
+export class InvalidBackendSettingError extends Error {}
+
 async function savedBackendId(): Promise<string | null> {
   const rid = await getStoreRid();
   const [value, exists] = await invoke<[unknown, boolean]>("settings_get", { rid, key: SETTINGS_KEYS.llmBackendId });
   if (!exists) return null;
-  if (typeof value !== "string") throw new Error("AI 공급자 설정 형식이 올바르지 않습니다.");
+  if (typeof value !== "string") throw new InvalidBackendSettingError("AI 공급자 설정 형식이 올바르지 않습니다.");
   return value;
 }
 
 export async function getActiveBackendId(): Promise<BackendId> {
-  return getProvider(await savedBackendId() ?? DEFAULTS.llmBackendId).id;
+  const id = await savedBackendId() ?? DEFAULTS.llmBackendId;
+  try { return getProvider(id).id; }
+  catch { throw new InvalidBackendSettingError("지원하지 않는 AI 공급자입니다."); }
 }
 
 export async function setActiveBackendId(id: BackendId): Promise<void> {

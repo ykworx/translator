@@ -4,7 +4,7 @@ const { emit } = window.__TAURI__.event;
 
 import { CAPTURE_MODES, DOMAIN_HINTS, LANGUAGES, MODELS, OPENAI_MODELS, DEFAULTS, OLLAMA_DEFAULT_MODELS, SETTINGS_KEYS, SPEECH_LOCALES, WHISPER_MODELS } from "./constants";
 import { getSetting, getStoreRid, setSetting } from "./store";
-import { getActiveBackendId, detectOllama } from "./llmProfile";
+import { getActiveBackendId, detectOllama, InvalidBackendSettingError } from "./llmProfile";
 import type { BackendId } from "./types";
 import { populateSelect } from "./utils";
 import { getCredentialStatus, saveProviderCredential, deleteProviderCredential, type CloudProviderId, type CredentialStatus } from "./connectionProfiles";
@@ -71,7 +71,7 @@ document.getElementById("show-dictation-shortcut")!.addEventListener("click", ()
 });
 
 // ─── Backend toggle ─────────────────────────────────
-function showBackendSection(id: BackendId) {
+function showBackendSection(id: BackendId | null) {
   ollamaSection.classList.add("hidden");
   geminiSection.classList.add("hidden");
   openaiSection.classList.add("hidden");
@@ -80,8 +80,7 @@ function showBackendSection(id: BackendId) {
     ollamaSection.classList.remove("hidden");
   } else if (id === "openai") {
     openaiSection.classList.remove("hidden");
-  } else {
-    // gemini-native (default)
+  } else if (id === "gemini-native") {
     geminiSection.classList.remove("hidden");
   }
   if (settingsReady && (id === "gemini-native" || id === "openai")) void refreshCredential(id);
@@ -100,6 +99,7 @@ function populateOllamaModels(models: string[], selected?: string) {
 backendRadios.forEach(radio => {
   radio.addEventListener("change", () => {
     showBackendSection(radio.value as BackendId);
+    updateSaveButton();
   });
 });
 
@@ -149,7 +149,8 @@ function setStatus(message: string, error = false): void {
 }
 
 function updateSaveButton(): void {
-  btnSave.disabled = !settingsReady || isSaving || pendingSettingsOperations > 0 || !!recordingBtn || !!shortcutOperation;
+  btnSave.disabled = !settingsReady || isSaving || pendingSettingsOperations > 0 || !!recordingBtn || !!shortcutOperation
+    || ![...backendRadios].some(radio => radio.checked);
   btnCancel.disabled = isSaving || pendingCredentialWrites > 0;
 }
 
@@ -608,7 +609,13 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
   shortcutDictationBtn.textContent = shortcutDisplay(dictationShortcutStr);
 
   // Load backend settings
-  const savedBackendId = await getActiveBackendId();
+  let savedBackendId: BackendId | null = null;
+  let providerError = "";
+  try { savedBackendId = await getActiveBackendId(); }
+  catch (error) {
+    if (!(error instanceof InvalidBackendSettingError)) throw error;
+    providerError = "저장된 AI 공급자가 올바르지 않습니다. API 탭에서 사용할 공급자를 직접 선택한 뒤 저장해주세요.";
+  }
   backendRadios.forEach(r => { r.checked = r.value === savedBackendId; });
   showBackendSection(savedBackendId);
 
@@ -624,7 +631,7 @@ populateSelect(openaiModelSelect, OPENAI_MODELS);
   settingsReady = true;
   initiallyLoadingControls.forEach(control => { control.disabled = false; });
   savedFingerprint = formFingerprint();
-  setStatus("");
+  setStatus(providerError, !!providerError);
   updateSaveButton();
   for (const providerId of ["gemini-native", "openai"] as const) updateCredentialControls(providerId);
   if (savedBackendId === "gemini-native" || savedBackendId === "openai") void refreshCredential(savedBackendId);

@@ -92,7 +92,11 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
         let mut file = options.open(&temporary).map_err(|_| STORE_ERROR)?;
         file.write_all(bytes).map_err(|_| STORE_ERROR)?;
         file.sync_all().map_err(|_| STORE_ERROR)?;
+        drop(file);
         fs::rename(&temporary, path).map_err(|_| STORE_ERROR)?;
+        // Windows cannot open directories with File::open. The file is synced
+        // before replacement there; Unix also syncs the containing directory.
+        #[cfg(unix)]
         fs::File::open(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|_| STORE_ERROR)?;
