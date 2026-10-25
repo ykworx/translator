@@ -6,6 +6,7 @@ import { escapeHtml } from "./utils";
 import { getActiveBackendId } from "./llmProfile";
 import { getProvider } from "./providerRegistry";
 import { getCredentialStatus, saveProviderCredential } from "./connectionProfiles";
+import { openSettingsFrom } from "./settingsAccess";
 
 export { escapeHtml };
 
@@ -141,9 +142,18 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
     }
     transCard.appendChild(actions);
 
+    const settingsButton = actions.querySelector<HTMLButtonElement>(".error-settings");
+    if (settingsButton) {
+      const status = document.createElement("span");
+      status.setAttribute("role", "status");
+      actions.appendChild(status);
+      settingsButton.addEventListener("click", () => void openSettingsFrom(settingsButton, status));
+    }
+
     const retryBtn = actions.querySelector(".error-retry");
     retryBtn?.addEventListener("click", () => {
-      document.dispatchEvent(new CustomEvent("retry-translation", { detail: { text: entry.original } }));
+      const accepted = document.dispatchEvent(new CustomEvent("retry-translation", { detail: { text: entry.original }, cancelable: true }));
+      if (!accepted) return;
       div.remove();
       const idx = chatHistory.indexOf(entry);
       if (idx !== -1) chatHistory.splice(idx, 1);
@@ -278,10 +288,15 @@ export function addEntry(entry: ChatEntry): void {
 
 let emptyStateSequence = 0;
 
-export async function showEmptyState(): Promise<void> {
-  const sequence = ++emptyStateSequence;
+export async function showEmptyState({ preserveCredentialDraft = true } = {}): Promise<void> {
   if (chatHistory.length > 0) return;
-  const current = () => sequence === emptyStateSequence && chatHistory.length === 0;
+  const hasCredentialDraft = () => {
+    const input = document.getElementById("inline-api-key") as HTMLInputElement | null;
+    return preserveCredentialDraft && !!input && (!!input.value || input.disabled);
+  };
+  if (hasCredentialDraft()) return;
+  const sequence = ++emptyStateSequence;
+  const current = () => sequence === emptyStateSequence && chatHistory.length === 0 && !chat.querySelector(".entry") && !hasCredentialDraft();
   try {
     const providerId = await getActiveBackendId();
     const provider = getProvider(providerId);
@@ -302,6 +317,8 @@ export async function showEmptyState(): Promise<void> {
       const keyInput = document.getElementById("inline-api-key") as HTMLInputElement;
       const save = document.getElementById("inline-api-save") as HTMLButtonElement;
       const status = document.getElementById("inline-api-status")!;
+      const formCurrent = () => document.getElementById("inline-api-key") === keyInput
+        && chatHistory.length === 0 && !chat.querySelector(".entry");
       save.addEventListener("click", async () => {
         if (save.disabled || !keyInput.value.trim()) return;
         save.disabled = true;
@@ -310,9 +327,11 @@ export async function showEmptyState(): Promise<void> {
         try {
           await saveProviderCredential(providerId, keyInput.value.trim(), credential.revision);
           keyInput.value = "";
-          if (current()) await showEmptyState();
+          if (formCurrent()) {
+            await showEmptyState({ preserveCredentialDraft: false });
+          }
         } catch {
-          if (current()) status.textContent = "API 키 저장 결과를 확인하지 못했습니다. 입력을 유지했습니다. 설정에서 키 상태를 확인해주세요.";
+          if (formCurrent()) status.textContent = "API 키 저장 결과를 확인하지 못했습니다. 입력을 유지했습니다. 설정에서 키 상태를 확인해주세요.";
         } finally {
           save.disabled = false;
           keyInput.disabled = false;

@@ -410,7 +410,10 @@ final class GlobalDictationController: NSObject {
         transcript.frame = NSRect(x: 20, y: 49, width: 380, height: 58)
         transcript.font = .systemFont(ofSize: 15, weight: .medium)
         transcript.maximumNumberOfLines = 3
-        transcript.cell?.lineBreakMode = .byTruncatingTail
+        transcript.cell?.usesSingleLineMode = false
+        transcript.cell?.wraps = true
+        transcript.cell?.isScrollable = false
+        transcript.cell?.lineBreakMode = .byWordWrapping
         instruction.frame = NSRect(x: 20, y: 17, width: 150, height: 16)
         instruction.font = .systemFont(ofSize: 11)
         instruction.textColor = .secondaryLabelColor

@@ -16,6 +16,7 @@ import { initSpeechInput } from "./speechInput";
 import { initAppCaptions, forceStopCaptions } from "./appCaptions";
 import { initClipboardListeners } from "./clipboardTranslate";
 import { initHandwriting } from "./handwriting";
+import { initSettingsAccess } from "./settingsAccess";
 
 // ─── DOM References ──────────────────────────────────
 const inputField = document.getElementById("input-field") as HTMLTextAreaElement;
@@ -23,13 +24,22 @@ const langSelect = document.getElementById("lang-select") as HTMLSelectElement;
 const btnSuggest = document.getElementById("btn-suggest") as HTMLButtonElement;
 const btnSummarize = document.getElementById("btn-summarize") as HTMLButtonElement;
 const btnClear = document.getElementById("btn-clear") as HTMLButtonElement;
+const btnTranslate = document.getElementById("btn-translate") as HTMLButtonElement;
 let isSubmittingTranslation = false;
+let isComposingInput = false;
 let copyToastTimer: number | null = null;
 
 // ─── Helpers ─────────────────────────────────────────
 function syncInputHeight(): void {
   inputField.style.height = "auto";
   inputField.style.height = Math.min(inputField.scrollHeight, MAX_TEXTAREA_HEIGHT) + "px";
+  syncSubmitState();
+}
+
+function syncSubmitState(): void {
+  btnTranslate.disabled = isSubmittingTranslation || isComposingInput || !inputField.value.trim();
+  btnTranslate.textContent = isSubmittingTranslation ? "번역 중…" : "번역";
+  btnTranslate.setAttribute("aria-busy", String(isSubmittingTranslation));
 }
 
 async function resolveLangConfig(): Promise<LangConfig> {
@@ -42,14 +52,15 @@ async function resolveLangConfig(): Promise<LangConfig> {
 }
 
 // ─── Translation submit ─────────────────────────────
-async function handleSubmit(): Promise<void> {
-  if (isSubmittingTranslation) return;
+async function handleSubmit(sourceText?: string): Promise<void> {
+  if (isSubmittingTranslation || isComposingInput) return;
 
-  const text = inputField.value.trim();
+  const text = (sourceText ?? inputField.value).trim();
   if (!text) return;
 
   isSubmittingTranslation = true;
-  inputField.value = "";
+  // Retry submits the failed entry directly, leaving any new draft untouched.
+  if (sourceText === undefined) inputField.value = "";
   syncInputHeight();
 
   // Create a streaming entry
@@ -90,15 +101,19 @@ async function handleSubmit(): Promise<void> {
     addEntry(entry);
   } catch (e) {
     div.remove();
-    inputField.value = text;
+    if (!inputField.value && !isComposingInput) inputField.value = text;
     syncInputHeight();
     addEntry({ original: text, translated: `[오류] ${getErrorMessage(e)}` });
   } finally {
     isSubmittingTranslation = false;
+    syncSubmitState();
   }
 }
 
 // ─── Initialize modules ─────────────────────────────
+initSettingsAccess(() => { if (!isSubmittingTranslation) void showEmptyState(); });
+syncSubmitState();
+
 initSpeechInput(
   inputField,
   document.getElementById("speech-status") as HTMLDivElement,
@@ -197,11 +212,23 @@ btnClear.addEventListener("click", clearChat);
 
 // ─── Input handling ─────────────────────────────────
 inputField.addEventListener("keydown", (e: KeyboardEvent) => {
+  if (e.isComposing || e.keyCode === 229 || isComposingInput) return;
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
-    handleSubmit();
+    void handleSubmit();
   }
 });
+
+inputField.addEventListener("compositionstart", () => {
+  isComposingInput = true;
+  syncSubmitState();
+});
+inputField.addEventListener("compositionend", () => {
+  isComposingInput = false;
+  syncSubmitState();
+});
+
+btnTranslate.addEventListener("click", () => { void handleSubmit(); });
 
 inputField.addEventListener("input", () => {
   syncInputHeight();
@@ -209,6 +236,7 @@ inputField.addEventListener("input", () => {
 
 // ─── Keyboard shortcuts ────────────────────────────
 document.addEventListener("keydown", (e: KeyboardEvent) => {
+  if (e.isComposing || e.keyCode === 229 || isComposingInput) return;
   const isInInput = document.activeElement === inputField;
 
   // Escape — clear input or hide window
@@ -333,14 +361,13 @@ function showHwToast(r: HandwritingResult): void {
 }
 
 // ─── Retry failed translations ────────────────────
-document.addEventListener("retry-translation", async (e: Event) => {
-  if (!(e instanceof CustomEvent) || typeof e.detail?.text !== "string") {
+document.addEventListener("retry-translation", (e: Event) => {
+  if (!(e instanceof CustomEvent)) return;
+  if (typeof e.detail?.text !== "string" || !e.detail.text.trim() || isSubmittingTranslation || isComposingInput) {
+    e.preventDefault();
     return;
   }
-  const text = e.detail.text;
-  inputField.value = text;
-  syncInputHeight();
-  await handleSubmit();
+  void handleSubmit(e.detail.text);
 });
 
 // ─── Populate select elements ───────────────────────
@@ -362,6 +389,7 @@ langSelect.addEventListener("change", () => {
 // ─── Titlebar drag ──────────────────────────────────
 const titlebar = document.getElementById("titlebar")!;
 titlebar.addEventListener("mousedown", async (e: MouseEvent) => {
+  if (e.target instanceof Element && e.target.closest("button")) return;
   if (e.buttons === 1) {
     await invoke("plugin:window|start_dragging");
   }

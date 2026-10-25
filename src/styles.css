@@ -40,6 +40,7 @@ body {
 
 /* Titlebar */
 #titlebar {
+  position: relative;
   height: 42px;
   display: flex;
   align-items: center;
@@ -47,6 +48,11 @@ body {
   flex-shrink: 0;
   -webkit-app-region: drag;
   border-bottom: 1px solid var(--divider);
+}
+#btn-settings {
+  position: absolute;
+  right: 12px;
+  -webkit-app-region: no-drag;
 }
 #titlebar .title {
   font-size: 12.5px;
@@ -287,12 +293,45 @@ body {
   margin-top: 8px;
   padding-top: 7px;
   border-top: 1px solid var(--divider);
+  flex-wrap: wrap;
+  gap: 6px;
 }
 #toolbar-left, #toolbar-right {
   display: flex;
   align-items: center;
   gap: 2px;
 }
+#toolbar-left { flex-wrap: wrap; }
+
+#input-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+}
+#input-hint, #settings-access-status {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-dim);
+}
+#settings-access-status { margin-top: 6px; }
+#settings-access-status:empty { display: none; }
+#btn-translate {
+  border: none;
+  border-radius: 7px;
+  padding: 6px 15px;
+  background: #007aff;
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+#btn-translate:hover:not(:disabled) { background: #0066d6; }
+#btn-translate:disabled { opacity: 0.5; cursor: default; }
+#btn-translate:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
 .toolbar-sep {
   width: 1px;
   height: 14px;
