@@ -40,19 +40,26 @@ export async function fetchOllamaCapabilities(
   model: string,
 ): Promise<string[]> {
   const url = `${normalizeBaseUrl(baseUrl)}/api/show`;
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: model }),
-  });
-  if (!resp.ok) {
-    throw new Error(`Ollama show failed: ${resp.status}`);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 5000);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: model }),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      throw new Error(`Ollama show failed: ${resp.status}`);
+    }
+    const data = await resp.json();
+    if (!Array.isArray(data?.capabilities)) {
+      return [];
+    }
+    return data.capabilities.filter((c: unknown): c is string => typeof c === "string");
+  } finally {
+    window.clearTimeout(timeout);
   }
-  const data = await resp.json();
-  if (!Array.isArray(data?.capabilities)) {
-    return [];
-  }
-  return data.capabilities.filter((c: unknown): c is string => typeof c === "string");
 }
 
 async function fetchOllama(url: string, init: RequestInit): Promise<Response> {

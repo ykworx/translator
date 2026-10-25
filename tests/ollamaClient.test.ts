@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { resetTauriStore, setTauriStoreValue } from "./helpers/tauriMock";
+import { getActiveBackend, resetBackendCache } from "../src/llmBackend";
 
 // Provide store state so ollamaClient reads correct config
 setTauriStoreValue("ollamaBaseUrl", "http://localhost:11434");
@@ -584,5 +585,84 @@ describe("getOllamaBackend — immutable connection", () => {
       expect(url).toBe("http://original.invalid:11434/v1/chat/completions");
       expect(JSON.parse(init.body as string).model).toBe("original-model");
     }
+  });
+});
+
+describe("Ollama capability deadline", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetTauriStore();
+    resetBackendCache();
+    setTauriStoreValue("llmBackendId", "ollama");
+    setTauriStoreValue("ollamaBaseUrl", BASE_URL);
+    setTauriStoreValue("ollamaModel", "gemma3:4b");
+  });
+  afterEach(() => {
+    resetBackendCache();
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    setTauriStoreValue("ollamaBaseUrl", BASE_URL);
+    setTauriStoreValue("ollamaModel", "gemma3:4b");
+  });
+
+  it("releases simultaneous callers from a stalled shared probe and allows the next connection to recover", async () => {
+    const mockFetch = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    }));
+    vi.stubGlobal("fetch", mockFetch);
+    const first = getActiveBackend();
+    const second = getActiveBackend();
+    let completed = false;
+    const results = Promise.all([first, second]).then(backends => { completed = true; return backends; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockFetch).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(completed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const [a, b] = await results;
+    expect(a).toBe(b);
+    expect(a.supportsVision).toBe(true); // existing gemma3 heuristic fallback
+    expect((mockFetch.mock.calls[0][1].signal as AbortSignal).aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+
+    setTauriStoreValue("ollamaModel", "recovered-vision-model");
+    setTauriStoreValue("ollamaBaseUrl", "http://localhost:11500");
+    mockFetch.mockResolvedValueOnce(makeJsonResponse({ capabilities: ["completion", "vision"] }));
+    const recovered = await getActiveBackend();
+    expect(recovered).not.toBe(a);
+    expect(recovered.supportsVision).toBe(true); // returned capabilities, not name heuristic
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[1][0]).toBe("http://localhost:11500/api/show");
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body as string)).toEqual({ name: "recovered-vision-model" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps the deadline active after headers until the response body finishes", async () => {
+    let signal: AbortSignal | undefined;
+    const json = vi.fn(() => new Promise((_resolve, reject) => {
+      signal!.addEventListener("abort", () => reject(new DOMException("Body aborted", "AbortError")), { once: true });
+    }));
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => {
+      signal = init.signal as AbortSignal;
+      return Promise.resolve({ ok: true, json } as unknown as Response);
+    }));
+    const pending = fetchOllamaCapabilities(BASE_URL, "gemma3:4b");
+    const assertion = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(json).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+    expect(signal!.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears the deadline once capabilities are decoded successfully", async () => {
+    const mockFetch = vi.fn().mockResolvedValue(makeJsonResponse({ capabilities: ["vision"] }));
+    vi.stubGlobal("fetch", mockFetch);
+    expect(await fetchOllamaCapabilities(BASE_URL, "model")).toEqual(["vision"]);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((mockFetch.mock.calls[0][1].signal as AbortSignal).aborted).toBe(false);
   });
 });
