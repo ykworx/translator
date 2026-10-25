@@ -46,9 +46,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": [
-      "vendor/whisper.cpp/models/for-tests-silero-v6.2.0-ggml.bin"
-    ],
+    "resources": {
+      "vendor/whisper.cpp/models/for-tests-silero-v6.2.0-ggml.bin": "for-tests-silero-v6.2.0-ggml.bin",
+      "vendor/silero-vad-coreml.mlmodelc/": "silero-vad-coreml.mlmodelc/"
+    },
     "macOS": {
       "minimumSystemVersion": "10.15",
       "signingIdentity": "Transrator Developer"

@@ -7,14 +7,19 @@ import ScreenCaptureKit
 @available(macOS 13.0, *)
 private final class ZoomAudioOutput: NSObject, SCStreamOutput {
     weak var owner: AppCaptionBridgeState?
+    private let captureGeneration: UInt64
+    private let engineGeneration: UInt64
 
-    init(owner: AppCaptionBridgeState) {
+    init(owner: AppCaptionBridgeState, captureGeneration: UInt64, engineGeneration: UInt64) {
         self.owner = owner
+        self.captureGeneration = captureGeneration
+        self.engineGeneration = engineGeneration
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
         guard outputType == .audio else { return }
-        owner?.appendAudioSampleBuffer(sampleBuffer)
+        owner?.appendAudioSampleBuffer(sampleBuffer, captureGeneration: captureGeneration,
+                                       engineGeneration: engineGeneration)
     }
 }
 
@@ -35,6 +40,8 @@ final class AppCaptionBridgeState {
 
     private let lock = NSLock()
     private let audioQueue = DispatchQueue(label: "transrator.zoom.audio")
+    private var captureGeneration: UInt64 = 0
+    private var acceptingAudio = false
 
     private var stream: SCStream?
     private var output: ZoomAudioOutput?
@@ -95,7 +102,7 @@ final class AppCaptionBridgeState {
         let modelLoaded = WhisperEngine.shared.isModelLoaded
         let screenAuthorized = CGPreflightScreenCaptureAccess()
         return [
-            "authorized": modelLoaded && screenAuthorized,
+            "authorized": screenAuthorized,
             "modelLoaded": modelLoaded,
             "screenAuthorized": screenAuthorized,
             "permissionPromptPending": permissionPromptPending,
@@ -105,17 +112,6 @@ final class AppCaptionBridgeState {
     }
 
     func requestPermissions() -> [String: Any] {
-        // Check Whisper model loaded
-        guard WhisperEngine.shared.isModelLoaded else {
-            return mergeCurrentState(extra: [
-                "authorized": false,
-                "modelLoaded": false,
-                "screenAuthorized": CGPreflightScreenCaptureAccess(),
-                "permissionPromptPending": false,
-                "error": "Whisper 모델이 로드되지 않았습니다. 설정에서 모델을 먼저 다운로드해주세요."
-            ])
-        }
-
         let screenAuthorized = CGPreflightScreenCaptureAccess()
         if !screenAuthorized {
             updateState { permissionPromptPending = true }
@@ -164,6 +160,15 @@ final class AppCaptionBridgeState {
                 "error": "Whisper 엔진이 다른 기능에서 사용 중입니다."
             ])
         }
+        guard let engineGeneration = WhisperEngine.shared.captureGeneration(owner: .appCaption) else {
+            WhisperEngine.shared.release(owner: .appCaption)
+            return mergeCurrentState(extra: ["error": "자막 오디오 세션을 준비할 수 없습니다."])
+        }
+        lock.lock()
+        captureGeneration &+= 1
+        let generation = captureGeneration
+        acceptingAudio = true
+        lock.unlock()
 
         let preferredLocale = (localeIdentifier?.isEmpty == false ? localeIdentifier! : Locale.preferredLanguages.first)
             ?? Locale.current.identifier
@@ -219,7 +224,8 @@ final class AppCaptionBridgeState {
                 configuration.minimumFrameInterval = CMTime(value: 1, timescale: 15)
                 configuration.queueDepth = 3
 
-                let output = ZoomAudioOutput(owner: self)
+                let output = ZoomAudioOutput(owner: self, captureGeneration: generation,
+                                             engineGeneration: engineGeneration)
                 let filter: SCContentFilter
                 if normalizedCaptureMode == "app", let app = selectedWindow.window.owningApplication {
                     filter = SCContentFilter(display: shareableContent.displays.first!, including: [app], exceptingWindows: [])
@@ -264,11 +270,13 @@ final class AppCaptionBridgeState {
     }
 
     func stop(clearTranscript: Bool) -> [String: Any] {
-        // Finalize remaining audio
-        WhisperEngine.shared.forceFinalize()
-        WhisperEngine.shared.shouldFinalize = nil
-        WhisperEngine.shared.release(owner: .appCaption)
-
+        // Reject queued/late stream callbacks before draining the processing queue.
+        // The main queue must not wait for Whisper result callbacks here.
+        updateState {
+            self.captureGeneration &+= 1
+            self.acceptingAudio = false
+            self.isRunning = false
+        }
         if let stream {
             Task {
                 try? await stream.stopCapture()
@@ -276,19 +284,24 @@ final class AppCaptionBridgeState {
         }
         self.stream = nil
         self.output = nil
-        self.monoConverter = nil
-        self.downsampleConverter = nil
-        self.biquadInitialized = false
-        self.hpX1 = 0; self.hpX2 = 0; self.hpY1 = 0; self.hpY2 = 0
-        self.lpX1 = 0; self.lpX2 = 0; self.lpY1 = 0; self.lpY2 = 0
-        if let state = self.rnnoiseState {
-            rnnoise_destroy(state)
-            self.rnnoiseState = nil
+        audioQueue.sync {
+            self.monoConverter = nil
+            self.downsampleConverter = nil
+            self.biquadInitialized = false
+            self.hpX1 = 0; self.hpX2 = 0; self.hpY1 = 0; self.hpY2 = 0
+            self.lpX1 = 0; self.lpX2 = 0; self.lpY1 = 0; self.lpY2 = 0
+            if let state = self.rnnoiseState {
+                rnnoise_destroy(state)
+                self.rnnoiseState = nil
+            }
+            self.rnnoiseBuffer.removeAll()
+            self.vadProbHistory.removeAll()
+            self.silenceStartMs = 0
         }
-        self.rnnoiseBuffer.removeAll()
-        self.vadProbHistory.removeAll()
-        // audioConverter removed — now uses monoConverter + downsampleConverter
-        self.silenceStartMs = 0
+        if WhisperEngine.shared.isOwned(by: .appCaption) {
+            WhisperEngine.shared.shouldFinalize = nil
+            WhisperEngine.shared.release(owner: .appCaption)
+        }
 
         updateState({
             self.isRunning = false
@@ -366,9 +379,17 @@ final class AppCaptionBridgeState {
         }
     }
 
-    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+    private func isCurrentCapture(_ generation: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return acceptingAudio && captureGeneration == generation
+    }
+
+    func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer, captureGeneration: UInt64,
+                                 engineGeneration: UInt64) {
+        guard isCurrentCapture(captureGeneration) else { return }
         guard let pcmBuffer = makePCMBuffer(from: sampleBuffer) else { return }
-        updateAudioDebug(with: pcmBuffer)
+        updateAudioDebug(with: pcmBuffer, captureGeneration: captureGeneration)
 
         // Step 1: Convert to 48kHz mono
         let monoBuffer = convertToMono(pcmBuffer)
@@ -385,7 +406,7 @@ final class AppCaptionBridgeState {
         guard !denoisedSamples.isEmpty else { return }
 
         // Step 3: Downsample 48kHz → 16kHz mono and send to Whisper
-        downsampleAndSend(denoisedSamples)
+        downsampleAndSend(denoisedSamples, engineGeneration: engineGeneration)
     }
 
     /// Convert any input format to 48kHz mono
@@ -474,7 +495,7 @@ final class AppCaptionBridgeState {
     }
 
     /// Downsample denoised 48kHz mono samples to 16kHz and send to Whisper
-    private func downsampleAndSend(_ samples: [Float]) {
+    private func downsampleAndSend(_ samples: [Float], engineGeneration: UInt64) {
         guard !samples.isEmpty else { return }
 
         // Create a 48kHz mono buffer from denoised samples
@@ -492,7 +513,7 @@ final class AppCaptionBridgeState {
             downsampleConverter = AVAudioConverter(from: monoFormat, to: speechFormat)
         }
         guard let converter = downsampleConverter else {
-            WhisperEngine.shared.appendPCMBuffer(inputBuffer)
+            // 48kHz input must never be interpreted as Whisper's 16kHz audio.
             return
         }
 
@@ -518,7 +539,7 @@ final class AppCaptionBridgeState {
         if error != nil { return }
 
         if outputBuffer.frameLength > 0 {
-            WhisperEngine.shared.appendPCMBuffer(outputBuffer)
+            WhisperEngine.shared.appendPCMBuffer(outputBuffer, owner: .appCaption, generation: engineGeneration)
         }
     }
 
@@ -599,7 +620,7 @@ final class AppCaptionBridgeState {
 
     // MARK: - Audio utilities
 
-    private func updateAudioDebug(with buffer: AVAudioPCMBuffer) {
+    private func updateAudioDebug(with buffer: AVAudioPCMBuffer, captureGeneration: UInt64) {
         let level = calculateAudioLevel(buffer)
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
         updateState {
@@ -615,14 +636,14 @@ final class AppCaptionBridgeState {
             if silentFor >= silenceResetMs {
                 silenceStartMs = 0
                 DispatchQueue.main.async { [weak self] in
-                    guard let self, self.isRunning else { return }
+                    guard let self, self.isCurrentCapture(captureGeneration) else { return }
                     WhisperEngine.shared.forceFinalize()
                     NSLog("[Transrator] Silence reset: force finalized for speaker change")
                 }
             } else if silentFor >= silenceDurationMs {
                 silenceStartMs = now - silenceDurationMs
                 DispatchQueue.main.async { [weak self] in
-                    guard let self, self.isRunning else { return }
+                    guard let self, self.isCurrentCapture(captureGeneration) else { return }
                     WhisperEngine.shared.forceFinalize()
                 }
             }

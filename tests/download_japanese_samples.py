@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Download Japanese audio samples from HuggingFace FLEURS dataset (Google).
+Download Japanese audio samples from the configured Hugging Face datasets.
 Saves 10 samples as 16kHz mono WAV files with a JSON manifest containing transcripts.
 
 Usage:
@@ -26,7 +26,7 @@ MAX_DURATION = 20.0
 
 
 def download_samples():
-    """Download Japanese audio samples from ReazonSpeech and save as 16kHz mono WAV."""
+    """Download Japanese speech samples and save as 16kHz mono WAV."""
     # Import here so missing dependency gives a clear error
     try:
         from datasets import load_dataset

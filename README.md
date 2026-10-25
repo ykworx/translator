@@ -8,6 +8,7 @@ Tauri 2와 vanilla TypeScript로 만든 macOS 중심의 팝업 번역기입니�
 - Gemini API, OpenAI API, Ollama 백엔드 선택
 - 자동 언어 전환, 답장 추천, 요약, 한글 발음 표시
 - 마이크 음성 입력: Whisper 인식 결과를 입력창에 넣은 뒤 Enter로 번역
+- 전역 받아쓰기: 다른 앱에서 `Cmd+Ctrl+D`로 녹음을 시작·종료하고 입력창에 확정 결과 삽입
 - 다른 앱의 오디오를 번역하는 실시간 자막: 설정의 실험적 자막 옵션으로 표시
 - 캔버스 및 전체 화면 오버레이의 필기 인식
 
@@ -63,13 +64,14 @@ macOS 기본 단축키는 다음과 같습니다.
 
 - `Cmd+Ctrl+T`: 선택한 내용을 복사한 뒤 번역
 - `Cmd+Ctrl+Shift+T`: 영역 캡처 후 이미지 번역
+- `Cmd+Ctrl+D`: 다른 앱에서 Whisper 받아쓰기 시작·종료 (번역 API 키 불필요)
 - 입력창에서 `Enter`: 번역, `Shift+Enter`: 줄바꿈
 - `Cmd+K`: 대화 지우기
 - `Cmd+Shift+C`: 마지막 번역 복사
 
 선택 영역 복사에는 macOS 손쉬운 사용 권한이, 영역 캡처·앱 자막에는 화면 기록 권한이, 음성 입력에는 마이크 권한이 필요합니다. 음성 기능은 설정에서 Whisper 모델을 다운로드한 뒤 사용합니다.
 
-현재 음성 시작 흐름에는 모델이 메모리에 로드되지 않은 상태에서 권한 확인이 먼저 실패하는 제한이 있습니다. 모델 다운로드 직후와 달리, 앱 재실행 또는 자동 언로드 후에는 시작이 막힐 수 있습니다.
+전역 받아쓰기는 **설정 → 받아쓰기**에서 언어·마이크·용어 힌트·공유 모델과 메모리 유지 시간을 설정합니다. 권한 상태를 먼저 확인하고, 녹음 없는 상태창 미리보기를 사용할 수 있습니다. 모델 준비가 끝난 뒤 말하고 같은 단축키로 종료하세요. 입력창이 바뀌거나 자동 입력을 지원하지 않으면 결과를 복사해 사용할 수 있습니다. 자세한 사용법과 검증 범위는 [전역 받아쓰기 안내](docs/GLOBAL_DICTATION.md)를 참고하세요.
 
 설정과 API 키는 Tauri Store의 앱 데이터 디렉토리 내 `settings.json`에 저장됩니다. 현재 Keychain 저장은 구현되어 있지 않습니다.
 
@@ -86,11 +88,14 @@ npm run test:watch
 # Rust 단위 테스트 (네이티브 빌드 도구와 서브모듈 필요)
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 
+# macOS 순수 상태·AppKit private clipboard·benchmark runner 회귀 검사
+bash tests/run_native_dictation_tests.sh
+
 # 프런트엔드 프로덕션 빌드
 npm run build
 ```
 
-프런트엔드 테스트는 API 응답 처리, 백엔드 선택, 설정 마이그레이션 등을 모의 환경에서 검증합니다. Rust 단위 테스트는 OpenAI 응답·스트림 파싱과 재시도 헬퍼를 검증합니다. 실제 마이크·화면 캡처·전역 단축키의 동작은 별도 확인이 필요합니다. 일본어 음성 인식 데이터와 WER/CER·지연 시간 벤치마크는 [tests/README.md](tests/README.md)를 참고하세요.
+프런트엔드 테스트는 API 응답 처리, 백엔드 선택, 설정 저장·마이그레이션 등을 모의 환경에서 검증합니다. Rust 단위 테스트는 OpenAI 응답·스트림 파싱·재시도, 단축키 등록·복구, 음성 모델 선택·설치 보호 규칙을 검증합니다. 실제 마이크·화면 캡처·전역 단축키의 동작은 별도 확인이 필요합니다. 일본어 음성 인식 데이터와 WER/CER·지연 시간 벤치마크는 [tests/README.md](tests/README.md)를 참고하세요.
 
 ## 주요 구조
 
@@ -108,7 +113,7 @@ src/
   handwriting*.ts         필기 인식 패널·오버레이
 src-tauri/
   src/                    Tauri 명령, 단축키, 창, 클립보드, 모델 관리
-  swift/                  음성 캡처, Whisper·CoreML VAD 브리지
+  swift/                  전역 받아쓰기 패널·삽입, 음성 캡처, Whisper·CoreML VAD 브리지
   vendor/                 Whisper·RNNoise 및 VAD 리소스
 tests/                    단위 테스트와 음성 인식 벤치마크
 ```

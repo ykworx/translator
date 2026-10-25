@@ -9,7 +9,7 @@ mod platform {
     unsafe extern "C" {
         fn whisper_engine_load_model(model_path: *const c_char) -> *mut c_char;
         fn whisper_engine_unload_model();
-        fn whisper_engine_feed_wav(wav_path: *const c_char, language: *const c_char) -> *mut c_char;
+        fn whisper_engine_feed_wav(wav_path: *const c_char, language: *const c_char, dictation: bool) -> *mut c_char;
         fn perf_get_stats() -> *mut c_char;
         fn perf_reset_stats();
         fn perf_set_enabled(enabled: bool);
@@ -47,14 +47,14 @@ mod platform {
         serde_json::from_str(&raw).map_err(|e| format!("JSON parse error: {e}"))
     }
 
-    pub fn feed_wav(path: &str, language: Option<&str>) -> Result<Value, String> {
+    pub fn feed_wav(path: &str, language: Option<&str>, dictation: bool) -> Result<Value, String> {
         let c_path = CString::new(path).map_err(|_| "Invalid path".to_string())?;
         let c_lang = match language {
             Some(language) => Some(CString::new(language).map_err(|_| "Invalid language".to_string())?),
             None => None,
         };
         let lang_ptr = c_lang.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-        decode_json_value(unsafe { whisper_engine_feed_wav(c_path.as_ptr(), lang_ptr) })
+        decode_json_value(unsafe { whisper_engine_feed_wav(c_path.as_ptr(), lang_ptr, dictation) })
     }
 
     pub fn get_perf_stats() -> Result<Value, String> {
@@ -77,7 +77,7 @@ mod platform {
     pub fn load_model(_path: &str) {}
     pub fn unload_model() {}
 
-    pub fn feed_wav(_path: &str, _language: Option<&str>) -> Result<Value, String> {
+    pub fn feed_wav(_path: &str, _language: Option<&str>, _dictation: bool) -> Result<Value, String> {
         Err("Benchmark is only supported on macOS".into())
     }
 
@@ -102,8 +102,8 @@ pub fn unload_model_for_benchmark() {
 }
 
 #[tauri::command]
-pub fn run_wav_benchmark(wav_path: String, language: Option<String>) -> Result<Value, String> {
-    platform::feed_wav(&wav_path, language.as_deref())
+pub fn run_wav_benchmark(wav_path: String, language: Option<String>, dictation: Option<bool>) -> Result<Value, String> {
+    platform::feed_wav(&wav_path, language.as_deref(), dictation.unwrap_or(false))
 }
 
 #[tauri::command]

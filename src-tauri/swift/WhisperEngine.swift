@@ -9,7 +9,11 @@ import Accelerate
 /// call back into Swift.
 private final class WhisperSegmentCallbackContext {
     weak var engine: WhisperEngine?
-    init(engine: WhisperEngine) { self.engine = engine }
+    let generation: UInt64
+    init(engine: WhisperEngine, generation: UInt64) {
+        self.engine = engine
+        self.generation = generation
+    }
 }
 
 /// C-compatible callback invoked by whisper.cpp each time new segment(s) are decoded.
@@ -58,7 +62,7 @@ private let whisperNewSegmentCallback: @convention(c) (
 
         // Speaker turn detection (tinydiarize)
         let speakerTurn = whisper_full_get_segment_speaker_turn_next_from_state(state, i)
-        if speakerTurn && !partialText.isEmpty {
+        if speakerTurn && !engine.isDictating && !partialText.isEmpty {
             partialText += "\n[화자 전환]\n"
         } else if !partialText.isEmpty {
             partialText += " "
@@ -75,13 +79,7 @@ private let whisperNewSegmentCallback: @convention(c) (
             NSLog("[WhisperEngine] Partial (repeat, skipped): %@", partialText)
             return
         }
-        NSLog("[WhisperEngine] Partial: %@", partialText)
-        let callback = engine.onPartialResult
-        if engine.isBenchmarkMode {
-            callback?(partialText)
-        } else {
-            DispatchQueue.main.async { callback?(partialText) }
-        }
+        engine.deliverPartial(partialText, generation: callbackCtx.generation)
     }
 }
 
@@ -95,18 +93,51 @@ private let whisperNewSegmentCallback: @convention(c) (
 final class WhisperEngine {
     static let shared = WhisperEngine()
 
-    enum Owner: String { case mic, appCaption, none }
+    enum Owner: String { case mic, dictation, appCaption, none }
 
     /// Optional check before finalize — returns true if finalize should proceed
     /// Used by AppCaptionBridge to inject RNNoise vadProb check
     var shouldFinalize: (() -> Bool)?
 
     private let lock = NSLock()
+    // All C-context access, including warm-up and destruction, is exclusive.
+    private let executionLock = NSLock()
     private let inferenceQueue = DispatchQueue(label: "transrator.whisper.inference", qos: .userInitiated)
 
     private var ctx: OpaquePointer?
-    private(set) var isModelLoaded = false
+    private var modelLoaded = false
+    var isModelLoaded: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return modelLoaded
+    }
     private var currentOwner: Owner = .none
+    private var sessionGeneration: UInt64 = 0
+    private var acceptingSamples = false
+
+    var isDictating: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return currentOwner == .dictation || currentOwner == .mic
+    }
+
+    var isInUse: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return currentOwner != .none
+    }
+
+    func isOwned(by owner: Owner) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return currentOwner == owner
+    }
+
+    func captureGeneration(owner: Owner) -> UInt64? {
+        lock.lock(); defer { lock.unlock() }
+        return currentOwner == owner && acceptingSamples ? sessionGeneration : nil
+    }
+
+    func setInitialPrompt(_ hint: String, owner: Owner = .none) {
+        lock.lock(); defer { lock.unlock() }
+        if currentOwner == .none || currentOwner == owner { initialPrompt = hint }
+    }
     // vadModelPath removed — using CoreML VAD instead of ggml
 
     /// When true, callbacks fire directly on inference thread (no DispatchQueue.main.async)
@@ -134,8 +165,7 @@ final class WhisperEngine {
 
     /// Silence detection (fast, RMS-based)
     private let silenceThreshold: Float = 0.005
-    private var silentChunkCount = 0
-    private let silentChunksForFinalize = 12 // 1200ms at ~100ms chunks
+    private var silence = SilenceTracker() // 1.2s at 16kHz, independent of tap buffer size
     private var shortSegmentDeferred = false  // defer finalize once for short segments
 
     // MARK: - Hallucination filter (O(1) exact + substring fallback + cached regex)
@@ -185,6 +215,7 @@ final class WhisperEngine {
 
     /// Check if text is a repetition of any recent finalized segment
     fileprivate func isRepeatOfLastSegment(_ text: String) -> Bool {
+        if isDictating { return false }
         guard text.count >= 3 else { return false }
         // Normalize: remove whitespace, punctuation for comparison
         let norm = text.replacingOccurrences(of: "[。、.!?\\s]", with: "", options: .regularExpression)
@@ -239,10 +270,16 @@ final class WhisperEngine {
     fileprivate static let warmupGroup = DispatchGroup()
 
     func loadModel(path: String) -> Bool {
+        guard !isInUse else { return false }
+        executionLock.lock()
+        defer { executionLock.unlock() }
         lock.lock()
-        defer { lock.unlock() }
-
-        if ctx != nil { whisper_free(ctx); ctx = nil; isModelLoaded = false }
+        guard currentOwner == .none else { lock.unlock(); return false }
+        let previous = ctx
+        ctx = nil
+        modelLoaded = false
+        lock.unlock()
+        if let previous { whisper_free(previous) }
 
         var params = whisper_context_default_params()
         params.use_gpu = true
@@ -259,18 +296,24 @@ final class WhisperEngine {
             return false
         }
 
-        ctx = newCtx
-        isModelLoaded = true
         loadCoreMLVad()
+        lock.lock()
+        ctx = newCtx
+        modelLoaded = true
+        lock.unlock()
         NSLog("[WhisperEngine] Model loaded from %@", path)
 
-        // Warm-up encode: run a dummy encode with 0.1s silence to prime
+        // Warm-up encode: use enough samples to exceed Whisper's 100ms minimum.
         // CoreML compilation cache + Metal shader cache (~60ms first-encode penalty absorbed here)
         let warmupCtx = newCtx
         WhisperEngine.warmupGroup.enter()
         DispatchQueue.global(qos: .utility).async {
             defer { WhisperEngine.warmupGroup.leave() }
-            let silenceSamples = [Float](repeating: 0.0, count: 1600) // 0.1s at 16kHz
+            self.executionLock.lock()
+            defer { self.executionLock.unlock() }
+            // A reload or unload may have overtaken this queued warm-up.
+            guard self.ctx == warmupCtx else { return }
+            let silenceSamples = [Float](repeating: 0.0, count: 3200) // 0.2s at 16kHz
             var warmParams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
             warmParams.print_realtime = false
             warmParams.print_progress = false
@@ -300,7 +343,7 @@ final class WhisperEngine {
         // Dev mode: vendor directory
         let execPath = ProcessInfo.processInfo.arguments.first ?? ""
         let execDir = (execPath as NSString).deletingLastPathComponent
-        for rel in ["../../../vendor/\(modelName)",
+        for rel in ["vendor/\(modelName)", "../../../vendor/\(modelName)",
                      "../../../../src-tauri/vendor/\(modelName)"] {
             let p = ((execDir as NSString).appendingPathComponent(rel) as NSString).standardizingPath
             if FileManager.default.fileExists(atPath: p) {
@@ -308,25 +351,26 @@ final class WhisperEngine {
                 if vad.load(path: p) { coremlVad = vad; coremlVadLoaded = true; return }
             }
         }
-        // Source tree
-        let srcTree = NSHomeDirectory() + "/transrator/tauri-app/src-tauri/vendor/\(modelName)"
-        if FileManager.default.fileExists(atPath: srcTree) {
-            let vad = CoreMLVad()
-            if vad.load(path: srcTree) { coremlVad = vad; coremlVadLoaded = true; return }
-        }
-
         NSLog("[WhisperEngine] CoreML VAD not found, finalize will run without VAD")
     }
 
-    func unloadModel() {
+    @discardableResult
+    func unloadModel() -> Bool {
+        guard !isInUse else { return false }
+        executionLock.lock()
+        defer { executionLock.unlock() }
         lock.lock()
-        defer { lock.unlock() }
-        coremlVad = nil; coremlVadLoaded = false
-        if ctx != nil { whisper_free(ctx); ctx = nil }
-        isModelLoaded = false
-        currentOwner = .none
+        guard currentOwner == .none else { lock.unlock(); return false }
+        let previous = ctx
+        ctx = nil
+        modelLoaded = false
         resetState()
+        // Do not hold the state lock during slow Metal/CoreML destruction.
+        lock.unlock()
+        coremlVad = nil; coremlVadLoaded = false
+        if let previous { whisper_free(previous) }
         NSLog("[WhisperEngine] Model unloaded")
+        return true
     }
 
     // MARK: - Owner management
@@ -334,9 +378,11 @@ final class WhisperEngine {
     func acquire(owner: Owner) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard isModelLoaded else { return false }
-        if currentOwner != .none && currentOwner != owner { return false }
+        guard modelLoaded else { return false }
+        guard currentOwner == .none else { return false }
         currentOwner = owner
+        sessionGeneration &+= 1
+        acceptingSamples = true
         return true
     }
 
@@ -345,27 +391,52 @@ final class WhisperEngine {
         defer { lock.unlock() }
         if currentOwner == owner {
             currentOwner = .none
+            sessionGeneration &+= 1
+            acceptingSamples = false
             resetState()
             onPartialResult = nil
             onFinalResult = nil
         }
     }
 
+    /// Stop accepting audio, drain the last inference, then deliver completion
+    /// after all result callbacks already enqueued on the main queue.
+    func finish(owner: Owner, completion: @escaping () -> Void) {
+        lock.lock()
+        let ownsEngine = currentOwner == owner
+        if ownsEngine { acceptingSamples = false }
+        lock.unlock()
+        guard ownsEngine else { DispatchQueue.main.async(execute: completion); return }
+        forceFinalize()
+        inferenceQueue.async { DispatchQueue.main.async(execute: completion) }
+    }
+
+    fileprivate func deliverPartial(_ text: String, generation: UInt64) {
+        let deliver = {
+            self.lock.lock()
+            let callback = self.sessionGeneration == generation ? self.onPartialResult : nil
+            self.lock.unlock()
+            callback?(text)
+        }
+        if isBenchmarkMode { deliver() } else { DispatchQueue.main.async(execute: deliver) }
+    }
+
     private func resetState() {
         audioBuffer.removeAll()
         newSampleCount = 0
-        silentChunkCount = 0
+        silence.reset()
         promptTokens.removeAll()
         lastFinalText = ""
         isInferenceRunning = false
         lastFinalizedText = ""
         segmentCount = 0
-        coremlVad?.resetState()
     }
 
     // MARK: - Language
 
     func setLanguage(from localeIdentifier: String?) {
+        lock.lock()
+        defer { lock.unlock() }
         guard let id = localeIdentifier, !id.isEmpty else { whisperLang = "auto"; return }
         let mapping: [String: String] = [
             "ko-KR": "ko", "ko": "ko", "ja-JP": "ja", "ja": "ja",
@@ -385,18 +456,20 @@ final class WhisperEngine {
     /// Last finalized segment text — used to detect cross-segment repetition
     private var lastFinalizedText: String = ""
 
-    func appendSamples(_ samples: [Float]) {
+    func appendSamples(_ samples: [Float], owner: Owner? = nil, generation: UInt64? = nil) {
         // Fast silence detection (RMS)
         let rms = computeRMS(samples)
         // Always append samples to buffer first
         lock.lock()
+        guard acceptingSamples, currentOwner != .none else { lock.unlock(); return }
+        if let owner, owner != currentOwner { lock.unlock(); return }
+        if let generation, generation != sessionGeneration { lock.unlock(); return }
         audioBuffer.append(contentsOf: samples)
 
         let vadResult = shouldFinalize?() ?? true  // true = vadProb low (no speech)
 
         if rms < silenceThreshold {
-            silentChunkCount += 1
-            if silentChunkCount >= silentChunksForFinalize {
+            if silence.append(sampleCount: samples.count, isSilent: true) {
                 NSLog("[WhisperEngine] Silence 1.2s: rms=%.4f vadSilent=%d buf=%d", rms, vadResult ? 1 : 0, audioBuffer.count)
                 let audioLen = audioBuffer.count
                 let hasAudio = audioLen >= minInferSize
@@ -404,13 +477,13 @@ final class WhisperEngine {
 
                 if hasAudio {
                     let minFinalizeSize = 32_000  // 2 seconds
-                    if audioLen < minFinalizeSize && !shortSegmentDeferred {
+                    if audioLen < minFinalizeSize && !shortSegmentDeferred && !isDictating {
                         shortSegmentDeferred = true
-                        silentChunkCount = 0
+                        silence.reset()
                         return
                     }
                     shortSegmentDeferred = false
-                    silentChunkCount = 0
+                    silence.reset()
                     if self.shouldFinalize?() ?? true {
                         finalizeAndClear()
                     }
@@ -419,7 +492,7 @@ final class WhisperEngine {
                     lock.lock()
                     audioBuffer.removeAll()
                     newSampleCount = 0
-                    silentChunkCount = 0
+                    silence.reset()
                     shortSegmentDeferred = false
                     lock.unlock()
                 }
@@ -427,7 +500,7 @@ final class WhisperEngine {
             }
             lock.unlock()
         } else {
-            silentChunkCount = 0
+            silence.reset()
             shortSegmentDeferred = false
             lock.unlock()
         }
@@ -452,6 +525,7 @@ final class WhisperEngine {
     /// Extract speech-only segments using CoreML VAD
     /// Processes audio in 256ms (4096 sample) chunks, concatenates speech segments
     private func extractSpeechSegments(from samples: [Float], vad: CoreMLVad, threshold: Float = 0.3, padSamples: Int = 1600) -> [Float] {
+        vad.resetState()
         let vadStart = CFAbsoluteTimeGetCurrent()
         let chunkSize = CoreMLVad.chunkSize  // 4096 samples = 256ms
         var speechSamples: [Float] = []
@@ -472,9 +546,9 @@ final class WhisperEngine {
                 isSpeech = true
             } else {
                 if isSpeech {
-                    let padEnd = min(end + padSamples, samples.count)
-                    if end < padEnd {
-                        speechSamples.append(contentsOf: samples[end..<padEnd])
+                    let padEnd = min(offset + padSamples, samples.count)
+                    if offset < padEnd {
+                        speechSamples.append(contentsOf: samples[offset..<padEnd])
                     }
                 }
                 isSpeech = false
@@ -507,11 +581,11 @@ final class WhisperEngine {
         return speechSamples
     }
 
-    func appendPCMBuffer(_ buffer: AVAudioPCMBuffer) {
+    func appendPCMBuffer(_ buffer: AVAudioPCMBuffer, owner: Owner? = nil, generation: UInt64? = nil) {
         guard let channelData = buffer.floatChannelData else { return }
         let frameCount = Int(buffer.frameLength)
         guard frameCount > 0 else { return }
-        appendSamples(Array(UnsafeBufferPointer(start: channelData[0], count: frameCount)))
+        appendSamples(Array(UnsafeBufferPointer(start: channelData[0], count: frameCount)), owner: owner, generation: generation)
     }
 
     private func computeRMS(_ samples: [Float]) -> Float {
@@ -527,10 +601,12 @@ final class WhisperEngine {
     /// Partial: no VAD (fast), relies on new_segment_callback for incremental results
     private func runPartialInference() {
         lock.lock()
+        guard acceptingSamples else { lock.unlock(); return }
         let samples = audioBuffer
         newSampleCount = 0
         isInferenceRunning = true
         let currentPromptTokens = promptTokens
+        let generation = sessionGeneration
         lock.unlock()
 
         guard samples.count >= minPartialSize else {
@@ -540,34 +616,38 @@ final class WhisperEngine {
 
         inferenceQueue.async { [weak self] in
             guard let self else { return }
-            let (text, _) = self.runWhisper(on: samples, promptTokens: currentPromptTokens, useVAD: false)
+            let (text, _) = self.runWhisper(on: samples, promptTokens: currentPromptTokens, useVAD: false, generation: generation)
             self.lock.lock()
+            guard self.sessionGeneration == generation else { self.lock.unlock(); return }
             self.isInferenceRunning = false
             self.lock.unlock()
             if !text.isEmpty {
-                if self.isBenchmarkMode {
-                    self.onPartialResult?(text)
-                } else {
-                    DispatchQueue.main.async { self.onPartialResult?(text) }
-                }
+                self.deliverPartial(text, generation: generation)
             }
         }
     }
 
     /// Finalize: run inference on all accumulated audio → emit final + clear buffer
-    func forceFinalize() {
+    func forceFinalize(endOfInput: Bool = false) {
+        if endOfInput {
+            lock.lock(); acceptingSamples = false; lock.unlock()
+        }
         finalizeAndClear()
     }
 
     private func finalizeAndClear() {
         lock.lock()
-        let samples = audioBuffer
+        var samples = audioBuffer
+        if currentOwner != .appCaption, currentOwner != .none, !acceptingSamples, !samples.isEmpty, samples.count < minInferSize {
+            samples += [Float](repeating: 0, count: minInferSize - samples.count)
+        }
         audioBuffer.removeAll()
         newSampleCount = 0
-        silentChunkCount = 0
+        silence.reset()
         shortSegmentDeferred = false
         isInferenceRunning = true
         let currentPromptTokens = promptTokens
+        let generation = sessionGeneration
         lock.unlock()
 
         guard samples.count >= minInferSize else {
@@ -578,15 +658,16 @@ final class WhisperEngine {
         inferenceQueue.async { [weak self] in
             guard let self else { return }
             // Finalize uses VAD to filter out music/noise → clean result
-            let (text, newTokens) = self.runWhisper(on: samples, promptTokens: currentPromptTokens, useVAD: true)
+            let (text, newTokens) = self.runWhisper(on: samples, promptTokens: currentPromptTokens, useVAD: true, generation: generation)
 
             self.lock.lock()
+            guard self.sessionGeneration == generation else { self.lock.unlock(); return }
             if !newTokens.isEmpty {
                 // Limit prompt tokens to last 32 to prevent context pollution
                 self.promptTokens = newTokens.count > 32 ? Array(newTokens.suffix(32)) : newTokens
             }
             self.isInferenceRunning = false
-            let isDuplicate = !text.isEmpty && text == self.lastFinalText
+            let isDuplicate = self.currentOwner == .appCaption && !text.isEmpty && text == self.lastFinalText
             if !text.isEmpty {
                 self.lastFinalText = text
             } else {
@@ -599,11 +680,13 @@ final class WhisperEngine {
             self.lock.unlock()
 
             if !text.isEmpty && !isDuplicate {
-                if self.isBenchmarkMode {
-                    self.onFinalResult?(text)
-                } else {
-                    DispatchQueue.main.async { self.onFinalResult?(text) }
+                let deliver = {
+                    self.lock.lock()
+                    let callback = self.sessionGeneration == generation ? self.onFinalResult : nil
+                    self.lock.unlock()
+                    callback?(text)
                 }
+                if self.isBenchmarkMode { deliver() } else { DispatchQueue.main.async(execute: deliver) }
             }
 
             // Immediately trigger partial if audio accumulated during finalize
@@ -615,10 +698,14 @@ final class WhisperEngine {
 
     // MARK: - Whisper execution
 
-    private func runWhisper(on samples: [Float], promptTokens: [Int32], useVAD: Bool) -> (text: String, tokens: [Int32]) {
+    private func runWhisper(on samples: [Float], promptTokens: [Int32], useVAD: Bool, generation: UInt64) -> (text: String, tokens: [Int32]) {
+        executionLock.lock()
+        defer { executionLock.unlock() }
         lock.lock()
-        guard let ctx = self.ctx else { lock.unlock(); return ("", []) }
+        guard self.sessionGeneration == generation, let ctx = self.ctx else { lock.unlock(); return ("", []) }
         let domainHint = self.initialPrompt
+        let dictating = currentOwner == .dictation || currentOwner == .mic
+        let language = whisperLang
         lock.unlock()
 
         // CoreML VAD pre-filter: extract speech-only segments
@@ -639,7 +726,7 @@ final class WhisperEngine {
         params.n_threads = 2  // 2 threads: beam search decoder doesn't benefit from more on Apple Silicon
         params.suppress_blank = true
         params.suppress_nst = true
-        params.tdrz_enable = true  // tinydiarize: speaker turn detection
+        params.tdrz_enable = !dictating
 
         // Hallucination 3-filter: tighter thresholds than defaults
         params.entropy_thold = 1.8       // compression_ratio: 2.4 → 1.8
@@ -650,7 +737,7 @@ final class WhisperEngine {
         // No additional VAD flag needed for whisper_full params
 
         // Set up new_segment_callback for partial results during inference
-        let callbackCtx = WhisperSegmentCallbackContext(engine: self)
+        let callbackCtx = WhisperSegmentCallbackContext(engine: self, generation: generation)
         let unmanagedCtx = Unmanaged.passRetained(callbackCtx)
         params.new_segment_callback = whisperNewSegmentCallback
         params.new_segment_callback_user_data = unmanagedCtx.toOpaque()
@@ -659,7 +746,7 @@ final class WhisperEngine {
 
         // Helper: run whisper_full with all nested withCString scopes kept alive
         func executeWhisperFull() {
-            let langStr = whisperLang
+            let langStr = language
             langStr.withCString { langPtr in
                 if langStr == "auto" {
                     params.language = nil
@@ -686,7 +773,7 @@ final class WhisperEngine {
                             }
                         }
                     } else {
-                        samples.withUnsafeBufferPointer { bufferPtr in
+                        filteredSamples.withUnsafeBufferPointer { bufferPtr in
                             let _ = whisper_full(ctx, params, bufferPtr.baseAddress, Int32(filteredSamples.count))
                         }
                     }
@@ -731,7 +818,7 @@ final class WhisperEngine {
     /// Feed a WAV file directly into the engine for benchmarking.
     /// Reads the file, converts to 16kHz float32, feeds in chunks simulating real-time,
     /// and returns the transcription result with timing info.
-    func feedWavFile(path: String, language: String? = "ja") -> [String: Any] {
+    func feedWavFile(path: String, language: String? = "ja", dictationMode: Bool = false) -> [String: Any] {
         guard isModelLoaded, ctx != nil else {
             return ["error": "Model not loaded"]
         }
@@ -804,6 +891,9 @@ final class WhisperEngine {
             samples = Array(UnsafeBufferPointer(start: channelData[0], count: Int(outputBuffer.frameLength)))
         }
 
+        let owner: Owner = dictationMode ? .dictation : .appCaption
+        guard acquire(owner: owner) else { return ["error": "Engine busy"] }
+
         // Enable perf tracking and benchmark mode (bypass DispatchQueue.main deadlock)
         let wasEnabled = PerformanceTracker.shared.isEnabled
         PerformanceTracker.shared.isEnabled = true
@@ -816,17 +906,13 @@ final class WhisperEngine {
 
         // Set up result collection
         var finalResult = ""
+        var collected = DictationTranscript(separator: language?.hasPrefix("ja") == true ? "" : " ")
         var partials: [String] = []
 
         let benchmarkStart = CFAbsoluteTimeGetCurrent()
 
         // Set language for recognition
         setLanguage(from: language)
-
-        // Acquire engine
-        guard acquire(owner: .mic) else {
-            return ["error": "Engine busy"]
-        }
 
         // Set callbacks — capture results directly (no main queue dispatch needed)
         let semaphore = DispatchSemaphore(value: 0)
@@ -838,7 +924,10 @@ final class WhisperEngine {
         }
         onFinalResult = { text in
             resultLock.lock()
-            finalResult = text
+            if dictationMode {
+                collected.appendFinal(text)
+                finalResult = collected.text
+            } else { finalResult = text }
             resultLock.unlock()
             semaphore.signal()
         }
@@ -853,20 +942,20 @@ final class WhisperEngine {
         }
 
         // Force finalize remaining audio
-        forceFinalize()
+        forceFinalize(endOfInput: dictationMode)
 
         // Drain inference queue to ensure finalize completes
         inferenceQueue.sync {}
 
         // Wait for result (max 30s) — may already be signaled from inferenceQueue
-        let waitResult = semaphore.wait(timeout: .now() + 30)
+        let waitResult: DispatchTimeoutResult = dictationMode ? .success : semaphore.wait(timeout: .now() + 30)
 
         let benchmarkEnd = CFAbsoluteTimeGetCurrent()
         let totalMs = (benchmarkEnd - benchmarkStart) * 1000.0
         let audioDurationMs = Double(totalSamples) / 16.0  // ms (16 samples/ms at 16kHz)
         let rtf = totalMs / audioDurationMs  // Real-Time Factor
 
-        release(owner: .mic)
+        release(owner: owner)
         isBenchmarkMode = false
 
         let perfStats = PerformanceTracker.shared.snapshot()
@@ -891,6 +980,8 @@ final class WhisperEngine {
     fileprivate func isHallucination(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return true }
+        // Caption-specific short-phrase/repetition filters discard legitimate dictation.
+        if isDictating { return false }
 
         // Single-character segments are usually fragments/hallucinations
         if trimmed.count == 1 { return true }
@@ -956,6 +1047,9 @@ public func whisper_engine_load_model(modelPath: UnsafePointer<CChar>?) -> Unsaf
     guard let modelPath else {
         return jsonCString(["loaded": false, "error": "모델 경로가 제공되지 않았습니다."])
     }
+    guard !WhisperEngine.shared.isInUse else {
+        return jsonCString(["loaded": false, "error": "음성 입력 또는 자막을 중지한 뒤 모델을 변경해주세요."])
+    }
     let path = String(cString: modelPath)
     let success = WhisperEngine.shared.loadModel(path: path)
     return jsonCString(["loaded": success, "error": success ? "" : "모델 로드에 실패했습니다."])
@@ -973,25 +1067,21 @@ public func whisper_engine_unload_model() {
 
 @_cdecl("whisper_engine_set_initial_prompt")
 public func whisper_engine_set_initial_prompt(prompt: UnsafePointer<CChar>?) {
-    WhisperEngine.shared.initialPrompt = prompt.map { String(cString: $0) } ?? ""
+    WhisperEngine.shared.setInitialPrompt(prompt.map { String(cString: $0) } ?? "")
 }
 
 @_cdecl("whisper_engine_feed_wav")
-public func whisper_engine_feed_wav(wavPath: UnsafePointer<CChar>?, language: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
+public func whisper_engine_feed_wav(wavPath: UnsafePointer<CChar>?, language: UnsafePointer<CChar>?, dictation: Bool) -> UnsafeMutablePointer<CChar>? {
     guard let wavPath else {
         return jsonCString(["error": "WAV 경로가 제공되지 않았습니다."])
     }
     let path = String(cString: wavPath)
     let lang = language.map { String(cString: $0) }
-    let result = WhisperEngine.shared.feedWavFile(path: path, language: lang)
+    let result = WhisperEngine.shared.feedWavFile(path: path, language: lang, dictationMode: dictation)
     return jsonCString(result)
 }
 
 @_cdecl("whisper_engine_shutdown")
-public func whisper_engine_shutdown() {
-    let result = WhisperEngine.warmupGroup.wait(timeout: .now() + 2.0)
-    if result == .timedOut {
-        NSLog("[WhisperEngine] shutdown: warmup timeout, proceeding anyway")
-    }
-    whisper_engine_unload_model()
+public func whisper_engine_shutdown() -> Bool {
+    WhisperEngine.shared.unloadModel()
 }

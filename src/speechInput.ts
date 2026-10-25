@@ -9,6 +9,8 @@ let speechPollTimer: number | null = null;
 let isSpeechRecording = false;
 let isSpeechPolling = false;
 let speechSessionId = 0;
+let speechStopOperation: Promise<void> | null = null;
+let speechFailureReason = "";
 
 let inputField: HTMLTextAreaElement;
 let speechStatus: HTMLDivElement;
@@ -57,9 +59,7 @@ async function pollSpeechState(sessionId: number): Promise<void> {
     applySpeechTranscript(state);
 
     if (state.error) {
-      updateSpeechUi(state.error, false);
-      isSpeechRecording = false;
-      stopSpeechPolling();
+      await stopSpeechInput(state.error);
       return;
     }
 
@@ -81,16 +81,15 @@ async function pollSpeechState(sessionId: number): Promise<void> {
     }
   } catch (e) {
     if (sessionId !== speechSessionId) return;
-    isSpeechRecording = false;
-    stopSpeechPolling();
-    updateSpeechUi(getErrorMessage(e), false);
+    await stopSpeechInput(getErrorMessage(e));
   } finally {
-    isSpeechPolling = false;
+    if (sessionId === speechSessionId) isSpeechPolling = false;
   }
 }
 
 async function startSpeechInput(): Promise<void> {
   speechSessionId += 1;
+  speechFailureReason = "";
   const permissions = await invoke<SpeechRecognitionState>("request_speech_permissions");
   if (!permissions.authorized) {
     throw new Error(permissions.error || "음성 입력 권한이 필요합니다.");
@@ -103,9 +102,7 @@ async function startSpeechInput(): Promise<void> {
 
   // Set domain hint
   const domainHint = await getSetting(SETTINGS_KEYS.domainHint, DEFAULTS.domainHint);
-  if (domainHint) {
-    await invoke("set_whisper_domain_hint", { hint: domainHint });
-  }
+  await invoke("set_whisper_domain_hint", { hint: domainHint });
 
   updateSpeechUi("음성 인식 모델 로드 중…", true);
   try {
@@ -126,17 +123,38 @@ async function startSpeechInput(): Promise<void> {
   scheduleSpeechPoll();
 }
 
-async function stopSpeechInput(): Promise<void> {
-  speechSessionId += 1;
+async function stopSpeechInput(reason?: string): Promise<void> {
+  if (reason) speechFailureReason = reason;
+  if (speechStopOperation) return speechStopOperation;
+  const sessionId = ++speechSessionId;
   stopSpeechPolling();
-  isSpeechRecording = false;
-
+  btnMic.disabled = true;
+  updateSpeechUi(speechFailureReason || "마지막 발화 인식 중…", true);
+  btnMic.textContent = "마무리 중…";
+  speechStopOperation = (async () => {
+    try {
+      const state = await invoke<SpeechRecognitionState>("stop_speech_recognition");
+      if (sessionId !== speechSessionId) return;
+      if (state.isRunning) {
+        throw new Error(state.error || "녹음이 아직 종료되지 않았습니다.");
+      }
+      isSpeechRecording = false;
+      applySpeechTranscript(state);
+      updateSpeechUi(speechFailureReason || state.error || "", false);
+    } catch (e) {
+      if (sessionId !== speechSessionId) return;
+      // The native owner may still be held after a failed IPC/stop. Keep the
+      // button in stop mode so the next click retries cleanup, not recording.
+      isSpeechRecording = true;
+      const retry = `음성 입력을 중지하지 못했습니다. 중지 버튼으로 다시 시도해주세요: ${getErrorMessage(e)}`;
+      updateSpeechUi(speechFailureReason ? `${speechFailureReason} ${retry}` : retry, true);
+    }
+  })();
   try {
-    const state = await invoke<SpeechRecognitionState>("stop_speech_recognition");
-    applySpeechTranscript(state);
-    updateSpeechUi(state.error || "", false);
-  } catch (e) {
-    updateSpeechUi(getErrorMessage(e), false);
+    await speechStopOperation;
+  } finally {
+    speechStopOperation = null;
+    btnMic.disabled = false;
   }
 }
 
@@ -152,6 +170,7 @@ export function initSpeechInput(
   syncInputHeight = _syncInputHeight;
 
   btnMic.addEventListener("click", async () => {
+    if (btnMic.disabled || speechStopOperation) return;
     btnMic.disabled = true;
     try {
       if (isSpeechRecording) {

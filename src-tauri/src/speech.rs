@@ -99,8 +99,9 @@ pub fn start_speech_recognition(locale_identifier: Option<String>) -> Result<Spe
 }
 
 #[tauri::command]
-pub fn stop_speech_recognition() -> Result<SpeechStatus, String> {
-    let result = platform::stop_recognition();
+pub async fn stop_speech_recognition() -> Result<SpeechStatus, String> {
+    let result = tauri::async_runtime::spawn_blocking(platform::stop_recognition)
+        .await.map_err(|e| e.to_string())?;
     model_manager::schedule_unload();
     result
 }

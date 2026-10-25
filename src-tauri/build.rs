@@ -18,6 +18,10 @@ fn main() {
     let swift_dir = manifest_dir.join("swift");
     let swift_files: Vec<PathBuf> = vec![
         swift_dir.join("SwiftBridgeUtils.swift"),
+        swift_dir.join("DictationState.swift"),
+        swift_dir.join("DictationClipboard.swift"),
+        swift_dir.join("GlobalDictation.swift"),
+        swift_dir.join("MicrophoneDevices.swift"),
         swift_dir.join("PerformanceTracker.swift"),
         swift_dir.join("CoreMLVad.swift"),
         swift_dir.join("MicSpeechBridge.swift"),
@@ -127,10 +131,13 @@ fn main() {
     // Frameworks
     println!("cargo:rustc-link-lib=framework=AVFoundation");
     println!("cargo:rustc-link-lib=framework=Foundation");
+    println!("cargo:rustc-link-lib=framework=AppKit");
+    println!("cargo:rustc-link-lib=framework=ApplicationServices");
     println!("cargo:rustc-link-lib=framework=ScreenCaptureKit");
     println!("cargo:rustc-link-lib=framework=CoreGraphics");
     println!("cargo:rustc-link-lib=framework=CoreMedia");
     println!("cargo:rustc-link-lib=framework=CoreAudio");
+    println!("cargo:rustc-link-lib=framework=AudioToolbox");
     println!("cargo:rustc-link-lib=framework=Metal");
     println!("cargo:rustc-link-lib=framework=MetalKit");
     println!("cargo:rustc-link-lib=framework=Accelerate");
