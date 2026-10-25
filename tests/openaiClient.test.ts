@@ -1,161 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import {
-  setTauriStoreValue,
-  registerInvokeCommand,
-  resetInvokeCommands,
-  MockChannel,
-} from "./helpers/tauriMock";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { generateText, generateTextStream, generateImage, getOpenAiBackend, isVisionCapableModel } from "../src/openaiClient";
+import { MockChannel, registerInvokeCommand, resetInvokeCommands, resetTauriStore, setTauriStoreValue } from "./helpers/tauriMock";
 
-// Provide store state so openaiClient reads the correct config
-setTauriStoreValue("openaiApiKey", "sk-test-key");
-setTauriStoreValue("openaiModel", "gpt-4o-mini");
-
-import {
-  generateText,
-  generateTextStream,
-  generateImage,
-  isVisionCapableModel,
-  getOpenAiBackend,
-} from "../src/openaiClient";
-
-// ─── generateText (invoke transport) ─────────────────────────────────────────
-
-describe("openaiClient.generateText", () => {
-  beforeEach(() => {
-    setTauriStoreValue("openaiApiKey", "sk-test-key");
-    setTauriStoreValue("openaiModel", "gpt-4o-mini");
-  });
-  afterEach(() => {
-    resetInvokeCommands();
-  });
-
-  it("invokes openai_generate_text with apiKey/model/prompt and returns result", async () => {
-    let received: Record<string, unknown> | undefined;
-    registerInvokeCommand("openai_generate_text", (args) => {
-      received = args;
-      return "hello";
-    });
-
-    const result = await generateText("translate this");
-
-    expect(received).toEqual({
-      apiKey: "sk-test-key",
-      model: "gpt-4o-mini",
-      prompt: "translate this",
-    });
-    expect(result).toBe("hello");
-  });
-
-  it("throws when openaiApiKey is empty and does NOT invoke the command", async () => {
-    setTauriStoreValue("openaiApiKey", "");
-    let invoked = false;
-    registerInvokeCommand("openai_generate_text", () => {
-      invoked = true;
-      return "should not happen";
-    });
-
-    await expect(generateText("prompt")).rejects.toThrow(
-      "OpenAI API 키가 설정되지 않았습니다.",
-    );
-    expect(invoked).toBe(false);
-  });
-});
-
-// ─── generateImage (invoke transport) ────────────────────────────────────────
-
-describe("openaiClient.generateImage", () => {
-  beforeEach(() => {
-    setTauriStoreValue("openaiApiKey", "sk-test-key");
-    setTauriStoreValue("openaiModel", "gpt-4o");
-  });
-  afterEach(() => {
-    resetInvokeCommands();
-  });
-
-  it("invokes openai_generate_image with imageBase64 (camelCase) and passes the result through", async () => {
-    let received: Record<string, unknown> | undefined;
-    registerInvokeCommand("openai_generate_image", (args) => {
-      received = args;
-      return "description";
-    });
-
-    const result = await generateImage("describe this", "abc123==");
-
-    expect(received).toEqual({
-      apiKey: "sk-test-key",
-      model: "gpt-4o",
-      prompt: "describe this",
-      imageBase64: "abc123==",
-    });
-    expect(result).toBe("description");
-  });
-
-  it("throws when openaiApiKey is empty", async () => {
-    setTauriStoreValue("openaiApiKey", "");
-    await expect(generateImage("describe", "data")).rejects.toThrow(
-      "OpenAI API 키가 설정되지 않았습니다.",
-    );
-  });
-});
-
-// ─── generateTextStream (invoke transport + Channel) ─────────────────────────
-
-describe("openaiClient.generateTextStream", () => {
-  beforeEach(() => {
-    setTauriStoreValue("openaiApiKey", "sk-test-key");
-    setTauriStoreValue("openaiModel", "gpt-4o-mini");
-  });
-  afterEach(() => {
-    resetInvokeCommands();
-  });
-
-  it("passes a Channel as onChunk and forwards accumulated messages to the callback", async () => {
-    registerInvokeCommand("openai_generate_text_stream", (args) => {
-      const channel = args?.onChunk as MockChannel<string>;
-      // Simulate Rust streaming incremental accumulated text back through the channel.
-      channel.onmessage?.("Hello");
-      channel.onmessage?.("Hello World");
-      return "Hello World";
-    });
-
-    const chunks: string[] = [];
-    const result = await generateTextStream("prompt", (chunk) => chunks.push(chunk));
-
-    expect(chunks).toEqual(["Hello", "Hello World"]);
-    expect(result).toBe("Hello World");
-  });
-
-  it("forwards apiKey/model/prompt alongside the channel", async () => {
-    let received: Record<string, unknown> | undefined;
-    registerInvokeCommand("openai_generate_text_stream", (args) => {
-      received = args;
-      return "";
-    });
-
-    await generateTextStream("hi", () => {});
-
-    expect(received?.apiKey).toBe("sk-test-key");
-    expect(received?.model).toBe("gpt-4o-mini");
-    expect(received?.prompt).toBe("hi");
-    expect(received?.onChunk).toBeInstanceOf(MockChannel);
-  });
-
-  it("throws when openaiApiKey is empty and does NOT invoke the command", async () => {
-    setTauriStoreValue("openaiApiKey", "");
-    let invoked = false;
-    registerInvokeCommand("openai_generate_text_stream", () => {
-      invoked = true;
-      return "";
-    });
-
-    await expect(generateTextStream("p", () => {})).rejects.toThrow(
-      "OpenAI API 키가 설정되지 않았습니다.",
-    );
-    expect(invoked).toBe(false);
-  });
-});
-
-// ─── isVisionCapableModel (pure, unchanged) ──────────────────────────────────
+beforeEach(() => { resetInvokeCommands(); resetTauriStore(); setTauriStoreValue("llmBackendId", "openai"); setTauriStoreValue("openaiApiKey", "fake-private-key"); setTauriStoreValue("openaiModel", "gpt-4o-mini"); });
+afterEach(() => { resetInvokeCommands(); vi.unstubAllGlobals(); });
 
 describe("isVisionCapableModel", () => {
   it("returns true for gpt-4o", () => {
@@ -212,120 +60,61 @@ describe("isVisionCapableModel", () => {
   });
 });
 
-// ─── getOpenAiBackend ──────────────────────────────────────────────────────
 
-describe("getOpenAiBackend", () => {
-  afterEach(() => {
-    resetInvokeCommands();
+describe("OpenAI native runtime transport", () => {
+  it("sends runtimeId and prompt without API key, model or frontend HTTP", async () => {
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const received = vi.fn(() => "translated"); registerInvokeCommand("openai_generate_text", received);
+    expect(await generateText("text")).toBe("translated");
+    expect(received).toHaveBeenCalledWith({ runtimeId: expect.any(String), prompt: "text" });
+    expect(JSON.stringify(received.mock.calls)).not.toContain("fake-private-key");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("returns backend with id='openai' and label='OpenAI (GPT)'", async () => {
-    setTauriStoreValue("openaiApiKey", "sk-key");
-    setTauriStoreValue("openaiModel", "gpt-4o-mini");
-
-    const backend = await getOpenAiBackend();
-    expect(backend.id).toBe("openai");
-    expect(backend.label).toBe("OpenAI (GPT)");
-  });
-
-  it("sets supportsVision=true for gpt-4o-mini", async () => {
-    setTauriStoreValue("openaiApiKey", "sk-key");
-    setTauriStoreValue("openaiModel", "gpt-4o-mini");
-
-    const backend = await getOpenAiBackend();
-    expect(backend.supportsVision).toBe(true);
-  });
-
-  it("sets supportsVision=false for gpt-3.5-turbo", async () => {
-    setTauriStoreValue("openaiApiKey", "sk-key");
-    setTauriStoreValue("openaiModel", "gpt-3.5-turbo");
-
-    const backend = await getOpenAiBackend();
-    expect(backend.supportsVision).toBe(false);
-  });
-
-  it("exposes generateText, generateTextStream, generateImage functions", async () => {
-    setTauriStoreValue("openaiApiKey", "sk-key");
-    setTauriStoreValue("openaiModel", "gpt-4o");
-
-    const backend = await getOpenAiBackend();
-    expect(typeof backend.generateText).toBe("function");
-    expect(typeof backend.generateTextStream).toBe("function");
-    expect(typeof backend.generateImage).toBe("function");
-  });
-
-  it("throws when apiKey is empty", async () => {
-    setTauriStoreValue("openaiApiKey", "");
-    setTauriStoreValue("openaiModel", "gpt-4o-mini");
-
-    await expect(getOpenAiBackend()).rejects.toThrow(
-      "OpenAI API 키가 설정되지 않았습니다.",
-    );
-  });
-});
-
-describe("getOpenAiBackend — immutable connection", () => {
-  afterEach(() => { resetInvokeCommands(); });
-
-  function recordGenerationCalls(): Array<{ command: string; args: Record<string, unknown> | undefined }> {
-    const received: Array<{ command: string; args: Record<string, unknown> | undefined }> = [];
-    for (const command of ["openai_generate_text", "openai_generate_text_stream", "openai_generate_image"]) {
-      registerInvokeCommand(command, args => {
-        received.push({ command, args });
-        if (command === "openai_generate_text_stream") {
-          (args?.onChunk as MockChannel<string>).onmessage?.("streamed");
-        }
-        return "result";
-      });
-    }
-    return received;
-  }
-
-  it("binds capabilities and every generation method to the settings resolved at creation", async () => {
-    setTauriStoreValue("openaiApiKey", "original-key");
-    setTauriStoreValue("openaiModel", "gpt-4o-mini");
-    const backend = await getOpenAiBackend();
-    setTauriStoreValue("openaiApiKey", "replacement-key");
-    setTauriStoreValue("openaiModel", "gpt-3.5-turbo");
-    const received = recordGenerationCalls();
-    expect(backend.supportsVision).toBe(true);
-    expect(await backend.generateText("text")).toBe("result");
+  it("forwards native stream channels and image bytes", async () => {
+    registerInvokeCommand("openai_generate_text_stream", args => {
+      expect(args).toEqual({ runtimeId: expect.any(String), prompt: "stream", onChunk: expect.any(MockChannel) });
+      const channel = args?.onChunk as MockChannel<string>;
+      channel.onmessage?.("Hello"); channel.onmessage?.("Hello World"); return "Hello World";
+    });
+    const received = vi.fn(() => "image result"); registerInvokeCommand("openai_generate_image", received);
     const chunks: string[] = [];
-    expect(await backend.generateTextStream("stream", chunk => chunks.push(chunk))).toBe("result");
-    expect(chunks).toEqual(["streamed"]);
-    expect(await backend.generateImage("image", "png")).toBe("result");
-    expect(received).toHaveLength(3);
-    for (const { args } of received) {
-      expect(args).toMatchObject({ apiKey: "original-key", model: "gpt-4o-mini" });
-    }
-
-    // Direct exports retain their per-operation settings lookup.
-    await generateText("current settings");
-    expect(received[3].args).toMatchObject({ apiKey: "replacement-key", model: "gpt-3.5-turbo" });
+    expect(await generateTextStream("stream", chunk => chunks.push(chunk))).toBe("Hello World");
+    expect(chunks).toEqual(["Hello", "Hello World"]);
+    expect(await generateImage("image", "png")).toBe("image result");
+    expect(received).toHaveBeenCalledWith({ runtimeId: expect.any(String), prompt: "image", imageBase64: "png" });
   });
 
-  it("copies an explicit config synchronously instead of rereading settings or the caller's object", async () => {
-    setTauriStoreValue("openaiApiKey", "");
-    const config = { apiKey: "explicit-key", model: "gpt-4o-mini" };
-    const pending = getOpenAiBackend(config);
-    config.apiKey = "mutated-key";
-    config.model = "gpt-3.5-turbo";
+  it("uses the same captured runtime for capabilities and all generation after key rotation", async () => {
+    const backend = await getOpenAiBackend();
+    setTauriStoreValue("openaiApiKey", "replacement-key"); setTauriStoreValue("openaiModel", "gpt-3.5-turbo");
+    const calls: Record<string, unknown>[] = [];
+    for (const command of ["openai_generate_text", "openai_generate_text_stream", "openai_generate_image"]) registerInvokeCommand(command, args => { calls.push(args!); return "result"; });
+    await backend.generateText("text"); await backend.generateTextStream("stream", () => {}); await backend.generateImage("image", "png");
+    expect(backend.supportsVision).toBe(true); expect(calls).toHaveLength(3);
+    expect(new Set(calls.map(args => args.runtimeId)).size).toBe(1);
+    for (const args of calls) { expect(args).not.toHaveProperty("apiKey"); expect(args).not.toHaveProperty("model"); }
+    await generateText("current"); expect(calls[3].runtimeId).not.toBe(calls[0].runtimeId);
+  });
+
+  it("copies an explicit runtime before caller mutation", async () => {
+    const config = { runtimeId: "original-runtime", model: "gpt-4o-mini" };
+    const pending = getOpenAiBackend(config); config.runtimeId = "changed"; config.model = "gpt-3.5-turbo";
     const backend = await pending;
-    const received = recordGenerationCalls();
-    expect(backend.supportsVision).toBe(true);
+    const received = vi.fn(() => "ok"); registerInvokeCommand("openai_generate_text", received);
     await backend.generateText("text");
-    await backend.generateTextStream("stream", () => {});
-    await backend.generateImage("image", "png");
-    expect(received).toHaveLength(3);
-    for (const { args } of received) {
-      expect(args).toMatchObject({ apiKey: "explicit-key", model: "gpt-4o-mini" });
-    }
+    expect(backend.supportsVision).toBe(true); expect(received).toHaveBeenCalledWith({ runtimeId: "original-runtime", prompt: "text" });
   });
 
-  it("rejects an explicitly missing API key rather than borrowing a configured credential", async () => {
-    setTauriStoreValue("openaiApiKey", "unrelated-configured-key");
-    await expect(getOpenAiBackend({ apiKey: "", model: "gpt-4o-mini" })).rejects.toThrow(
-      "OpenAI API 키가 설정되지 않았습니다.",
-    );
+  it("does not borrow another provider or silently recover from locked credentials", async () => {
+    registerInvokeCommand("capture_connection", () => { throw new Error("Keychain 잠김"); });
+    await expect(getOpenAiBackend()).rejects.toThrow("Keychain 잠김");
+    const received = vi.fn(); registerInvokeCommand("openai_generate_text", received);
+    await expect(generateText("text")).rejects.toThrow("Keychain 잠김"); expect(received).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing native runtime and retains non-vision model behavior", async () => {
+    await expect(getOpenAiBackend({ runtimeId: "", model: "gpt-4o-mini" })).rejects.toThrow("유효하지");
+    expect((await getOpenAiBackend({ runtimeId: "known-runtime", model: "gpt-3.5-turbo" })).supportsVision).toBe(false);
   });
 });

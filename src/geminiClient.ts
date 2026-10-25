@@ -1,229 +1,47 @@
-import { DEFAULTS, SETTINGS_KEYS } from "./constants";
-import { getSetting } from "./store";
 import type { LlmBackend } from "./llmBackend";
+import { readRuntimeForProvider } from "./connectionProfiles";
 
-export type GeminiConfig = Readonly<{ apiKey: string; model: string }>;
+const { invoke, Channel } = window.__TAURI__.core;
+export type GeminiConfig = Readonly<{ runtimeId: string; model: string }>;
 
-interface GeminiTextPart {
-  text: string;
+async function textWithConfig(config: GeminiConfig, prompt: string): Promise<string> {
+  return invoke<string>("gemini_generate_text", { runtimeId: config.runtimeId, prompt });
 }
 
-interface GeminiInlineDataPart {
-  inline_data: {
-    mime_type: string;
-    data: string;
-  };
+async function streamWithConfig(config: GeminiConfig, prompt: string, onChunk: (text: string) => void): Promise<string> {
+  const channel = new Channel<string>();
+  channel.onmessage = onChunk;
+  return invoke<string>("gemini_generate_text_stream", { runtimeId: config.runtimeId, prompt, onChunk: channel });
 }
 
-type GeminiPart = GeminiTextPart | GeminiInlineDataPart;
-
-const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
-const MAX_RETRY_ATTEMPTS = 4;
-const BASE_RETRY_DELAY_MS = 1500;
-const MIN_REQUEST_INTERVAL_MS = 1200;
-
-let nextRequestStart: Promise<void> = Promise.resolve();
-let lastRequestStartedAt = 0;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => window.setTimeout(resolve, ms));
-}
-
-function scheduleRequestStart<T>(task: () => Promise<T>): Promise<T> {
-  const startSlot = nextRequestStart.then(async () => {
-    const waitMs = Math.max(0, lastRequestStartedAt + MIN_REQUEST_INTERVAL_MS - Date.now());
-    if (waitMs > 0) {
-      await sleep(waitMs);
-    }
-    lastRequestStartedAt = Date.now();
-  });
-
-  nextRequestStart = startSlot.catch(() => {});
-
-  return startSlot.then(task);
-}
-
-function parseRetryAfterMs(headerValue: string | null): number | null {
-  if (!headerValue) return null;
-
-  const seconds = Number(headerValue);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    return seconds * 1000;
-  }
-
-  const targetTime = Date.parse(headerValue);
-  if (Number.isNaN(targetTime)) return null;
-
-  return Math.max(0, targetTime - Date.now());
-}
-
-async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
-  let attempt = 0;
-
-  while (true) {
-    const resp = await scheduleRequestStart(() => fetch(url, init));
-    if (resp.ok) return resp;
-
-    const errText = await resp.text();
-    const retryAfterMs = parseRetryAfterMs(resp.headers.get("retry-after"));
-    const shouldRetry = RETRYABLE_STATUS_CODES.has(resp.status) && attempt < MAX_RETRY_ATTEMPTS;
-
-    if (!shouldRetry) {
-      throw new Error(`Gemini API error: ${resp.status} ${errText}`);
-    }
-
-    const backoffMs = retryAfterMs ?? (BASE_RETRY_DELAY_MS * (2 ** attempt));
-    await sleep(Math.min(backoffMs, 15000));
-    attempt += 1;
-  }
-}
-
-function buildGeminiUrl(model: string, apiKey: string): string {
-  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-}
-
-async function getGeminiConfig(): Promise<{ apiKey: string; model: string }> {
-  const apiKey = await getSetting(SETTINGS_KEYS.apiKey, DEFAULTS.apiKey);
-  const model = await getSetting(SETTINGS_KEYS.model, DEFAULTS.model);
-
-  if (!apiKey) {
-    throw new Error("API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.");
-  }
-
-  return { apiKey, model };
-}
-
-async function extractResponseText(resp: Response): Promise<string> {
-  if (!resp.ok) {
-    const err = await resp.text();
-    throw new Error(`Gemini API error: ${resp.status} ${err}`);
-  }
-
-  const data = await resp.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-}
-
-async function generateContent(config: GeminiConfig, parts: GeminiPart[]): Promise<string> {
-  const { apiKey, model } = config;
-  if (!apiKey) {
-    throw new Error("API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.");
-  }
-  const resp = await fetchWithRetry(buildGeminiUrl(model, apiKey), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts }],
-    }),
-  });
-
-  return extractResponseText(resp);
+async function imageWithConfig(config: GeminiConfig, prompt: string, imageBase64: string): Promise<string> {
+  return invoke<string>("gemini_generate_image", { runtimeId: config.runtimeId, prompt, imageBase64 });
 }
 
 export async function generateText(prompt: string): Promise<string> {
-  return generateContent(await getGeminiConfig(), [{ text: prompt }]);
+  return textWithConfig(await readRuntimeForProvider("gemini-native"), prompt);
 }
 
-/**
- * Stream text generation — calls onChunk with each partial text as it arrives.
- * Returns the full completed text.
- */
-export async function generateTextStream(
-  prompt: string,
-  onChunk: (partialText: string) => void,
-): Promise<string> {
-  return generateTextStreamWithConfig(await getGeminiConfig(), prompt, onChunk);
-}
-
-async function generateTextStreamWithConfig(
-  config: GeminiConfig,
-  prompt: string,
-  onChunk: (partialText: string) => void,
-): Promise<string> {
-  const { apiKey, model } = config;
-  if (!apiKey) {
-    throw new Error("API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.");
-  }
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
-
-  const resp = await fetchWithRetry(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-    }),
-  });
-
-  const reader = resp.body?.getReader();
-  if (!reader) throw new Error("No response body");
-
-  const decoder = new TextDecoder();
-  let fullText = "";
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-
-    // Parse SSE events
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";  // keep incomplete line
-
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
-      const jsonStr = line.slice(6).trim();
-      if (!jsonStr || jsonStr === "[DONE]") continue;
-
-      try {
-        const data = JSON.parse(jsonStr);
-        const chunk = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-        if (chunk) {
-          fullText += chunk;
-          onChunk(fullText);
-        }
-      } catch {
-        // Skip malformed JSON
-      }
-    }
-  }
-
-  return fullText.trim();
+export async function generateTextStream(prompt: string, onChunk: (text: string) => void): Promise<string> {
+  return streamWithConfig(await readRuntimeForProvider("gemini-native"), prompt, onChunk);
 }
 
 export async function generateImage(prompt: string, imageBase64: string): Promise<string> {
-  return generateImageWithConfig(await getGeminiConfig(), prompt, imageBase64);
-}
-
-function generateImageWithConfig(config: GeminiConfig, prompt: string, imageBase64: string): Promise<string> {
-  return generateContent(config, [
-    { text: prompt },
-    {
-      inline_data: {
-        mime_type: "image/png",
-        data: imageBase64,
-      },
-    },
-  ]);
+  return imageWithConfig(await readRuntimeForProvider("gemini-native"), prompt, imageBase64);
 }
 
 export function createGeminiBackend(config: GeminiConfig): LlmBackend {
-  const snapshot = Object.freeze({ apiKey: config.apiKey, model: config.model });
+  const snapshot = Object.freeze({ runtimeId: config.runtimeId, model: config.model });
   return {
-    id: "gemini-native",
-    label: "Gemini API",
-    supportsVision: true,
-    generateText: prompt => generateContent(snapshot, [{ text: prompt }]),
-    generateTextStream: (prompt, onChunk) => generateTextStreamWithConfig(snapshot, prompt, onChunk),
-    generateImage: (prompt, imageBase64) => generateImageWithConfig(snapshot, prompt, imageBase64),
+    id: "gemini-native", label: "Gemini API", supportsVision: true,
+    generateText: prompt => textWithConfig(snapshot, prompt),
+    generateTextStream: (prompt, onChunk) => streamWithConfig(snapshot, prompt, onChunk),
+    generateImage: (prompt, imageBase64) => imageWithConfig(snapshot, prompt, imageBase64),
   };
 }
 
+// Legacy entry point: resolve the selected native connection for each operation.
 export const geminiNativeBackend: LlmBackend = {
-  id: "gemini-native",
-  label: "Gemini API",
-  supportsVision: true,
-  generateText,
-  generateTextStream,
-  generateImage,
+  id: "gemini-native", label: "Gemini API", supportsVision: true,
+  generateText, generateTextStream, generateImage,
 };

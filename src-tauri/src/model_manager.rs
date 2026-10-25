@@ -1,6 +1,5 @@
 use log::warn;
 use crate::speech_model::SpeechModel;
-use tauri_plugin_store::StoreExt;
 use serde::{Deserialize, Serialize};
 use std::ffi::CString;
 use std::os::raw::c_char;
@@ -32,7 +31,7 @@ const GRACE_PERIOD: Duration = Duration::from_secs(30);
 const MODEL_DIR_NAME: &str = "models";
 fn selected_model(app: &AppHandle, requested: Option<&str>) -> Result<SpeechModel, String> {
     let saved = if requested.is_none() {
-        app.store("settings.json").map_err(|e| e.to_string())?
+        crate::settings_store::store(app)?
             .get("whisperModel").and_then(|v| v.as_str().map(str::to_owned))
     } else { None };
     SpeechModel::parse(requested.or(saved.as_deref()).unwrap_or("large-v3-turbo"))

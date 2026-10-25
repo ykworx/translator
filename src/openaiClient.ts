@@ -1,42 +1,29 @@
-import { DEFAULTS, SETTINGS_KEYS } from "./constants";
-import { getSetting } from "./store";
+import { readRuntimeForProvider } from "./connectionProfiles";
 import type { LlmBackend } from "./llmBackend";
 
 // OpenAI's API does not send permissive CORS headers, so the browser/webview
 // cannot call it directly. All HTTP is routed through Rust (see src-tauri/src/openai.rs).
 const { invoke, Channel } = window.__TAURI__.core;
 
-export type OpenAiConfig = Readonly<{ apiKey: string; model: string }>;
-
-async function getOpenAiConfig(): Promise<{ apiKey: string; model: string }> {
-  const apiKey = await getSetting(SETTINGS_KEYS.openaiApiKey, DEFAULTS.openaiApiKey);
-  const model = await getSetting(SETTINGS_KEYS.openaiModel, DEFAULTS.openaiModel);
-
-  // Fail fast in the frontend before invoking the Rust command.
-  if (!apiKey) {
-    throw new Error("OpenAI API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.");
-  }
-
-  return { apiKey, model };
-}
+export type OpenAiConfig = Readonly<{ runtimeId: string; model: string }>;
 
 export async function generateText(prompt: string): Promise<string> {
-  return generateTextWithConfig(await getOpenAiConfig(), prompt);
+  return generateTextWithConfig(await readRuntimeForProvider("openai"), prompt);
 }
 
-async function generateTextWithConfig({ apiKey, model }: OpenAiConfig, prompt: string): Promise<string> {
-  return invoke<string>("openai_generate_text", { apiKey, model, prompt });
+async function generateTextWithConfig({ runtimeId }: OpenAiConfig, prompt: string): Promise<string> {
+  return invoke<string>("openai_generate_text", { runtimeId, prompt });
 }
 
 export async function generateTextStream(
   prompt: string,
   onChunk: (accumulated: string) => void,
 ): Promise<string> {
-  return generateTextStreamWithConfig(await getOpenAiConfig(), prompt, onChunk);
+  return generateTextStreamWithConfig(await readRuntimeForProvider("openai"), prompt, onChunk);
 }
 
 async function generateTextStreamWithConfig(
-  { apiKey, model }: OpenAiConfig,
+  { runtimeId }: OpenAiConfig,
   prompt: string,
   onChunk: (accumulated: string) => void,
 ): Promise<string> {
@@ -44,16 +31,16 @@ async function generateTextStreamWithConfig(
   const channel = new Channel<string>();
   channel.onmessage = (accumulated) => onChunk(accumulated);
 
-  return invoke<string>("openai_generate_text_stream", { apiKey, model, prompt, onChunk: channel });
+  return invoke<string>("openai_generate_text_stream", { runtimeId, prompt, onChunk: channel });
 }
 
 export async function generateImage(prompt: string, base64Png: string): Promise<string> {
-  return generateImageWithConfig(await getOpenAiConfig(), prompt, base64Png);
+  return generateImageWithConfig(await readRuntimeForProvider("openai"), prompt, base64Png);
 }
 
-async function generateImageWithConfig({ apiKey, model }: OpenAiConfig, prompt: string, base64Png: string): Promise<string> {
+async function generateImageWithConfig({ runtimeId }: OpenAiConfig, prompt: string, base64Png: string): Promise<string> {
   // JS `imageBase64` → Rust `image_base64` (Tauri auto camel↔snake conversion).
-  return invoke<string>("openai_generate_image", { apiKey, model, prompt, imageBase64: base64Png });
+  return invoke<string>("openai_generate_image", { runtimeId, prompt, imageBase64: base64Png });
 }
 
 /**
@@ -86,10 +73,10 @@ export function isVisionCapableModel(model: string): boolean {
 }
 
 export async function getOpenAiBackend(config?: OpenAiConfig): Promise<LlmBackend> {
-  const resolved = config ?? await getOpenAiConfig();
-  const snapshot = Object.freeze({ apiKey: resolved.apiKey, model: resolved.model });
-  if (!snapshot.apiKey) {
-    throw new Error("OpenAI API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.");
+  const resolved = config ?? await readRuntimeForProvider("openai");
+  const snapshot = Object.freeze({ runtimeId: resolved.runtimeId, model: resolved.model });
+  if (!snapshot.runtimeId) {
+    throw new Error("OpenAI 연결이 유효하지 않습니다. 설정에서 연결을 확인해주세요.");
   }
 
   return {

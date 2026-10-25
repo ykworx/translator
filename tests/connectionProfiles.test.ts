@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readActiveConnection, createBackendForConnection, runtimeConnectionsEqual, type RuntimeSnapshot } from "../src/connectionProfiles";
+import { readActiveConnection, createBackendForConnection, runtimeConnectionsEqual, getCredentialStatus, type RuntimeSnapshot } from "../src/connectionProfiles";
 import { getProvider, listProviders } from "../src/providerRegistry";
-import { registerInvokeCommand, resetInvokeCommands, resetTauriStore, setTauriStoreValue } from "./helpers/tauriMock";
+import { registerInvokeCommand, resetInvokeCommands, resetTauriStore, setTauriStoreValue, setNativeCredential } from "./helpers/tauriMock";
 
-beforeEach(() => { resetTauriStore(); resetInvokeCommands(); });
+beforeEach(() => { resetTauriStore(); resetInvokeCommands(); setNativeCredential("gemini-native", "fake-default-key"); });
 afterEach(() => { resetInvokeCommands(); vi.unstubAllGlobals(); });
 
 describe("provider registry and public connection profiles", () => {
@@ -46,11 +46,13 @@ describe("provider registry and public connection profiles", () => {
     expect(JSON.stringify(first)).toBe(JSON.stringify(rotated));
   });
 
-  it("uses one store capture and writes no settings", async () => {
-    const entries = vi.fn(() => [["llmBackendId", "ollama"], ["ollamaModel", "local-model"], ["ollamaBaseUrl", "http://localhost:11434"]]);
-    registerInvokeCommand("plugin:store|entries", entries);
+  it("uses one native capture without accessing or enumerating the settings store", async () => {
+    const native = { profile: { id: "native:ollama", providerId: "ollama", protocol: "openai-compatible", baseUrl: "http://localhost:11434", model: "local-model", auth: { kind: "none" }, credentialRef: null }, runtimeId: "native-runtime" };
+    const capture = vi.fn(() => native);
+    registerInvokeCommand("capture_connection", capture);
+    registerInvokeCommand("settings_entries", () => { throw new Error("must not enumerate settings"); });
     const snapshot = await readActiveConnection();
-    expect(entries).toHaveBeenCalledOnce();
+    expect(capture).toHaveBeenCalledOnce();
     expect(snapshot.profile.model).toBe("local-model");
   });
 
@@ -74,5 +76,22 @@ describe("provider registry and public connection profiles", () => {
     expect(snapshot.profile.providerId).toBe("ollama");
     expect(snapshot.profile.auth.kind).toBe("none");
     expect(snapshot.profile.credentialRef).toBeNull();
+  });
+
+  it("keeps missing-item repair metadata without treating it as an absent credential", async () => {
+    registerInvokeCommand("get_credential_status", () => ({ configured: true, revision: "existing-reference", error: "Keychain 항목을 찾을 수 없습니다." }));
+    expect(await getCredentialStatus("openai")).toEqual({ configured: true, revision: "existing-reference", error: "Keychain 항목을 찾을 수 없습니다." });
+  });
+
+  it("rejects malformed credential status data without returning unvalidated fields", async () => {
+    registerInvokeCommand("get_credential_status", () => ({ configured: true, revision: "reference", error: { private: "not-a-message" } }));
+    await expect(getCredentialStatus("openai")).rejects.toThrow("설정");
+  });
+
+  it("does not expose legacy secrets through the frontend settings bridge", async () => {
+    setTauriStoreValue("apiKey", "fake-protected-key");
+    for (const command of ["settings_get", "settings_set", "settings_delete"]) {
+      await expect(window.__TAURI__.core.invoke(command, { rid: 1, key: "apiKey", value: "replacement" })).rejects.toThrow("보안 인증");
+    }
   });
 });

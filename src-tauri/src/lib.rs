@@ -4,6 +4,10 @@ mod caption_capture;
 mod model_manager;
 mod speech_model;
 mod openai;
+mod gemini;
+mod cloud_http;
+mod connections;
+mod settings_store;
 mod shortcut;
 mod speech;
 mod dictation;
@@ -18,7 +22,6 @@ use tauri::{
     Manager, WindowEvent,
 };
 use tauri_plugin_global_shortcut::Shortcut;
-use tauri_plugin_store::StoreExt;
 
 #[tauri::command]
 fn open_handwriting_overlay(app: tauri::AppHandle) -> Result<(), String> {
@@ -120,6 +123,7 @@ fn parse_configured_shortcut(configured: &str, default: &str, shortcut_name: &st
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(connections::ConnectionManager::default())
         .manage(Mutex::new(CurrentShortcuts::new(
             parse_default_shortcut(DEFAULT_SELECT_SHORTCUT, "select"),
             parse_default_shortcut(DEFAULT_CLIPBOARD_SHORTCUT, "clipboard"),
@@ -158,6 +162,18 @@ pub fn run() {
             openai::openai_generate_text,
             openai::openai_generate_image,
             openai::openai_generate_text_stream,
+            gemini::gemini_generate_text,
+            gemini::gemini_generate_image,
+            gemini::gemini_generate_text_stream,
+            connections::capture_connection,
+            connections::get_credential_status,
+            connections::save_provider_credential,
+            connections::delete_provider_credential,
+            settings_store::settings_load,
+            settings_store::settings_get,
+            settings_store::settings_set,
+            settings_store::settings_delete,
+            settings_store::settings_save,
             benchmark::run_wav_benchmark,
             benchmark::get_performance_stats,
             benchmark::reset_performance_stats,
@@ -168,6 +184,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
+            // Native-only Store: block plaintext credential IPC and auto-save.
+            settings_store::store(app.handle()).map_err(std::io::Error::other)?;
             // Tray menu
             let about_item = MenuItem::with_id(app, "about", "Transrator에 관하여…", true, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
@@ -271,7 +289,7 @@ pub fn run() {
             });
 
             // Read shortcut settings from store (or use defaults)
-            let store = app.store("settings.json")?;
+            let store = settings_store::store(app.handle()).map_err(std::io::Error::other)?;
             let select_str = store.get("selectShortcut")
                 .and_then(|v| v.as_str().map(String::from))
                 .unwrap_or_else(|| DEFAULT_SELECT_SHORTCUT.to_string());
@@ -336,7 +354,10 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("Failed to build Tauri application")
-        .run(|_app_handle, event| {
+        .run(|app_handle, event| {
+            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                settings_store::prepare_exit(app_handle);
+            }
             if let tauri::RunEvent::Exit = event {
                 log::info!("Tauri exit — shutting down whisper");
                 dictation::shutdown();

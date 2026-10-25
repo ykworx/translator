@@ -1,15 +1,15 @@
-import { DEFAULTS, SETTINGS_KEYS } from "./constants";
+import { DEFAULTS } from "./constants";
 import type { LlmBackend } from "./llmBackend";
 import type { BackendId } from "./types";
 
 export type ProviderProtocol = "gemini-native" | "openai-compatible";
 export type ProviderAuthKind = "api-key" | "none";
 
-/** Ephemeral adapter input. Never persist this object or use it as a string cache key. */
+/** Ephemeral native runtime handle; contains no API key or token. */
 export type ProviderRuntimeConfig = Readonly<{
   baseUrl: string;
   model: string;
-  credential: string;
+  runtimeId: string;
 }>;
 
 export interface ProviderDefinition {
@@ -36,10 +36,10 @@ export const PROVIDER_REGISTRY: Readonly<Record<BackendId, ProviderDefinition>> 
     baseUrl: "https://generativelanguage.googleapis.com/v1beta",
     defaultModel: DEFAULTS.model,
     authKind: "api-key" as const,
-    credentialRef: `settings:${SETTINGS_KEYS.apiKey}`,
+    credentialRef: "keychain:gemini-native",
     createBackend: async (config: ProviderRuntimeConfig) => {
       const { createGeminiBackend } = await import("./geminiClient");
-      return createGeminiBackend({ apiKey: config.credential, model: config.model });
+      return createGeminiBackend({ runtimeId: config.runtimeId, model: config.model });
     },
   }),
   openai: Object.freeze({
@@ -49,10 +49,10 @@ export const PROVIDER_REGISTRY: Readonly<Record<BackendId, ProviderDefinition>> 
     baseUrl: "https://api.openai.com/v1",
     defaultModel: DEFAULTS.openaiModel,
     authKind: "api-key" as const,
-    credentialRef: `settings:${SETTINGS_KEYS.openaiApiKey}`,
+    credentialRef: "keychain:openai",
     createBackend: async (config: ProviderRuntimeConfig) => {
       const { getOpenAiBackend } = await import("./openaiClient");
-      return getOpenAiBackend({ apiKey: config.credential, model: config.model });
+      return getOpenAiBackend({ runtimeId: config.runtimeId, model: config.model });
     },
   }),
   ollama: Object.freeze({

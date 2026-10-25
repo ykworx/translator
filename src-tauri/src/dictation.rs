@@ -2,8 +2,6 @@
 use crate::model_manager;
 use tauri::AppHandle;
 use std::sync::OnceLock;
-#[cfg(target_os = "macos")]
-use tauri_plugin_store::StoreExt;
 
 pub const DEFAULT_DICTATION_SHORTCUT: &str = "Super+Ctrl+KeyD";
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
@@ -14,7 +12,7 @@ pub fn init(app: AppHandle) { let _ = APP_HANDLE.set(app); }
 pub extern "C" fn dictation_stopped() {
     #[cfg(target_os = "macos")]
     {
-        let seconds = APP_HANDLE.get().and_then(|app| app.store("settings.json").ok())
+        let seconds = APP_HANDLE.get().and_then(|app| crate::settings_store::store(app).ok())
             .and_then(|store| store.get("dictationIdleSeconds"))
             .and_then(|value| value.as_u64()).unwrap_or(300);
         model_manager::cancel_unload();
@@ -104,7 +102,7 @@ pub async fn toggle_global_dictation(app: AppHandle) -> Result<(), String> {
         if !preparation.needs_model { return Ok(()); }
         let id = preparation.session_id.ok_or("받아쓰기 세션 ID가 없습니다.")?;
         let result = async {
-            let store = app.store("settings.json").map_err(|e| e.to_string())?;
+            let store = crate::settings_store::store(&app)?;
             let locale = store.get("dictationLocale").and_then(|v| v.as_str().map(str::to_owned))
                 .unwrap_or_else(|| "ko-KR".into());
             let hint = store.get("dictationHint").and_then(|v| v.as_str().map(str::to_owned))

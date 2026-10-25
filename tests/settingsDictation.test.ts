@@ -7,6 +7,7 @@ const installedModel = { downloaded: true, ggmlDownloaded: true, coremlDownloade
 
 describe("dictation settings", () => {
   let store: Map<string, unknown>;
+  let credentials: Map<string, { configured: boolean; revision: string | null; error?: string }>;
   let invoke: ReturnType<typeof vi.fn>;
   let close: ReturnType<typeof vi.fn>;
   let emit: ReturnType<typeof vi.fn>;
@@ -22,6 +23,8 @@ describe("dictation settings", () => {
     vi.resetModules();
     document.documentElement.innerHTML = html;
     store = new Map();
+    credentials = new Map();
+    let credentialSequence = 0;
     close = vi.fn().mockResolvedValue(undefined);
     emit = vi.fn().mockResolvedValue(undefined);
     microphoneList = [{ id: "built-in", name: "MacBook Pro 마이크", isDefault: true }, { id: "usb-mic", name: "USB 마이크", isDefault: false }];
@@ -34,12 +37,21 @@ describe("dictation settings", () => {
       });
     }
     invoke = vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+      if (["settings_get", "settings_set", "settings_delete"].includes(command) && ["apiKey", "openaiApiKey"].includes(args.key as string)) throw new Error("Secret settings access is forbidden");
       switch (command) {
-        case "plugin:store|load": return 1;
-        case "plugin:store|get": return [store.get(args.key as string), store.has(args.key as string)];
-        case "plugin:store|set": store.set(args.key as string, args.value); return;
-        case "plugin:store|delete": store.delete(args.key as string); return;
-        case "plugin:store|save": return;
+        case "get_credential_status": return credentials.get(args.providerId as string) ?? { configured: false, revision: null };
+        case "save_provider_credential": case "delete_provider_credential": {
+          const previous = credentials.get(args.providerId as string) ?? { configured: false, revision: null };
+          if (previous.revision !== args.expectedRevision) throw new Error("다른 창에서 키가 변경되었습니다.");
+          const status = { configured: command === "save_provider_credential", revision: command === "save_provider_credential" ? `new-${++credentialSequence}` : null };
+          credentials.set(args.providerId as string, status);
+          return status;
+        }
+        case "settings_load": return 1;
+        case "settings_get": return [store.get(args.key as string), store.has(args.key as string)];
+        case "settings_set": store.set(args.key as string, args.value); return;
+        case "settings_delete": store.delete(args.key as string); return;
+        case "settings_save": return;
         case "list_caption_capture_windows": return [];
         case "list_dictation_microphones": return microphoneList;
         case "check_whisper_model": return installedModel;
@@ -102,7 +114,7 @@ describe("dictation settings", () => {
     expect(store.get("dictationMicrophone")).toBe("usb-mic");
     expect(store.get("dictationHint")).toBe("Transrator, Osolar");
     expect(store.get("dictationIdleSeconds")).toBe(300);
-    expect(invoke).toHaveBeenCalledWith("plugin:store|save", { rid: 1 });
+    expect(invoke).toHaveBeenCalledWith("settings_save", { rid: 1 });
   });
 
   it("keeps the window open and writes no settings if shortcut registration fails", async () => {
@@ -128,7 +140,7 @@ describe("dictation settings", () => {
     const original = invoke.getMockImplementation()!;
     let fail = true;
     invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
-      if (command === "plugin:store|set" && args.key === "dictationHint" && fail) { fail = false; throw new Error("disk full"); }
+      if (command === "settings_set" && args.key === "dictationHint" && fail) { fail = false; throw new Error("disk full"); }
       return original(command, args);
     });
     (document.getElementById("dictation-hint") as HTMLInputElement).value = "새 단어";
@@ -405,11 +417,11 @@ describe("dictation settings", () => {
     let flush: () => void = () => {};
     const original = invoke.getMockImplementation()!;
     invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
-      if (command === "plugin:store|save") return new Promise<void>(resolve => { flush = resolve; });
+      if (command === "settings_save") return new Promise<void>(resolve => { flush = resolve; });
       return original(command, args);
     });
     button("btn-save").click();
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("plugin:store|save", { rid: 1 }));
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("settings_save", { rid: 1 }));
     expect(button("btn-save").disabled).toBe(true);
     expect(select("dictation-locale").disabled).toBe(true);
     const preventDefault = vi.fn();
@@ -420,4 +432,150 @@ describe("dictation settings", () => {
     flush();
     await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
   });
+  function typeKey(id: string, value: string) {
+    const input = document.getElementById(id) as HTMLInputElement;
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    return input;
+  }
+
+  it("never reads, prefills, writes or rolls back plaintext keys through ordinary settings", async () => {
+    store.set("apiKey", "private-legacy-key");
+    store.set("openaiApiKey", "private-other-key");
+    credentials.set("gemini-native", { configured: true, revision: "original" });
+    await boot();
+    expect((document.getElementById("api-key") as HTMLInputElement).value).toBe("");
+    expect((document.getElementById("openai-api-key") as HTMLInputElement).value).toBe("");
+    button("btn-save").click();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(invoke.mock.calls.filter(([command, args]) => command.startsWith("settings_") && ["apiKey", "openaiApiKey"].includes(args?.key))).toEqual([]);
+    expect(invoke.mock.calls.some(([command]) => command === "save_provider_credential" || command === "delete_provider_credential")).toBe(false);
+  });
+
+  it("stores a newly typed key only with its separate explicit button and clears it on success", async () => {
+    credentials.set("gemini-native", { configured: true, revision: "original" });
+    await boot();
+    await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
+    const input = typeKey("api-key", "  fake-new-key  ");
+    expect(invoke.mock.calls.some(([command]) => command === "save_provider_credential")).toBe(false);
+    button("btn-save").click();
+    expect(close).not.toHaveBeenCalled();
+    expect(status()).toContain("API 키 저장 버튼");
+    button("gemini-key-save").click();
+    await vi.waitFor(() => expect(input.value).toBe(""));
+    expect(invoke).toHaveBeenCalledWith("save_provider_credential", { providerId: "gemini-native", apiKey: "fake-new-key", expectedRevision: "original" });
+    expect(document.getElementById("gemini-key-status")!.textContent).toContain("Keychain에 API 키를 저장");
+    button("btn-save").click();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(invoke.mock.calls.filter(([command]) => command === "save_provider_credential")).toHaveLength(1);
+  });
+
+  it("uses the newly committed revision and removes a saved key only after explicit delete confirmation", async () => {
+    credentials.set("gemini-native", { configured: true, revision: "original" });
+    await boot();
+    await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
+    const input = typeKey("api-key", "replacement");
+    button("gemini-key-save").click();
+    await vi.waitFor(() => expect(input.value).toBe(""));
+    const revision = credentials.get("gemini-native")!.revision;
+    button("gemini-key-delete").click();
+    expect(invoke.mock.calls.some(([command]) => command === "delete_provider_credential")).toBe(false);
+    button("gemini-key-delete").click();
+    await vi.waitFor(() => expect(document.getElementById("gemini-key-status")!.textContent).toContain("삭제했습니다"));
+    expect(invoke).toHaveBeenCalledWith("delete_provider_credential", { providerId: "gemini-native", expectedRevision: revision });
+    button("btn-save").click();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(invoke.mock.calls.filter(([command]) => command === "delete_provider_credential")).toHaveLength(1);
+  });
+
+  it("keeps the input on stale credential failure and requires a refreshed revision for retry", async () => {
+    credentials.set("gemini-native", { configured: true, revision: "first" });
+    await boot();
+    await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
+    credentials.set("gemini-native", { configured: true, revision: "changed-elsewhere" });
+    const input = typeKey("api-key", "replacement");
+    button("gemini-key-save").click();
+    await vi.waitFor(() => expect(document.getElementById("gemini-key-status")!.textContent).toContain("입력을 유지"));
+    expect(input.value).toBe("replacement");
+    expect(close).not.toHaveBeenCalled();
+    button("gemini-key-refresh").click();
+    await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
+    button("gemini-key-save").click();
+    await vi.waitFor(() => expect(input.value).toBe(""));
+    expect(invoke).toHaveBeenLastCalledWith("save_provider_credential", { providerId: "gemini-native", apiKey: "replacement", expectedRevision: "changed-elsewhere" });
+  });
+
+  it("excludes typed passwords from the form fingerprint", async () => {
+    await boot();
+    await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
+    const stringify = vi.spyOn(JSON, "stringify");
+    typeKey("api-key", "private-input-must-not-be-fingerprinted");
+    const values = stringify.mock.calls.map(call => call[0]);
+    stringify.mockRestore();
+    expect(JSON.stringify(values)).not.toContain("private-input-must-not-be-fingerprinted");
+  });
+
+  it("does not access Keychain while loading or saving an Ollama connection", async () => {
+    store.set("llmBackendId", "ollama");
+    const original = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === "get_credential_status") throw new Error("Keychain 잠김");
+      return original(command, args);
+    });
+    await boot();
+    select("dictation-locale").value = "en-US";
+    button("btn-save").click();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(store.get("dictationLocale")).toBe("en-US");
+    expect(invoke.mock.calls.some(([command]) => command === "get_credential_status")).toBe(false);
+  });
+
+  it("keeps ordinary and voice settings usable while a cloud credential status read is pending", async () => {
+    const original = invoke.getMockImplementation()!;
+    let finish: (value: unknown) => void = () => {};
+    invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === "get_credential_status") return new Promise(resolve => { finish = resolve; });
+      return original(command, args);
+    });
+    await boot();
+    expect(button("gemini-key-refresh").disabled).toBe(true);
+    select("dictation-locale").value = "en-US";
+    button("btn-save").click();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(store.get("dictationLocale")).toBe("en-US");
+    finish({ configured: false, revision: null });
+    await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
+  });
+
+  it("allows explicit repair when metadata exists but the referenced Keychain item is missing", async () => {
+    credentials.set("gemini-native", { configured: true, revision: "missing-item", error: "저장된 Keychain 항목을 찾을 수 없습니다." });
+    await boot();
+    await vi.waitFor(() => expect(document.getElementById("gemini-key-status")!.textContent).toContain("찾을 수 없습니다"));
+    const input = typeKey("api-key", "repair-key");
+    button("gemini-key-save").click();
+    await vi.waitFor(() => expect(input.value).toBe(""));
+    expect(invoke).toHaveBeenCalledWith("save_provider_credential", { providerId: "gemini-native", apiKey: "repair-key", expectedRevision: "missing-item" });
+  });
+
+  it("waits for a credential mutation before allowing cancellation or native close", async () => {
+    await boot();
+    await vi.waitFor(() => expect(button("gemini-key-refresh").disabled).toBe(false));
+    const original = invoke.getMockImplementation()!;
+    let finish: (value: unknown) => void = () => {};
+    invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === "save_provider_credential") return new Promise(resolve => { finish = resolve; });
+      return original(command, args);
+    });
+    typeKey("api-key", "pending-key");
+    button("gemini-key-save").click();
+    await vi.waitFor(() => expect(button("btn-cancel").disabled).toBe(true));
+    button("btn-cancel").click();
+    const preventDefault = vi.fn(); await closeRequested!({ preventDefault });
+    expect(preventDefault).toHaveBeenCalledOnce(); expect(close).not.toHaveBeenCalled();
+    finish({ configured: true, revision: "committed" });
+    await vi.waitFor(() => expect(button("btn-cancel").disabled).toBe(false));
+    button("btn-cancel").click();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+  });
+
 });

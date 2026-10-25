@@ -1,9 +1,11 @@
 // ─── UI Rendering ───────────────────────────────────
 import { writeTextToClipboard, writeHtmlToClipboard } from "./clipboard";
 import { koreanPronunciation } from "./api";
-import { COPY_FEEDBACK_MS, SETTINGS_KEYS, DEFAULTS } from "./constants";
+import { COPY_FEEDBACK_MS } from "./constants";
 import { escapeHtml } from "./utils";
-import { getSetting, setSetting } from "./store";
+import { getActiveBackendId } from "./llmProfile";
+import { getProvider } from "./providerRegistry";
+import { getCredentialStatus, saveProviderCredential } from "./connectionProfiles";
 
 export { escapeHtml };
 
@@ -274,36 +276,58 @@ export function addEntry(entry: ChatEntry): void {
   chat.scrollTop = chat.scrollHeight;
 }
 
+let emptyStateSequence = 0;
+
 export async function showEmptyState(): Promise<void> {
+  const sequence = ++emptyStateSequence;
   if (chatHistory.length > 0) return;
-  const apiKey = await getSetting(SETTINGS_KEYS.apiKey, DEFAULTS.apiKey);
-
-  if (!apiKey) {
-    chat.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-icon">🔑</div>
-        <div class="empty-title">시작하려면 API 키가 필요합니다</div>
-        <div class="empty-field">
-          <input type="password" id="inline-api-key" placeholder="Gemini API 키를 붙여넣으세요" />
-          <button type="button" id="inline-api-save" class="empty-save-btn">저장</button>
-        </div>
-        <div class="empty-hint">Google AI Studio에서 무료 키를 발급받을 수 있습니다</div>
-      </div>`;
-
-    document.getElementById("inline-api-save")?.addEventListener("click", async () => {
+  const current = () => sequence === emptyStateSequence && chatHistory.length === 0;
+  try {
+    const providerId = await getActiveBackendId();
+    const provider = getProvider(providerId);
+    const credential = providerId === "ollama" ? null : await getCredentialStatus(providerId);
+    if (credential?.error) throw new Error(credential.error);
+    if (!current()) return;
+    if (credential && !credential.configured && providerId !== "ollama") {
+      chat.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">🔑</div>
+          <div class="empty-title">${escapeHtml(provider.label)} API 키를 설정하세요</div>
+          <div class="empty-field">
+            <input type="password" id="inline-api-key" autocomplete="off" placeholder="새 API 키" />
+            <button type="button" id="inline-api-save" class="empty-save-btn">Keychain에 저장</button>
+          </div>
+          <div class="empty-hint" id="inline-api-status" role="status">키를 저장한 뒤 번역할 수 있습니다.</div>
+        </div>`;
       const keyInput = document.getElementById("inline-api-key") as HTMLInputElement;
-      const key = keyInput?.value.trim();
-      if (!key) return;
-      await setSetting(SETTINGS_KEYS.apiKey, key);
-      await showEmptyState();
-    });
-  } else {
+      const save = document.getElementById("inline-api-save") as HTMLButtonElement;
+      const status = document.getElementById("inline-api-status")!;
+      save.addEventListener("click", async () => {
+        if (save.disabled || !keyInput.value.trim()) return;
+        save.disabled = true;
+        keyInput.disabled = true;
+        status.textContent = "API 키 저장 중…";
+        try {
+          await saveProviderCredential(providerId, keyInput.value.trim(), credential.revision);
+          keyInput.value = "";
+          if (current()) await showEmptyState();
+        } catch {
+          if (current()) status.textContent = "API 키 저장 결과를 확인하지 못했습니다. 입력을 유지했습니다. 설정에서 키 상태를 확인해주세요.";
+        } finally {
+          save.disabled = false;
+          keyInput.disabled = false;
+        }
+      });
+      return;
+    }
     chat.innerHTML = `
       <div class="empty-state">
         <div class="empty-icon">⌘⌃T</div>
         <div class="empty-title">텍스트를 선택하고 ⌘+Ctrl+T</div>
         <div class="empty-subtitle">또는 아래에 직접 입력하세요</div>
       </div>`;
+  } catch (error) {
+    if (current()) chat.innerHTML = `<div class="empty-state"><div class="empty-title">AI 연결 설정을 확인해주세요</div><div class="empty-hint">${escapeHtml(String(error))}</div><div class="empty-subtitle">트레이 메뉴의 설정에서 API 키 상태를 확인해주세요.</div></div>`;
   }
 }
 
