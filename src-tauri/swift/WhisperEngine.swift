@@ -144,9 +144,10 @@ final class WhisperEngine {
     /// Used by feedWavFile to avoid deadlock when main thread is blocked on semaphore
     fileprivate var isBenchmarkMode = false
 
-    /// CoreML Silero VAD (ANE-accelerated, ~0.3ms per 256ms chunk)
+    /// Core ML Silero VAD with OS-selected compute units.
     private var coremlVad: CoreMLVad?
     private var coremlVadLoaded = false
+    private var encoderAssetPresent = false
 
     // MARK: - Accumulate + Finalize Parameters
 
@@ -285,7 +286,8 @@ final class WhisperEngine {
         params.use_gpu = true
 
         let coremlPath = path.replacingOccurrences(of: ".bin", with: "-encoder.mlmodelc")
-        if FileManager.default.fileExists(atPath: coremlPath) {
+        encoderAssetPresent = FileManager.default.fileExists(atPath: coremlPath)
+        if encoderAssetPresent {
             NSLog("[WhisperEngine] CoreML encoder found at %@", coremlPath)
         } else {
             NSLog("[WhisperEngine] CoreML encoder not found, using GPU/CPU only")
@@ -343,7 +345,7 @@ final class WhisperEngine {
         // Dev mode: vendor directory
         let execPath = ProcessInfo.processInfo.arguments.first ?? ""
         let execDir = (execPath as NSString).deletingLastPathComponent
-        for rel in ["vendor/\(modelName)", "../../../vendor/\(modelName)",
+        for rel in ["vendor/\(modelName)", "../../vendor/\(modelName)", "../../../vendor/\(modelName)",
                      "../../../../src-tauri/vendor/\(modelName)"] {
             let p = ((execDir as NSString).appendingPathComponent(rel) as NSString).standardizingPath
             if FileManager.default.fileExists(atPath: p) {
@@ -524,60 +526,21 @@ final class WhisperEngine {
 
     /// Extract speech-only segments using CoreML VAD
     /// Processes audio in 256ms (4096 sample) chunks, concatenates speech segments
-    private func extractSpeechSegments(from samples: [Float], vad: CoreMLVad, threshold: Float = 0.3, padSamples: Int = 1600) -> [Float] {
+    private func extractSpeechSegments(from samples: [Float], detectionSamples: [Float]? = nil, vad: CoreMLVad, threshold: Float = 0.3) -> [Float] {
         vad.resetState()
         let vadStart = CFAbsoluteTimeGetCurrent()
         let chunkSize = CoreMLVad.chunkSize  // 4096 samples = 256ms
-        var speechSamples: [Float] = []
-        var isSpeech = false
-
+        let detectionAudio = detectionSamples.flatMap { $0.count == samples.count ? $0 : nil } ?? samples
+        var chunks: [Range<Int>] = []
         var offset = 0
         while offset < samples.count {
             let end = min(offset + chunkSize, samples.count)
-            let chunk = Array(samples[offset..<end])
-            let prob = vad.process(samples: chunk)
-
-            if prob >= threshold {
-                let padStart = max(0, offset - padSamples)
-                if !isSpeech && padStart < offset {
-                    speechSamples.append(contentsOf: samples[padStart..<offset])
-                }
-                speechSamples.append(contentsOf: chunk)
-                isSpeech = true
-            } else {
-                if isSpeech {
-                    let padEnd = min(offset + padSamples, samples.count)
-                    if offset < padEnd {
-                        speechSamples.append(contentsOf: samples[offset..<padEnd])
-                    }
-                }
-                isSpeech = false
-            }
-
+            let prob = vad.process(samples: Array(detectionAudio[offset..<end]))
+            if prob >= threshold { chunks.append(offset..<end) }
             offset = end
         }
-
-        let vadElapsed = (CFAbsoluteTimeGetCurrent() - vadStart) * 1000.0
-        let reduction = samples.count > 0 ? (1.0 - Double(speechSamples.count) / Double(samples.count)) * 100.0 : 0
-
-        // Guard: if VAD output is too short, use original (noisy but sufficient context)
-        let minVadOutput = 25_600  // 1.6 seconds — below this Whisper lacks context
-        if speechSamples.count > 0 && speechSamples.count < minVadOutput {
-            NSLog("[WhisperEngine] CoreML VAD: %.1fms | %d → %d samples — too short, using original",
-                  vadElapsed, samples.count, speechSamples.count)
-            return samples
-        }
-
-        // Guard: if nothing detected, return empty (no speech)
-        if speechSamples.isEmpty {
-            NSLog("[WhisperEngine] CoreML VAD: %.1fms | %d → 0 samples (no speech)",
-                  vadElapsed, samples.count)
-            return []
-        }
-
-        NSLog("[WhisperEngine] CoreML VAD: %.1fms | %d → %d samples (%.1f%% reduction)",
-              vadElapsed, samples.count, speechSamples.count, reduction)
-
+        let speechSamples = SpeechAudioPolicy.speechSamples(samples, chunks: chunks)
+        PerformanceTracker.shared.record(stage: "speech_selection", durationMs: (CFAbsoluteTimeGetCurrent() - vadStart) * 1000)
         return speechSamples
     }
 
@@ -598,7 +561,7 @@ final class WhisperEngine {
     // MARK: - Inference
 
     /// Run inference on all accumulated audio → emit partial result
-    /// Partial: no VAD (fast), relies on new_segment_callback for incremental results
+    /// Microphone partials use the same speech gate as finalized results.
     private func runPartialInference() {
         lock.lock()
         guard acceptingSamples else { lock.unlock(); return }
@@ -679,7 +642,7 @@ final class WhisperEngine {
             let shouldPartialNow = pendingCount >= self.minPartialSize
             self.lock.unlock()
 
-            if !text.isEmpty && !isDuplicate {
+            if (!text.isEmpty && !isDuplicate) || (text.isEmpty && self.isDictating) {
                 let deliver = {
                     self.lock.lock()
                     let callback = self.sessionGeneration == generation ? self.onFinalResult : nil
@@ -708,10 +671,24 @@ final class WhisperEngine {
         let language = whisperLang
         lock.unlock()
 
-        // CoreML VAD pre-filter: extract speech-only segments
+        // RNNoise is a speech detector input only. Whisper retains the
+        // original speech samples: denoising the decoder input degraded our
+        // synthetic noisy-speech baseline. Captions have their own denoiser.
+        let denoise = dictating && coremlVad != nil &&
+            !(isBenchmarkMode && ProcessInfo.processInfo.arguments.contains("--benchmark-no-denoise"))
+        var prepared = samples
+        if denoise {
+            if let cleaned = PerformanceTracker.shared.measure(stage: "rnnoise", { SpeechDenoiser.process(samples) }) {
+                prepared = cleaned
+            } else {
+                // Preserve speech if preprocessing is unavailable; benchmark
+                // diagnostics distinguish this fallback from successful gating.
+                PerformanceTracker.shared.record(stage: "rnnoise_fallback", durationMs: 0)
+            }
+        }
         var filteredSamples = samples
-        if useVAD, let vad = coremlVad {
-            filteredSamples = extractSpeechSegments(from: samples, vad: vad)
+        if useVAD || dictating, let vad = coremlVad {
+            filteredSamples = extractSpeechSegments(from: samples, detectionSamples: prepared, vad: vad)
             if filteredSamples.isEmpty { return ("", []) }
         }
 
@@ -743,6 +720,7 @@ final class WhisperEngine {
         params.new_segment_callback_user_data = unmanagedCtx.toOpaque()
 
         let mutablePromptTokens = promptTokens
+        var inferenceStatus: Int32 = -1
 
         // Helper: run whisper_full with all nested withCString scopes kept alive
         func executeWhisperFull() {
@@ -762,19 +740,19 @@ final class WhisperEngine {
                             params.prompt_tokens = tokensPtr.baseAddress
                             params.prompt_n_tokens = Int32(mutablePromptTokens.count)
                             filteredSamples.withUnsafeBufferPointer { bufferPtr in
-                                let _ = whisper_full(ctx, params, bufferPtr.baseAddress, Int32(filteredSamples.count))
+                                inferenceStatus = whisper_full(ctx, params, bufferPtr.baseAddress, Int32(filteredSamples.count))
                             }
                         }
                     } else if !domainHint.isEmpty {
                         domainHint.withCString { promptPtr in
                             params.initial_prompt = promptPtr
                             filteredSamples.withUnsafeBufferPointer { bufferPtr in
-                                let _ = whisper_full(ctx, params, bufferPtr.baseAddress, Int32(filteredSamples.count))
+                                inferenceStatus = whisper_full(ctx, params, bufferPtr.baseAddress, Int32(filteredSamples.count))
                             }
                         }
                     } else {
                         filteredSamples.withUnsafeBufferPointer { bufferPtr in
-                            let _ = whisper_full(ctx, params, bufferPtr.baseAddress, Int32(filteredSamples.count))
+                            inferenceStatus = whisper_full(ctx, params, bufferPtr.baseAddress, Int32(filteredSamples.count))
                         }
                     }
                 }
@@ -786,6 +764,7 @@ final class WhisperEngine {
 
         executeWhisperFull()
         unmanagedCtx.release()
+        guard inferenceStatus == 0 else { return ("", []) }
 
         // Collect text
         let nSegments = whisper_full_n_segments(ctx)
@@ -969,6 +948,12 @@ final class WhisperEngine {
             "rtf": round(rtf * 1000) / 1000,
             "num_samples": totalSamples,
             "timed_out": waitResult == .timedOut,
+            "audio_processing": ["vad_loaded": coremlVadLoaded,
+                                 "vad_compute_policy": "all (OS-selected CPU/GPU/Neural Engine)",
+                                 "metal_requested": true,
+                                 "encoder_asset_present": encoderAssetPresent,
+                                 "whisper_build_features": String(cString: whisper_print_system_info()),
+                                 "rnnoise_gate_requested": dictationMode && coremlVadLoaded && !ProcessInfo.processInfo.arguments.contains("--benchmark-no-denoise")],
             "performance": perfStats,
         ]
 

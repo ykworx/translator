@@ -71,6 +71,8 @@ fn main() {
         swift_dir.join("MicrophoneDevices.swift"),
         swift_dir.join("PerformanceTracker.swift"),
         swift_dir.join("CoreMLVad.swift"),
+        swift_dir.join("SpeechAudioPolicy.swift"),
+        swift_dir.join("SpeechDenoiser.swift"),
         swift_dir.join("MicSpeechBridge.swift"),
         swift_dir.join("AppCaptionBridge.swift"),
         swift_dir.join("WhisperEngine.swift"),

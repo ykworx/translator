@@ -74,6 +74,7 @@ jobs:
       - run: cmake --version
       - run: npm ci
       - run: bash tests/run_native_dictation_tests.sh
+      - run: bash tests/run_speech_audio_tests.sh
       - run: npm run build
       - run: cargo test --release --target aarch64-apple-darwin --locked --manifest-path src-tauri/Cargo.toml --lib
       - name: Prepare validation bundle build number
@@ -154,6 +155,7 @@ jobs:
       - run: cmake --version
       - run: npm ci
       - run: bash tests/run_native_dictation_tests.sh
+      - run: bash tests/run_speech_audio_tests.sh
       - run: npm run build
       - run: cargo test --release --target aarch64-apple-darwin --locked --manifest-path src-tauri/Cargo.toml --lib
       - name: Override the local signing identity with the distribution identity
