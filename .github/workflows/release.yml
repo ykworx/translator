@@ -24,7 +24,7 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   validate:
@@ -89,6 +89,7 @@ jobs:
           cmp src-tauri/vendor/whisper.cpp/LICENSE "$notices/whisper.cpp-LICENSE"
           cmp src-tauri/vendor/rnnoise/COPYING "$notices/RNNoise-COPYING"
           cmp licenses/Silero-VAD-LICENSE "$notices/Silero-VAD-LICENSE"
+          cmp licenses/Hermes-Agent-LICENSE "$notices/Hermes-Agent-LICENSE"
           cmp THIRD_PARTY_NOTICES.md "$notices/THIRD_PARTY_NOTICES.md"
 
   draft-release:
@@ -183,6 +184,7 @@ jobs:
           cmp src-tauri/vendor/whisper.cpp/LICENSE "$app/Contents/Resources/licenses/whisper.cpp-LICENSE"
           cmp src-tauri/vendor/rnnoise/COPYING "$app/Contents/Resources/licenses/RNNoise-COPYING"
           cmp licenses/Silero-VAD-LICENSE "$app/Contents/Resources/licenses/Silero-VAD-LICENSE"
+          cmp licenses/Hermes-Agent-LICENSE "$app/Contents/Resources/licenses/Hermes-Agent-LICENSE"
           cmp THIRD_PARTY_NOTICES.md "$app/Contents/Resources/licenses/THIRD_PARTY_NOTICES.md"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=2 "$app"

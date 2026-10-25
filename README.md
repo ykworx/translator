@@ -47,7 +47,7 @@ npm run tauri -- dev
 
 음성 기능은 **설정 → 받아쓰기**에서 Whisper 모델을 다운로드한 뒤 사용합니다. 언어·마이크·용어 힌트와 모델 유지 시간을 지정할 수 있습니다. 마이크와 손쉬운 사용 권한은 받아쓰기에, 화면 기록 권한은 영역 캡처·앱 오디오 자막에 사용합니다. [전역 받아쓰기 안내](docs/GLOBAL_DICTATION.md)에 사용법과 실제·자동 검증 범위를 정리했습니다.
 
-받아쓰기 인식은 로컬에서 처리하고, 번역은 선택한 백엔드로 입력을 전송합니다. 현재 API 키를 포함한 설정은 앱 데이터 디렉터리의 `settings.json`에 저장됩니다. Keychain 인증 관리와 Hermes식 연결 프로필은 [계획 #6](https://github.com/ykworx/translator/issues/6)에서 추적합니다.
+받아쓰기 인식은 로컬에서 처리하고, 번역은 선택한 백엔드로 입력을 전송합니다. Ollama의 로컬 전용 설정과 LM Studio 등 대안은 [로컬 모델 안내](docs/LOCAL_MODELS.md)를 참고하세요. 현재 API 키를 포함한 설정은 앱 데이터 디렉터리의 `settings.json`에 저장됩니다. Keychain 인증 관리와 다중 연결 UI는 [계획 #6](https://github.com/ykworx/translator/issues/6)에서 추적합니다.
 
 ## 개발과 기여
 

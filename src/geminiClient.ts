@@ -1,5 +1,8 @@
 import { DEFAULTS, SETTINGS_KEYS } from "./constants";
 import { getSetting } from "./store";
+import type { LlmBackend } from "./llmBackend";
+
+export type GeminiConfig = Readonly<{ apiKey: string; model: string }>;
 
 interface GeminiTextPart {
   text: string;
@@ -100,8 +103,11 @@ async function extractResponseText(resp: Response): Promise<string> {
   return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
 }
 
-async function generateContent(parts: GeminiPart[]): Promise<string> {
-  const { apiKey, model } = await getGeminiConfig();
+async function generateContent(config: GeminiConfig, parts: GeminiPart[]): Promise<string> {
+  const { apiKey, model } = config;
+  if (!apiKey) {
+    throw new Error("API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.");
+  }
   const resp = await fetchWithRetry(buildGeminiUrl(model, apiKey), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -114,7 +120,7 @@ async function generateContent(parts: GeminiPart[]): Promise<string> {
 }
 
 export async function generateText(prompt: string): Promise<string> {
-  return generateContent([{ text: prompt }]);
+  return generateContent(await getGeminiConfig(), [{ text: prompt }]);
 }
 
 /**
@@ -125,7 +131,18 @@ export async function generateTextStream(
   prompt: string,
   onChunk: (partialText: string) => void,
 ): Promise<string> {
-  const { apiKey, model } = await getGeminiConfig();
+  return generateTextStreamWithConfig(await getGeminiConfig(), prompt, onChunk);
+}
+
+async function generateTextStreamWithConfig(
+  config: GeminiConfig,
+  prompt: string,
+  onChunk: (partialText: string) => void,
+): Promise<string> {
+  const { apiKey, model } = config;
+  if (!apiKey) {
+    throw new Error("API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.");
+  }
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
 
   const resp = await fetchWithRetry(url, {
@@ -175,7 +192,11 @@ export async function generateTextStream(
 }
 
 export async function generateImage(prompt: string, imageBase64: string): Promise<string> {
-  return generateContent([
+  return generateImageWithConfig(await getGeminiConfig(), prompt, imageBase64);
+}
+
+function generateImageWithConfig(config: GeminiConfig, prompt: string, imageBase64: string): Promise<string> {
+  return generateContent(config, [
     { text: prompt },
     {
       inline_data: {
@@ -186,7 +207,17 @@ export async function generateImage(prompt: string, imageBase64: string): Promis
   ]);
 }
 
-import type { LlmBackend } from "./llmBackend";
+export function createGeminiBackend(config: GeminiConfig): LlmBackend {
+  const snapshot = Object.freeze({ apiKey: config.apiKey, model: config.model });
+  return {
+    id: "gemini-native",
+    label: "Gemini API",
+    supportsVision: true,
+    generateText: prompt => generateContent(snapshot, [{ text: prompt }]),
+    generateTextStream: (prompt, onChunk) => generateTextStreamWithConfig(snapshot, prompt, onChunk),
+    generateImage: (prompt, imageBase64) => generateImageWithConfig(snapshot, prompt, imageBase64),
+  };
+}
 
 export const geminiNativeBackend: LlmBackend = {
   id: "gemini-native",

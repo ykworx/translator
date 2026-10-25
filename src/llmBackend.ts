@@ -1,5 +1,5 @@
-import { DEFAULTS, SETTINGS_KEYS } from "./constants";
-import { getSetting } from "./store";
+import { createBackendForConnection, readActiveConnection, runtimeConnectionsEqual,
+  type RuntimeSnapshot } from "./connectionProfiles";
 import type { BackendId } from "./types";
 
 export interface LlmBackend {
@@ -11,61 +11,52 @@ export interface LlmBackend {
   generateImage(prompt: string, base64Png: string): Promise<string>;
 }
 
-// Strips trailing slash for stable cache key comparison (mirrors ollamaClient.normalizeBaseUrl)
-function normalizeBaseUrl(url: string): string {
-  return url.replace(/\/$/, "");
+type CacheEntry = { snapshot: RuntimeSnapshot; backend: Promise<LlmBackend> };
+let cached: CacheEntry | null = null;
+let pending: CacheEntry[] = [];
+let selectionSequence = 0;
+let cacheEpoch = 0;
+
+/** @internal Clears instance/in-flight selection caches without persisting settings. */
+export function resetBackendCache(): void {
+  cached = null;
+  pending = [];
+  cacheEpoch += 1;
 }
 
-// Cache keyed by normalized baseUrl+model so either change triggers a new capabilities fetch
-let cachedOllamaBackend: { key: string; backend: LlmBackend } | null = null;
-
-/** @internal test-only — production code should not call this */
+/** @internal Preserved for existing callers/tests. */
 export function resetOllamaBackendCache(): void {
-  cachedOllamaBackend = null;
+  if (!cached || cached.snapshot.profile.providerId === "ollama") resetBackendCache();
 }
 
-// Cache keyed by openai model string
-let cachedOpenAiBackend: { key: string; backend: LlmBackend } | null = null;
-
-/** @internal test-only — production code should not call this */
+/** @internal Preserved for existing callers/tests. */
 export function resetOpenAiBackendCache(): void {
-  cachedOpenAiBackend = null;
+  if (!cached || cached.snapshot.profile.providerId === "openai") resetBackendCache();
 }
 
 export async function getActiveBackend(): Promise<LlmBackend> {
-  const backendId = await getSetting<BackendId>(
-    SETTINGS_KEYS.llmBackendId,
-    DEFAULTS.llmBackendId,
-  );
-
-  if (backendId === "ollama") {
-    const baseUrl = await getSetting<string>(SETTINGS_KEYS.ollamaBaseUrl, DEFAULTS.ollamaBaseUrl);
-    const model = await getSetting<string>(SETTINGS_KEYS.ollamaModel, DEFAULTS.ollamaModel);
-    const key = `${normalizeBaseUrl(baseUrl)}|${model}`;
-    if (cachedOllamaBackend?.key === key) return cachedOllamaBackend.backend;
-    const { getOllamaBackend } = await import("./ollamaClient");
-    const backend = await getOllamaBackend();
-    cachedOllamaBackend = { key, backend };
-    // Clear other backend caches when switching to ollama
-    cachedOpenAiBackend = null;
-    return backend;
+  const sequence = ++selectionSequence;
+  const epoch = cacheEpoch;
+  // One store capture binds provider, endpoint, model, and credential together.
+  const snapshot = await readActiveConnection();
+  if (epoch === cacheEpoch && cached && runtimeConnectionsEqual(cached.snapshot, snapshot)) {
+    return cached.backend;
   }
 
-  if (backendId === "openai") {
-    const model = await getSetting<string>(SETTINGS_KEYS.openaiModel, DEFAULTS.openaiModel);
-    const key = model;
-    if (cachedOpenAiBackend?.key === key) return cachedOpenAiBackend.backend;
-    const { getOpenAiBackend } = await import("./openaiClient");
-    const backend = await getOpenAiBackend();
-    cachedOpenAiBackend = { key, backend };
-    // Clear other backend caches when switching to openai
-    cachedOllamaBackend = null;
-    return backend;
+  let entry = pending.find(candidate => runtimeConnectionsEqual(candidate.snapshot, snapshot));
+  if (!entry) {
+    entry = { snapshot, backend: createBackendForConnection(snapshot) };
+    pending.push(entry);
   }
-
-  // Gemini fallback — clear both non-gemini caches
-  cachedOllamaBackend = null;
-  cachedOpenAiBackend = null;
-  const { geminiNativeBackend } = await import("./geminiClient");
-  return geminiNativeBackend;
+  // Assign before capabilities complete. Identical reads share that promise;
+  // an older completion never writes over a newer selection.
+  if (epoch === cacheEpoch && sequence === selectionSequence) cached = entry;
+  try {
+    return await entry.backend;
+  } catch (error) {
+    if (cached === entry) cached = null;
+    throw error;
+  } finally {
+    pending = pending.filter(candidate => candidate !== entry);
+  }
 }

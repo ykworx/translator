@@ -47,7 +47,9 @@ Frontend tests use Vitest, jsdom, and Tauri mocks in `tests/helpers/`. Rust unit
 src/                       Frontend (vanilla TypeScript, no framework)
   main.ts                  Initialization, manual translation, keyboard handling
   api.ts / prompts.ts      Task-level APIs, response parsing, prompt construction
-  llmBackend.ts            LlmBackend interface and backend selection/cache
+  llmBackend.ts            LlmBackend interface and snapshot-bound backend cache
+  providerRegistry.ts      Fixed provider protocol/auth/factory contracts
+  connectionProfiles.ts    Legacy settings projection and immutable runtime snapshots
   geminiClient.ts          Gemini requests and SSE streaming
   ollamaClient.ts          Ollama requests, streaming, capability discovery
   openaiClient.ts          OpenAI requests via Rust commands and IPC channels
@@ -100,6 +102,8 @@ src-tauri/
 
 - Platform-specific Rust code uses `#[cfg(target_os = "...")]`; macOS audio features use Swift FFI. Native macOS builds require the Swift SDK, CMake, and initialized Whisper/RNNoise submodules.
 - State is held in module-level variables. Persistent settings, including API keys, use Tauri Store's `settings.json` in the app data directory; Keychain storage is not implemented.
+- Connection profiles currently project legacy settings without persisting a competing configuration. Capture via one `store:entries` call, keep credentials outside the serializable profile, and bind capability checks and all generation methods to the same snapshot. Unknown providers or store failures must not fall back to a cloud backend. This snapshot does not make the legacy settings UI's multi-key writes transactional; atomic persistent profiles belong with the later connection UI/auth migration.
+- Ollama is intended for local models, with saved LAN/proxy endpoints preserved. Loopback alone does not prove local inference because Ollama also supports cloud models. See `docs/LOCAL_MODELS.md`; do not automatically change the user's server or model reference.
 - `constants.ts` defines setting keys, defaults, languages, and model options. `whisperModel` selects Medium, Large V3 Turbo, or Large V3 for all speech features. Model status/download/delete commands accept an optional model ID for unsaved UI selections.
 - OS permissions are independent of model loading. Models load on blocking workers; context initialization, inference, warm-up, and destruction are mutually exclusive. An active capture prevents model replacement/deletion.
 - Global dictation runs natively while the webview is hidden. `Cmd+Ctrl+D` toggles recording; the nonactivating AppKit panel previews partial text and submits one final paste. Captures, callbacks, and producers carry session generations. Do not drive this lifecycle from frontend polling.

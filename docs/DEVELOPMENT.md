@@ -128,7 +128,9 @@ Swift FFI, 캡처·클립보드·단축키·창 수명주기를 바꾸면 실제
 src/
   main.ts                 초기화, 수동 입력, 키보드 이벤트
   api.ts / prompts.ts     번역·요약·필기 인식 작업과 프롬프트
-  llmBackend.ts           백엔드 선택과 공통 실행 인터페이스
+  llmBackend.ts           백엔드 선택과 snapshot 기준 캐시
+  providerRegistry.ts     공급자별 protocol·인증 종류·factory
+  connectionProfiles.ts   기존 설정의 읽기 전용 프로필과 runtime snapshot
   *Client.ts              Gemini·OpenAI·Ollama 요청과 스트림 처리
   clipboardTranslate.ts   클립보드 번역 흐름
   ui.ts / styles.css      대화 렌더링, 표 처리, 테마
@@ -149,5 +151,7 @@ tests/                    프런트엔드·네이티브 검사와 음성 fixture
 ```
 
 프런트엔드는 프레임워크 없이 DOM을 조작하고 CSS 변수로 테마를 적용합니다. 명령은 Tauri `invoke`, 실시간 알림은 이벤트와 IPC Channel로 주고받습니다. Gemini·Ollama HTTP는 프런트엔드에서, OpenAI HTTP는 Rust에서 실행합니다.
+
+현재 ConnectionProfile은 기존 설정을 한 번의 `store:entries` 호출로 읽어 투영합니다. 별도 프로필 레코드를 저장해 기존 설정 UI와 경쟁하지 않으며, capability 조회와 텍스트·스트림·이미지 생성은 동일한 고정 설정을 사용합니다. 공개 프로필에는 인증 참조만 있고 원문 키는 runtime의 비공개 값으로 분리합니다. API 키의 영속 저장 위치는 아직 기존 Store이며 Keychain 이전은 후속 단계입니다. 로컬 실행 선택지와 Ollama cloud 구분은 [로컬 모델 안내](LOCAL_MODELS.md)에 정리했습니다.
 
 전역 받아쓰기는 숨겨진 webview의 polling에 의존하지 않는 네이티브 세션입니다. 마이크 입력·전역 받아쓰기·앱 자막은 Whisper 엔진을 공유합니다. 취소된 세션의 결과가 새 세션으로 전달되지 않도록 generation과 소유권 검사를 유지하며, 모델의 추론·교체·해제를 동시에 수행하지 않습니다. 자세한 코드 작업 규칙은 [AGENTS.md](../AGENTS.md)에 있습니다.

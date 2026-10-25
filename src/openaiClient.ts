@@ -6,6 +6,8 @@ import type { LlmBackend } from "./llmBackend";
 // cannot call it directly. All HTTP is routed through Rust (see src-tauri/src/openai.rs).
 const { invoke, Channel } = window.__TAURI__.core;
 
+export type OpenAiConfig = Readonly<{ apiKey: string; model: string }>;
+
 async function getOpenAiConfig(): Promise<{ apiKey: string; model: string }> {
   const apiKey = await getSetting(SETTINGS_KEYS.openaiApiKey, DEFAULTS.openaiApiKey);
   const model = await getSetting(SETTINGS_KEYS.openaiModel, DEFAULTS.openaiModel);
@@ -19,7 +21,10 @@ async function getOpenAiConfig(): Promise<{ apiKey: string; model: string }> {
 }
 
 export async function generateText(prompt: string): Promise<string> {
-  const { apiKey, model } = await getOpenAiConfig();
+  return generateTextWithConfig(await getOpenAiConfig(), prompt);
+}
+
+async function generateTextWithConfig({ apiKey, model }: OpenAiConfig, prompt: string): Promise<string> {
   return invoke<string>("openai_generate_text", { apiKey, model, prompt });
 }
 
@@ -27,7 +32,14 @@ export async function generateTextStream(
   prompt: string,
   onChunk: (accumulated: string) => void,
 ): Promise<string> {
-  const { apiKey, model } = await getOpenAiConfig();
+  return generateTextStreamWithConfig(await getOpenAiConfig(), prompt, onChunk);
+}
+
+async function generateTextStreamWithConfig(
+  { apiKey, model }: OpenAiConfig,
+  prompt: string,
+  onChunk: (accumulated: string) => void,
+): Promise<string> {
 
   const channel = new Channel<string>();
   channel.onmessage = (accumulated) => onChunk(accumulated);
@@ -36,7 +48,10 @@ export async function generateTextStream(
 }
 
 export async function generateImage(prompt: string, base64Png: string): Promise<string> {
-  const { apiKey, model } = await getOpenAiConfig();
+  return generateImageWithConfig(await getOpenAiConfig(), prompt, base64Png);
+}
+
+async function generateImageWithConfig({ apiKey, model }: OpenAiConfig, prompt: string, base64Png: string): Promise<string> {
   // JS `imageBase64` → Rust `image_base64` (Tauri auto camel↔snake conversion).
   return invoke<string>("openai_generate_image", { apiKey, model, prompt, imageBase64: base64Png });
 }
@@ -70,15 +85,19 @@ export function isVisionCapableModel(model: string): boolean {
   return false;
 }
 
-export async function getOpenAiBackend(): Promise<LlmBackend> {
-  const { model } = await getOpenAiConfig();
+export async function getOpenAiBackend(config?: OpenAiConfig): Promise<LlmBackend> {
+  const resolved = config ?? await getOpenAiConfig();
+  const snapshot = Object.freeze({ apiKey: resolved.apiKey, model: resolved.model });
+  if (!snapshot.apiKey) {
+    throw new Error("OpenAI API 키가 설정되지 않았습니다. 트레이 메뉴에서 설정을 열어주세요.");
+  }
 
   return {
     id: "openai",
     label: "OpenAI (GPT)",
-    supportsVision: isVisionCapableModel(model),
-    generateText,
-    generateTextStream,
-    generateImage,
+    supportsVision: isVisionCapableModel(snapshot.model),
+    generateText: prompt => generateTextWithConfig(snapshot, prompt),
+    generateTextStream: (prompt, onChunk) => generateTextStreamWithConfig(snapshot, prompt, onChunk),
+    generateImage: (prompt, base64Png) => generateImageWithConfig(snapshot, prompt, base64Png),
   };
 }
