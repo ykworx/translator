@@ -1,0 +1,33 @@
+name: 기능 제안
+description: 겪는 문제와 원하는 결과를 알려주세요.
+title: "[기능 제안] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        해결하고 싶은 상황을 구체적으로 알려주시면 방향을 함께 검토하기 좋습니다.
+        API 키·토큰·개인정보·실제 음성 파일 대신 가상의 예시를 사용해주세요.
+  - type: textarea
+    id: problem
+    attributes:
+      label: 어떤 문제를 겪고 있나요?
+      description: 지금의 사용 흐름에서 불편한 상황과 영향을 설명해주세요.
+      placeholder: "...할 때 ...이 어려워서 ...을 반복하고 있습니다."
+    validations:
+      required: true
+  - type: textarea
+    id: desired_outcome
+    attributes:
+      label: 원하는 결과
+      description: 이 문제가 해결되면 어떤 작업을 더 쉽게 할 수 있나요?
+      placeholder: "...하면 ...할 수 있으면 좋겠습니다."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 현재 사용하는 방법 또는 다른 제안 (선택)
+      description: 이미 시도한 방법이나 참고할 사용 흐름이 있다면 알려주세요.
+    validations:
+      required: false
+
