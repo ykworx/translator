@@ -6,6 +6,9 @@ on:
       - '.github/workflows/release.yml'
       - 'scripts/check_release_version.py'
       - 'tests/release/**'
+      - 'LICENSE'
+      - 'licenses/**'
+      - 'THIRD_PARTY_NOTICES.md'
       - 'src-tauri/**'
       - 'src/**'
       - 'package*.json'
@@ -79,6 +82,14 @@ jobs:
           uploadWorkflowArtifacts: true
           workflowArtifactNamePattern: 'validation-[name]-[arch]-[mode]-[bundle]'
       - run: codesign --verify --deep --strict src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Transrator.app
+      - name: Verify bundled license notices
+        run: |
+          notices="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Transrator.app/Contents/Resources/licenses"
+          cmp LICENSE "$notices/Transrator-LICENSE"
+          cmp src-tauri/vendor/whisper.cpp/LICENSE "$notices/whisper.cpp-LICENSE"
+          cmp src-tauri/vendor/rnnoise/COPYING "$notices/RNNoise-COPYING"
+          cmp licenses/Silero-VAD-LICENSE "$notices/Silero-VAD-LICENSE"
+          cmp THIRD_PARTY_NOTICES.md "$notices/THIRD_PARTY_NOTICES.md"
 
   draft-release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -168,6 +179,11 @@ jobs:
         run: |
           app="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Transrator.app"
           codesign --verify --deep --strict "$app"
+          cmp LICENSE "$app/Contents/Resources/licenses/Transrator-LICENSE"
+          cmp src-tauri/vendor/whisper.cpp/LICENSE "$app/Contents/Resources/licenses/whisper.cpp-LICENSE"
+          cmp src-tauri/vendor/rnnoise/COPYING "$app/Contents/Resources/licenses/RNNoise-COPYING"
+          cmp licenses/Silero-VAD-LICENSE "$app/Contents/Resources/licenses/Silero-VAD-LICENSE"
+          cmp THIRD_PARTY_NOTICES.md "$app/Contents/Resources/licenses/THIRD_PARTY_NOTICES.md"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=2 "$app"
           shopt -s nullglob
