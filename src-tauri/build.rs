@@ -1,5 +1,52 @@
+fn emit_build_info() {
+    use std::{env, path::PathBuf, process::Command, time::{SystemTime, UNIX_EPOCH}};
+    let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).parent().unwrap().to_owned();
+    let git = |args: &[&str]| Command::new("git").current_dir(&root).args(args).output().ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok()).map(|value| value.trim().to_owned());
+    // Watch source and Git metadata so rebuilding after edits/commits cannot keep an old identity.
+    if let Some(files) = git(&["ls-files"]) {
+        for file in files.lines() { println!("cargo:rerun-if-changed={}", root.join(file).display()); }
+    }
+    for name in ["HEAD", "index", "packed-refs"] {
+        if let Some(path) = git(&["rev-parse", "--git-path", name]) {
+            println!("cargo:rerun-if-changed={}", root.join(path).display());
+        }
+    }
+    if let Some(branch) = git(&["symbolic-ref", "-q", "HEAD"]) {
+        if let Some(path) = git(&["rev-parse", "--git-path", &branch]) {
+            println!("cargo:rerun-if-changed={}", root.join(path).display());
+        }
+    }
+    for name in ["TRANSRATOR_BUILD_CHANNEL", "TRANSRATOR_BUILD_NUMBER"] {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+    let channel = env::var("TRANSRATOR_BUILD_CHANNEL").unwrap_or_else(|_| "development".into());
+    assert!(["development", "validation", "release"].contains(&channel.as_str()), "Invalid build channel");
+    let build_number = env::var("TRANSRATOR_BUILD_NUMBER").ok();
+    if let Some(number) = &build_number {
+        let parts: Vec<_> = number.split('.').collect();
+        assert!(parts.len() == 2 && parts.iter().enumerate().all(|(index, part)| {
+            !part.starts_with('0') && part.bytes().all(|byte| byte.is_ascii_digit())
+                && part.parse::<u32>().is_ok_and(|value| value > 0 && value <= if index == 0 { 9999 } else { 99 })
+        }), "Build number must be RUN.ATTEMPT (1..9999 and 1..99)");
+    }
+    let revision = git(&["rev-parse", "HEAD"]).filter(|value| value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let dirty = git(&["status", "--porcelain", "--untracked-files=no"]).is_some_and(|value| !value.is_empty());
+    if channel != "development" {
+        assert!(revision.is_some() && !dirty && build_number.is_some(), "CI builds require a clean Git revision and build number");
+    }
+    let info = serde_json::json!({
+        "version": env::var("CARGO_PKG_VERSION").unwrap(),
+        "revision": revision, "dirty": dirty, "channel": channel, "buildNumber": build_number,
+        "builtAtUnixSeconds": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+    });
+    std::fs::write(PathBuf::from(env::var("OUT_DIR").unwrap()).join("build-info.json"), info.to_string()).unwrap();
+}
+
 #[cfg(target_os = "macos")]
 fn main() {
+    emit_build_info();
     use std::{env, path::PathBuf, process::Command};
 
     #[derive(serde::Deserialize)]
@@ -219,5 +266,6 @@ fn main() {
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
+    emit_build_info();
     tauri_build::build()
 }

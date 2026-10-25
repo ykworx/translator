@@ -5,7 +5,7 @@
 
 선택한 텍스트·표·이미지를 번역하고, 로컬 Whisper 받아쓰기를 다른 앱에서도 사용할 수 있는 macOS 중심의 트레이 앱입니다. Tauri 2와 vanilla TypeScript로 개발합니다.
 
-[사용 및 설정](#사용-및-설정) · [문서](docs/README.md) · [기여하기](CONTRIBUTING.md) · [버그 제보](https://github.com/ykworx/translator/issues/new/choose) · [릴리즈](https://github.com/ykworx/translator/releases)
+[사용 및 설정](#사용-및-설정) · [문서](docs/README.md) · [변경 내역](CHANGELOG.md) · [기여하기](CONTRIBUTING.md) · [버그 제보](https://github.com/ykworx/translator/issues/new/choose) · [릴리즈](https://github.com/ykworx/translator/releases)
 
 ## 주요 기능
 

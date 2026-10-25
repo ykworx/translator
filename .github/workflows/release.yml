@@ -4,7 +4,8 @@ on:
   pull_request:
     paths:
       - '.github/workflows/release.yml'
-      - 'scripts/check_release_version.py'
+      - 'scripts/*release*.py'
+      - 'scripts/check_packaged_app.py'
       - 'tests/release/**'
       - 'LICENSE'
       - 'licenses/**'
@@ -55,6 +56,9 @@ jobs:
     needs: validate
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      TRANSRATOR_BUILD_CHANNEL: validation
+      TRANSRATOR_BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,16 +76,27 @@ jobs:
       - run: bash tests/run_native_dictation_tests.sh
       - run: npm run build
       - run: cargo test --release --target aarch64-apple-darwin --locked --manifest-path src-tauri/Cargo.toml --lib
+      - name: Prepare validation bundle build number
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          config = json.loads(Path("src-tauri/tauri.ci.conf.json").read_text())
+          config["bundle"]["macOS"]["bundleVersion"] = os.environ["TRANSRATOR_BUILD_NUMBER"]
+          (Path(os.environ["RUNNER_TEMP"]) / "transrator-validation-config.json").write_text(json.dumps(config))
+          PY
       - name: Build ad-hoc signed app without release credentials
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         env:
           APPLE_SIGNING_IDENTITY: '-'
         with:
-          args: --ci --target aarch64-apple-darwin --bundles app,dmg --config "${{ github.workspace }}/src-tauri/tauri.ci.conf.json" -- --locked
+          args: --ci --target aarch64-apple-darwin --bundles app,dmg --config "${{ runner.temp }}/transrator-validation-config.json" -- --locked
           uploadUpdaterJson: false
           uploadWorkflowArtifacts: true
           workflowArtifactNamePattern: 'validation-[name]-[arch]-[mode]-[bundle]'
       - run: codesign --verify --deep --strict src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Transrator.app
+      - name: Verify packaged version and embedded build identity
+        run: python3 scripts/check_packaged_app.py --app src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Transrator.app --build-number "$TRANSRATOR_BUILD_NUMBER" --channel "$TRANSRATOR_BUILD_CHANNEL" --revision "$GITHUB_SHA"
       - name: Verify bundled license notices
         run: |
           notices="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Transrator.app/Contents/Resources/licenses"
@@ -97,6 +112,9 @@ jobs:
     needs: validate
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      TRANSRATOR_BUILD_CHANNEL: release
+      TRANSRATOR_BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
     permissions:
       contents: write
     steps:
@@ -149,6 +167,7 @@ jobs:
               "signingIdentity": os.environ["APPLE_SIGNING_IDENTITY"],
               "entitlements": str(Path(os.environ["GITHUB_WORKSPACE"]) / "src-tauri/Entitlements.release.plist"),
               "hardenedRuntime": True,
+              "bundleVersion": os.environ["TRANSRATOR_BUILD_NUMBER"],
           }}}
           (Path(os.environ["RUNNER_TEMP"]) / "transrator-release-config.json").write_text(json.dumps(config))
           PY
@@ -179,6 +198,7 @@ jobs:
       - name: Verify app signature, notarization ticket and DMG signature
         run: |
           app="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Transrator.app"
+          python3 scripts/check_packaged_app.py --app "$app" --build-number "$TRANSRATOR_BUILD_NUMBER" --channel "$TRANSRATOR_BUILD_CHANNEL" --revision "$GITHUB_SHA" --tag "$GITHUB_REF_NAME"
           codesign --verify --deep --strict "$app"
           cmp LICENSE "$app/Contents/Resources/licenses/Transrator-LICENSE"
           cmp src-tauri/vendor/whisper.cpp/LICENSE "$app/Contents/Resources/licenses/whisper.cpp-LICENSE"

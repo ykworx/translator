@@ -3,6 +3,10 @@
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--build-info") {
+        println!("{}", tauri_app_lib::build_info::info());
+        return;
+    }
 
     // Diagnostic inventory only: does not open a recording session.
     if args.get(1).map(String::as_str) == Some("--list-microphones") {

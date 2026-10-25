@@ -1,7 +1,7 @@
 {
   "name": "tauri-app",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,10 @@
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "release:prepare": "python3 scripts/prepare_release.py",
+    "release:check": "python3 scripts/check_release_version.py",
+    "release:check-app": "python3 scripts/check_packaged_app.py"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

@@ -331,6 +331,7 @@
       color: var(--fg-dim);
       line-height: 1.8;
     }
+    .app-build { white-space: pre-line; font-size: 11px; line-height: 1.7; color: var(--fg-dim); overflow-wrap: anywhere; }
 
     /* Bottom actions */
     .actions {
@@ -649,11 +650,12 @@
     <div class="tab-pane" id="pane-about">
       <div class="about-center">
         <div class="app-name">Transrator</div>
-        <div class="app-version">v0.1.0</div>
+        <div class="app-version" id="app-version">버전 확인 중…</div>
+        <div class="app-build" id="app-build"></div>
         <hr class="divider">
         <div class="credits">
           AI 기반 팝업 번역기<br>
-          Powered by Google Gemini<br><br>
+          Gemini · OpenAI · Ollama<br><br>
           &copy; 2026 ykworx
         </div>
       </div>

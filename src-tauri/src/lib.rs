@@ -1,4 +1,5 @@
 pub mod benchmark;
+pub mod build_info;
 mod clipboard;
 mod caption_capture;
 mod model_manager;
@@ -130,6 +131,7 @@ pub fn run() {
             parse_default_shortcut(dictation::DEFAULT_DICTATION_SHORTCUT, "dictation"),
         )))
         .invoke_handler(tauri::generate_handler![
+            build_info::get_build_info,
             open_handwriting_overlay,
             dictation::toggle_global_dictation,
             dictation::list_dictation_microphones,
