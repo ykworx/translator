@@ -30,9 +30,10 @@ final class DictationClipboard {
         guard validateTarget(), originalCount == pasteboard.changeCount else {
             throw DictationClipboardError.targetOrClipboardChanged
         }
-        pasteboard.clearContents()
+        // The automatic delivery copy must not enter Universal Clipboard.
+        pasteboard.prepareForNewContents(with: .currentHostOnly)
         guard pasteboard.setString(text, forType: .string) else {
-            pasteboard.clearContents()
+            pasteboard.prepareForNewContents(with: .currentHostOnly)
             if !saved.isEmpty { pasteboard.writeObjects(saved) }
             throw DictationClipboardError.writeFailed
         }
@@ -45,7 +46,9 @@ final class DictationClipboard {
     func restore(_ expectedID: UInt64? = nil) {
         guard let pending = lease, expectedID == nil || expectedID == pending.id else { return }
         if DictationDeliveryPolicy.shouldRestoreClipboard(ownedCount: pending.count, currentCount: pasteboard.changeCount) {
-            pasteboard.clearContents()
+            // The source's sharing policy is not readable. Keep restoration
+            // local too, rather than accidentally broadening that policy.
+            pasteboard.prepareForNewContents(with: .currentHostOnly)
             if !pending.items.isEmpty { pasteboard.writeObjects(pending.items) }
         }
         lease = nil
