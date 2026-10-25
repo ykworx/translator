@@ -206,8 +206,8 @@ fn handle_clipboard_shortcut(app: tauri::AppHandle) {
 }
 
 /// Validate before removing working shortcuts, including equivalent spellings.
-fn validate_shortcuts(select: &Shortcut, clipboard: &Shortcut, dictation: &Shortcut) -> Result<(), String> {
-    if select == clipboard || select == dictation || clipboard == dictation {
+fn validate_shortcuts(select: &Shortcut, clipboard: &Shortcut, dictation: Option<&Shortcut>) -> Result<(), String> {
+    if select == clipboard || dictation.is_some_and(|dictation| select == dictation || clipboard == dictation) {
         return Err("기능별 단축키는 서로 달라야 합니다.".into());
     }
     Ok(())
@@ -399,7 +399,7 @@ pub fn update_shortcuts(
         Some(value) => parse_shortcut_str(&value)?,
         None => current.dictation.clone(),
     };
-    validate_shortcuts(&new_select, &new_clipboard, &new_dictation)?;
+    validate_shortcuts(&new_select, &new_clipboard, cfg!(target_os = "macos").then_some(&new_dictation))?;
     let replacement = CurrentShortcuts::new(new_select, new_clipboard, new_dictation);
     if let Err(error) = replace_bindings_with(&mut current.registered, &replacement.bindings(),
         &mut |binding| register_binding(&app, binding), &mut |binding| unregister_binding(&app, binding)) {
@@ -511,8 +511,20 @@ mod tests {
         let select = parse_shortcut_str("Super+Ctrl+KeyT").unwrap();
         let equivalent = parse_shortcut_str("Control+Command+KeyT").unwrap();
         let dictation = parse_shortcut_str("Super+Ctrl+KeyD").unwrap();
-        assert!(validate_shortcuts(&select, &equivalent, &dictation).is_err());
-        assert!(validate_shortcuts(&dictation, &select, &dictation).is_err());
+        assert!(validate_shortcuts(&select, &equivalent, Some(&dictation)).is_err());
+        assert!(validate_shortcuts(&dictation, &select, Some(&dictation)).is_err());
+    }
+
+    #[test]
+    fn unsupported_dictation_does_not_reserve_an_existing_translation_shortcut() {
+        let select = parse_shortcut_str(crate::dictation::DEFAULT_DICTATION_SHORTCUT).unwrap();
+        let clipboard = parse_shortcut_str("Ctrl+Alt+Shift+KeyT").unwrap();
+        // Windows/Linux only register translation bindings. A saved translation
+        // shortcut must remain saveable even when it matches the new macOS default.
+        assert!(validate_shortcuts(&select, &clipboard, None).is_ok());
+        assert!(validate_shortcuts(&clipboard, &select, None).is_ok());
+        assert!(validate_shortcuts(&select, &select, None).is_err());
+        assert!(validate_shortcuts(&select, &clipboard, Some(&select)).is_err());
     }
 
     #[test]
@@ -520,7 +532,7 @@ mod tests {
         assert!(validate_shortcuts(
             &parse_shortcut_str(DEFAULT_SELECT_SHORTCUT).unwrap(),
             &parse_shortcut_str(DEFAULT_CLIPBOARD_SHORTCUT).unwrap(),
-            &parse_shortcut_str(crate::dictation::DEFAULT_DICTATION_SHORTCUT).unwrap(),
+            Some(&parse_shortcut_str(crate::dictation::DEFAULT_DICTATION_SHORTCUT).unwrap()),
         ).is_ok());
     }
 }
