@@ -110,7 +110,7 @@ def save_diagnostics(directory: Path | None, stem: str, stdout: str | bytes,
 
 def run_case(binary: Path, audio: Path, reference: str, language: str,
              timeout: float, model: Path | None = None, repetitions: int = 1,
-             diagnostics_dir: Path | None = None) -> dict:
+             diagnostics_dir: Path | None = None, denoise: bool = True) -> dict:
     expected = normalize(reference) * repetitions
     result = {
         "filename": audio.name, "language": language, "reference": reference,
@@ -130,6 +130,8 @@ def run_case(binary: Path, audio: Path, reference: str, language: str,
                 input_audio = Path(temp) / "repeated.wav"
                 repeat_wav(audio, input_audio, repetitions)
             command = [str(binary), "--benchmark-wav", str(input_audio), "--language", language, "--dictation"]
+            if not denoise:
+                command.append("--benchmark-no-denoise")
             if model:
                 command.extend(["--model", str(model)])
             process = subprocess.run(command, capture_output=True, text=True,
@@ -150,6 +152,9 @@ def run_case(binary: Path, audio: Path, reference: str, language: str,
         if finite_metric(payload, "audio_duration_ms") <= 0:
             raise ValueError("audio_duration_ms must be positive")
         actual = normalize(hypothesis)
+        partials = payload.get("partials")
+        if partials is not None and (not isinstance(partials, list) or not all(isinstance(text, str) for text in partials)):
+            raise ValueError("partials must be an array of strings")
         errors = edit_distance(expected, actual)
         result.update(
             hypothesis=hypothesis, empty_result=not actual,
@@ -158,6 +163,9 @@ def run_case(binary: Path, audio: Path, reference: str, language: str,
             audio_duration_ms=finite_metric(payload, "audio_duration_ms"),
             native_rtf=finite_metric(payload, "rtf"), timed_out=payload.get("timed_out") is True,
             status="ok",
+            nonempty_partials=sum(bool(normalize(text)) for text in partials) if partials is not None else None,
+            audio_processing=payload.get("audio_processing"),
+            performance=payload.get("performance"),
         )
         if result["timed_out"]:
             result["status"] = "timeout"
@@ -216,6 +224,7 @@ def main() -> int:
     parser.add_argument("--max-rtf", type=positive_number, help="Optional maximum native real-time factor")
     parser.add_argument("--output", type=Path, default=Path(tempfile.gettempdir()) / "transrator-dictation-benchmark.json")
     parser.add_argument("--diagnostics-dir", type=Path, help="Optionally retain stdout/stderr for every native process")
+    parser.add_argument("--no-denoise", dest="denoise", action="store_false", help="Disable the RNNoise speech gate for an offline comparison")
     args = parser.parse_args()
     if args.limit < 0 or args.repeat_audio < 1:
         parser.error("--limit must be >= 0 and --repeat-audio must be >= 1")
@@ -250,7 +259,8 @@ def main() -> int:
         if not isinstance(language, str):
             parser.error("sample language must be a string")
         result = run_case(binary, manifest_path.parent / sample["filename"], sample["transcript"],
-                          language, args.timeout, model, args.repeat_audio, args.diagnostics_dir)
+                          language, args.timeout, model, args.repeat_audio, args.diagnostics_dir, args.denoise)
+        result["category"] = sample.get("category", "speech")
         results.append(result)
         cer = f"{result['cer']:.1%}" if result["cer"] is not None else "n/a"
         print(f"{sample['filename']}: {result['status']}, CER={cer}, wall={result['wall_ms']:.0f}ms", flush=True)

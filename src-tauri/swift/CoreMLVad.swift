@@ -2,17 +2,16 @@ import Accelerate
 import CoreML
 import Foundation
 
-/// Lightweight CoreML Silero VAD wrapper — runs on Apple Neural Engine
+/// Core ML Silero VAD wrapper — the OS chooses CPU, GPU, or Neural Engine.
 /// Model: silero-vad-unified-256ms-v6.0.0 (1MB, from FluidInference/silero-vad-coreml)
 ///
 /// Input:  4160 samples (4096 new + 64 context) at 16kHz = 256ms per chunk
 /// Output: speech probability [0, 1]
 ///
-/// ANE advantage over ggml CPU: ~0.3ms vs ~2.5-5ms per chunk.
 /// Trade-off: coarser granularity (256ms vs 32ms) but fewer inferences needed.
 ///
-/// Integration: Set WhisperEngine.useCoreMlVad = true after loading the .mlmodelc.
-/// Falls back to ggml Silero automatically if CoreML model is unavailable.
+/// WhisperEngine loads this bundled model before accepting audio.
+/// Compute-unit eligibility is not a measurement of Neural Engine execution.
 final class CoreMLVad {
     static let chunkSize = 4096       // new samples per call (256ms at 16kHz)
     static let contextSize = 64       // context samples from previous chunk
@@ -36,7 +35,7 @@ final class CoreMLVad {
     func load(path: String) -> Bool {
         let url = URL(fileURLWithPath: path)
         let config = MLModelConfiguration()
-        config.computeUnits = .all  // prefer ANE
+        config.computeUnits = .all  // allow OS selection; do not force a slower device
 
         do {
             model = try MLModel(contentsOf: url, configuration: config)
@@ -73,9 +72,9 @@ final class CoreMLVad {
             samples.withUnsafeBufferPointer { src in
                 let copyCount = min(src.count, CoreMLVad.chunkSize)
                 (dst.baseAddress! + CoreMLVad.contextSize).update(from: src.baseAddress!, count: copyCount)
-                // Pad remainder with last sample value if needed
+                // Zero-pad a final short frame; repeating a nonzero sample creates artificial DC
                 if copyCount < CoreMLVad.chunkSize {
-                    let padValue = src.count > 0 ? src[src.count - 1] : Float(0)
+                    let padValue = Float(0)
                     for i in copyCount..<CoreMLVad.chunkSize {
                         (dst.baseAddress! + CoreMLVad.contextSize + i).pointee = padValue
                     }

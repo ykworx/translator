@@ -9,6 +9,7 @@ test_dir="$(mktemp -d "${TMPDIR:-/tmp}/transrator-dictation.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
 xcrun swiftc \
   "$project_dir/src-tauri/swift/DictationState.swift" \
+  "$project_dir/src-tauri/swift/SpeechAudioPolicy.swift" \
   "$project_dir/tests/native/main.swift" \
   -o "$test_dir/dictation-tests"
 "$test_dir/dictation-tests"

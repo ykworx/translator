@@ -81,6 +81,21 @@ class DictationBenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(self.run_case(self.fake_binary(body), model=model)["status"], "ok")
 
+    def test_partial_noise_is_visible_even_when_final_is_empty(self):
+        result = self.run_case(self.payload_binary("", partials=["", "noise"]), reference="")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["nonempty_partials"], 1)
+
+    def test_invalid_partial_payload_is_rejected(self):
+        result = self.run_case(self.payload_binary("", partials=[42]), reference="")
+        self.assertEqual(result["status"], "invalid_result")
+
+    def test_gate_comparison_flag_is_explicit(self):
+        payload = {"hypothesis": "日本語", "total_processing_ms": 20,
+                   "audio_duration_ms": 100, "rtf": 0.2, "timed_out": False}
+        binary = self.fake_binary("import sys\nassert '--benchmark-no-denoise' in sys.argv\n" + f"print({json.dumps(json.dumps(payload))})")
+        self.assertEqual(self.run_case(binary, denoise=False)["status"], "ok")
+
     def test_empty_speech_result_is_a_failure_instead_of_skipped_sample(self):
         result = self.run_case(self.payload_binary(""))
         self.assertEqual(result["status"], "empty_result")

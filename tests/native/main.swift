@@ -134,4 +134,22 @@ var shortBoundary = SilenceTracker(requiredSamples: 10)
 check(!shortBoundary.append(sampleCount: 4, isSilent: true), "custom silence threshold accepts partial duration")
 check(!shortBoundary.append(sampleCount: 5, isSilent: true), "irregular buffers accumulate actual samples")
 check(shortBoundary.append(sampleCount: 1, isSilent: true), "irregular buffers cross the configured threshold")
+
+// A short speech detection must never restore rejected background samples.
+let noisyContext = [Float](repeating: 9, count: 16000) + [Float](repeating: 1, count: 4096) + [Float](repeating: 9, count: 16000)
+let selectedSpeech = SpeechAudioPolicy.speechSamples(noisyContext, chunks: [16000..<20096])
+check(selectedSpeech.count == 25600, "short speech receives silence padding for decoder context")
+check(selectedSpeech.filter { $0 == 9 }.count == 3200, "only 100ms speech boundaries retain nearby background")
+check(selectedSpeech.filter { $0 == 1 }.count == 4096, "short utterance samples are kept intact")
+check(SpeechAudioPolicy.speechSamples(noisyContext, chunks: []).isEmpty, "no speech never reaches the decoder")
+check(SpeechAudioPolicy.ranges(sampleCount: 10000, speechChunks: [1000..<3000, 3000..<5000]) == [0..<6600], "adjacent speech padding is merged without duplicating audio")
+check(SpeechAudioPolicy.ranges(sampleCount: 10000, speechChunks: [0..<1000, 9000..<10000]) == [0..<2600, 7400..<10000], "distant speech regions retain bounded edges")
+
+
+
+var rejectedPartial = DictationTranscript()
+rejectedPartial.appendFinal("보존할 발화")
+rejectedPartial.partial = "잡음 초안"
+rejectedPartial.appendFinal("")
+check(rejectedPartial.text == "보존할 발화", "a rejected final clears only its provisional text")
 print("Passed \(checks) native dictation state, transcript, focus, and clipboard checks.")
