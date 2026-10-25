@@ -1,52 +1,17 @@
 import AVFoundation
 import Foundation
-import Accelerate
 
 final class SpeechBridgeState {
     static let shared = SpeechBridgeState()
 
     private let lock = NSLock()
     private let audioEngine = AVAudioEngine()
+    private let audioQueue = DispatchQueue(label: "transrator.microphone.audio", qos: .userInitiated)
     private var audioConverter: AVAudioConverter?
     private let whisperFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
 
-    // MARK: - vDSP Downsampling (replaces AVAudioConverter for integer-ratio cases)
-
-    /// True when input is mono Float32 with integer-ratio sample rate (e.g. 48kHz→16kHz)
-    private var useVDSPDownsampling = false
-    private var vdspDecimationFactor: vDSP_Stride = 3
-    private var vdspFilter: [Float] = []
-    private var vdspFilterLength: vDSP_Length = 0
-    /// Reusable output buffer for AVAudioConverter fallback path
+    // A single persistent converter preserves filter history between tap buffers.
     private var reusableOutputBuffer: AVAudioPCMBuffer?
-    /// Pre-allocated output buffer for vDSP downsampling (avoids per-callback [Float] allocation)
-    private var vdspOutputBuffer: [Float] = []
-
-    /// Build Hamming-windowed sinc low-pass FIR filter for decimation
-    private static func makeAntiAliasingFilter(decimationFactor: Int) -> [Float] {
-        let taps = 4 * decimationFactor + 1  // e.g. 13 taps for factor=3
-        let fc: Float = 1.0 / Float(decimationFactor)  // normalized cutoff
-        let M = taps - 1
-        var h = [Float](repeating: 0, count: taps)
-        let center = Float(M) / 2.0
-        for i in 0..<taps {
-            let n = Float(i) - center
-            // Sinc
-            if abs(n) < 1e-6 {
-                h[i] = 2.0 * fc
-            } else {
-                h[i] = sin(2.0 * .pi * fc * n) / (.pi * n)
-            }
-            // Hamming window
-            h[i] *= 0.54 - 0.46 * cos(2.0 * .pi * Float(i) / Float(M))
-        }
-        // Normalize to unity gain
-        var sum: Float = 0
-        vDSP_sve(h, 1, &sum, vDSP_Length(taps))
-        var invSum = 1.0 / sum
-        vDSP_vsmul(h, 1, &invSum, &h, 1, vDSP_Length(taps))
-        return h
-    }
 
     private var transcript = ""
     private var isRunning = false
@@ -54,12 +19,14 @@ final class SpeechBridgeState {
     private var lastError = ""
     private var permissionPromptPending = false
     private var isStopping = false
+    private var owner: WhisperEngine.Owner = .mic
+    private var accumulated = DictationTranscript()
 
     func permissionsSnapshot() -> [String: Any] {
         let modelLoaded = WhisperEngine.shared.isModelLoaded
         let micAuthorized = microphoneAuthorizationStatus() == .authorized
         return [
-            "authorized": modelLoaded && micAuthorized,
+            "authorized": micAuthorized,
             "modelLoaded": modelLoaded,
             "microphoneAuthorized": micAuthorized,
             "permissionPromptPending": permissionPromptPending
@@ -67,23 +34,12 @@ final class SpeechBridgeState {
     }
 
     func requestPermissions() -> [String: Any] {
-        // Check Whisper model loaded
-        guard WhisperEngine.shared.isModelLoaded else {
-            return [
-                "authorized": false,
-                "modelLoaded": false,
-                "microphoneAuthorized": microphoneAuthorizationStatus() == .authorized,
-                "permissionPromptPending": false,
-                "error": "Whisper 모델이 로드되지 않았습니다. 설정에서 모델을 먼저 다운로드해주세요."
-            ]
-        }
-
         let micStatus = microphoneAuthorizationStatus()
         if micStatus == .notDetermined {
             requestMicrophoneAuthorizationIfNeeded()
             return [
                 "authorized": false,
-                "modelLoaded": true,
+                "modelLoaded": WhisperEngine.shared.isModelLoaded,
                 "microphoneAuthorized": false,
                 "permissionPromptPending": true,
                 "error": "마이크 권한 팝업을 확인한 뒤 다시 눌러주세요."
@@ -93,7 +49,7 @@ final class SpeechBridgeState {
         guard micStatus == .authorized else {
             return [
                 "authorized": false,
-                "modelLoaded": true,
+                "modelLoaded": WhisperEngine.shared.isModelLoaded,
                 "microphoneAuthorized": false,
                 "permissionPromptPending": false,
                 "error": "마이크 권한이 허용되지 않았습니다."
@@ -102,26 +58,36 @@ final class SpeechBridgeState {
 
         return [
             "authorized": true,
-            "modelLoaded": true,
+            "modelLoaded": WhisperEngine.shared.isModelLoaded,
             "microphoneAuthorized": true,
             "permissionPromptPending": false
         ]
     }
 
-    func start(localeIdentifier: String?) -> [String: Any] {
+    func start(localeIdentifier: String?, dictation: Bool = false, hint: String? = nil, microphone: String = "") -> [String: Any] {
         let permissions = requestPermissions()
         guard (permissions["authorized"] as? Bool) == true else {
             return mergeCurrentState(extra: permissions)
         }
 
-        stopRecognition(clearTranscript: false)
+        guard !isRunning, !isStopping else {
+            return mergeCurrentState(extra: ["error": "마이크가 이미 사용 중입니다."])
+        }
 
         // Acquire WhisperEngine
-        guard WhisperEngine.shared.acquire(owner: .mic) else {
+        let requestedOwner: WhisperEngine.Owner = dictation ? .dictation : .mic
+        guard WhisperEngine.shared.acquire(owner: requestedOwner) else {
             return mergeCurrentState(extra: [
                 "error": "Whisper 엔진이 다른 기능에서 사용 중입니다."
             ])
         }
+        owner = requestedOwner
+        guard let generation = WhisperEngine.shared.captureGeneration(owner: requestedOwner) else {
+            return mergeCurrentState(extra: ["error": "음성 세션을 준비할 수 없습니다."])
+        }
+        let cjk = localeIdentifier?.hasPrefix("ja") == true || localeIdentifier?.hasPrefix("zh") == true
+        accumulated = DictationTranscript(separator: cjk ? "" : " ")
+        if let hint { WhisperEngine.shared.setInitialPrompt(hint, owner: requestedOwner) }
 
         // Set language
         let preferredLocale = (localeIdentifier?.isEmpty == false ? localeIdentifier! : Locale.preferredLanguages.first)
@@ -131,56 +97,53 @@ final class SpeechBridgeState {
         // Set up callbacks
         WhisperEngine.shared.onPartialResult = { [weak self] text in
             self?.updateState {
-                self?.transcript = text
+                if let self {
+                    self.accumulated.partial = text
+                    self.transcript = self.accumulated.text
+                }
                 self?.isFinal = false
             }
         }
         WhisperEngine.shared.onFinalResult = { [weak self] text in
             self?.updateState {
-                self?.transcript = text
+                if let self {
+                    self.accumulated.appendFinal(text)
+                    self.transcript = self.accumulated.text
+                }
                 self?.isFinal = true
             }
         }
 
         do {
+            try MicrophoneDevices.configure(engine: audioEngine, uid: microphone)
             let inputNode = audioEngine.inputNode
             let inputFormat = inputNode.outputFormat(forBus: 0)
+            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+                throw NSError(domain: "Transrator", code: 1, userInfo: [NSLocalizedDescriptionKey: "사용 가능한 마이크가 없습니다."])
+            }
             inputNode.removeTap(onBus: 0)
 
-            // Prefer vDSP fast path for integer-ratio mono Float32 (e.g. 48kHz→16kHz)
-            let inputSR = inputFormat.sampleRate
-            let targetSR = whisperFormat.sampleRate
-            if inputFormat.commonFormat == .pcmFormatFloat32,
-               inputFormat.channelCount == 1,
-               inputSR > targetSR,
-               inputSR.truncatingRemainder(dividingBy: targetSR) == 0 {
-                let factor = Int(inputSR / targetSR)
-                vdspDecimationFactor = vDSP_Stride(factor)
-                vdspFilter = Self.makeAntiAliasingFilter(decimationFactor: factor)
-                vdspFilterLength = vDSP_Length(vdspFilter.count)
-                useVDSPDownsampling = true
-                audioConverter = nil
-                NSLog("[MicSpeechBridge] vDSP downsampling: %dkHz→%dkHz (factor=%d, %d-tap FIR)",
-                      Int(inputSR / 1000), Int(targetSR / 1000), factor, vdspFilter.count)
-            } else {
-                useVDSPDownsampling = false
-                audioConverter = AVAudioConverter(from: inputFormat, to: whisperFormat)
+            audioConverter = AVAudioConverter(from: inputFormat, to: whisperFormat)
+            guard audioConverter != nil else {
+                throw NSError(domain: "Transrator", code: 2, userInfo: [NSLocalizedDescriptionKey: "마이크 오디오 형식을 변환할 수 없습니다."])
             }
-
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
                 guard let self else { return }
-                if self.useVDSPDownsampling {
-                    self.downsampleWithVDSP(buffer)
-                } else if let converted = self.convertToWhisperFormat(buffer) {
-                    WhisperEngine.shared.appendPCMBuffer(converted)
+                // Convert before returning the tap's reusable buffer. Serialize
+                // converter access with stop/reconfiguration, and reject old taps.
+                self.audioQueue.sync {
+                    guard WhisperEngine.shared.captureGeneration(owner: requestedOwner) == generation,
+                          let converted = self.convertToWhisperFormat(buffer) else { return }
+                    WhisperEngine.shared.appendPCMBuffer(converted, owner: requestedOwner, generation: generation)
                 }
             }
 
             audioEngine.prepare()
             try audioEngine.start()
         } catch {
-            WhisperEngine.shared.release(owner: .mic)
-            stopRecognition(clearTranscript: false)
+            audioEngine.stop()
+            inputNodeRemoveTap()
+            WhisperEngine.shared.release(owner: requestedOwner)
             return mergeCurrentState(extra: [
                 "error": "마이크를 시작할 수 없습니다: \(error.localizedDescription)"
             ])
@@ -197,46 +160,54 @@ final class SpeechBridgeState {
         return snapshot()
     }
 
-    func stop() -> [String: Any] {
-        stopRecognition(clearTranscript: false)
-        return snapshot()
+    func stop(expectedOwner: WhisperEngine.Owner = .mic, cancel: Bool = false,
+              completion: @escaping ([String: Any]) -> Void) {
+        guard owner == expectedOwner else {
+            completion(mergeCurrentState(extra: ["error": "다른 음성 기능이 마이크를 사용 중입니다."]))
+            return
+        }
+        guard isRunning, !isStopping else { completion(snapshot()); return }
+        isStopping = true
+        audioEngine.stop()
+        inputNodeRemoveTap()
+        audioQueue.sync {
+            self.audioConverter = nil
+            self.reusableOutputBuffer = nil
+        }
+        let finish = {
+            WhisperEngine.shared.release(owner: expectedOwner)
+            self.updateState {
+                self.isRunning = false
+                self.isStopping = false
+                self.accumulated.partial = ""
+                self.transcript = cancel ? "" : self.accumulated.text
+                self.isFinal = true
+            }
+            completion(self.snapshot())
+        }
+        if cancel { finish() } else { WhisperEngine.shared.finish(owner: expectedOwner, completion: finish) }
     }
 
     func currentState() -> [String: Any] {
-        mergeCurrentState(extra: permissionsSnapshot())
-    }
-
-    /// vDSP fast path: FIR filter + decimate, bypass AVAudioPCMBuffer entirely
-    /// Uses pre-allocated output buffer to avoid per-callback [Float] allocation
-    private func downsampleWithVDSP(_ buffer: AVAudioPCMBuffer) {
-        let start = CFAbsoluteTimeGetCurrent()
-        guard let channelData = buffer.floatChannelData else { return }
-        let inputCount = Int(buffer.frameLength)
-        guard inputCount > 0 else { return }
-
-        let input = channelData[0]
-        let filterLen = Int(vdspFilterLength)
-        let factor = Int(vdspDecimationFactor)
-
-        // vDSP_desamp output count: (inputCount - filterLen) / factor + 1
-        let outputCount = max(0, (inputCount - filterLen) / factor + 1)
-        guard outputCount > 0 else { return }
-
-        // Grow pre-allocated buffer only if needed (amortized O(1))
-        if vdspOutputBuffer.count < outputCount {
-            vdspOutputBuffer = [Float](repeating: 0, count: outputCount)
+        if isRunning, !isStopping, !audioEngine.isRunning {
+            updateState { lastError = "마이크 연결이 변경되었습니다. 마이크를 확인한 뒤 다시 시작해주세요." }
         }
-        vDSP_desamp(input, vdspDecimationFactor, vdspFilter, &vdspOutputBuffer,
-                    vDSP_Length(outputCount), vdspFilterLength)
-
-        let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000.0
-        PerformanceTracker.shared.record(stage: "vdsp_downsample", durationMs: elapsed)
-
-        // Pass only the valid portion
-        WhisperEngine.shared.appendSamples(Array(vdspOutputBuffer.prefix(outputCount)))
+        return mergeCurrentState(extra: permissionsSnapshot())
     }
 
-    /// Fallback path: AVAudioConverter with pooled output buffer (no per-callback allocation)
+    func shutdown() {
+        guard isRunning || isStopping else { return }
+        audioEngine.stop()
+        inputNodeRemoveTap()
+        audioQueue.sync {
+            self.audioConverter = nil
+            self.reusableOutputBuffer = nil
+        }
+        WhisperEngine.shared.release(owner: owner)
+        updateState { isRunning = false; isStopping = false }
+    }
+
+    /// Stateful conversion with a reusable output buffer.
     private func convertToWhisperFormat(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         let start = CFAbsoluteTimeGetCurrent()
         guard let converter = audioConverter else { return nil }
@@ -278,36 +249,8 @@ final class SpeechBridgeState {
         return outputBuffer
     }
 
-    private func stopRecognition(clearTranscript: Bool) {
-        lock.lock()
-        if isStopping {
-            lock.unlock()
-            return
-        }
-        isStopping = true
-        let shouldClearTranscript = clearTranscript
-        lock.unlock()
-
-        audioEngine.stop()
+    private func inputNodeRemoveTap() {
         audioEngine.inputNode.removeTap(onBus: 0)
-        audioConverter = nil
-        useVDSPDownsampling = false
-        reusableOutputBuffer = nil
-
-        // Finalize any remaining audio in Whisper
-        WhisperEngine.shared.forceFinalize()
-        WhisperEngine.shared.release(owner: .mic)
-
-        updateState {
-            isRunning = false
-            if shouldClearTranscript {
-                transcript = ""
-                isFinal = false
-                lastError = ""
-                permissionPromptPending = false
-            }
-            isStopping = false
-        }
     }
 
     private func snapshot() -> [String: Any] {
@@ -398,9 +341,19 @@ public func speech_start_recognition(localeIdentifier: UnsafePointer<CChar>?) ->
 
 @_cdecl("speech_stop_recognition")
 public func speech_stop_recognition() -> UnsafeMutablePointer<CChar>? {
-    runOnMain {
-        jsonCString(SpeechBridgeState.shared.stop())
+    // Rust invokes this on a blocking worker: the main queue must stay free
+    // for final inference callbacks and completion.
+    guard !Thread.isMainThread else { return jsonCString(["error": "음성 종료는 작업 스레드에서 호출해야 합니다."]) }
+    let done = DispatchSemaphore(value: 0)
+    var result: [String: Any] = [:]
+    DispatchQueue.main.async {
+        SpeechBridgeState.shared.stop { state in
+            result = state
+            done.signal()
+        }
     }
+    done.wait()
+    return jsonCString(result)
 }
 
 @_cdecl("speech_get_state")

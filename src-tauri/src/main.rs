@@ -4,6 +4,15 @@
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
+    // Diagnostic inventory only: does not open a recording session.
+    if args.get(1).map(String::as_str) == Some("--list-microphones") {
+        match tauri_app_lib::list_microphones_for_diagnostics() {
+            Ok(devices) => println!("{}", serde_json::to_string_pretty(&devices).unwrap()),
+            Err(error) => { eprintln!("{error}"); std::process::exit(1); }
+        }
+        return;
+    }
+
     // CLI benchmark mode: tauri-app --benchmark-wav <path.wav> [--model <model.bin>] [--language <lang>]
     if args.len() >= 3 && args[1] == "--benchmark-wav" {
         let wav_path = &args[2];
@@ -36,7 +45,8 @@ fn main() {
             std::process::exit(1);
         }
 
-        match tauri_app_lib::benchmark::run_wav_benchmark(wav_path.clone(), language) {
+        let dictation = args.iter().any(|arg| arg == "--dictation");
+        match tauri_app_lib::benchmark::run_wav_benchmark(wav_path.clone(), language, Some(dictation)) {
             Ok(result) => {
                 println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
             }

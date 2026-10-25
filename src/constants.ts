@@ -63,9 +63,9 @@ export const DOMAIN_HINTS = [
 ] as const;
 
 export const WHISPER_MODELS = [
-  { value: "medium", label: "Medium (1.5GB, 빠름)" },
-  { value: "large-v3-turbo", label: "Large V3 Turbo (1.6GB, 정확)" },
-  { value: "large-v3", label: "Large V3 (3.1GB, 최고 정확도)" },
+  { value: "medium", label: "Medium (다운로드 약 2.1 GB)" },
+  { value: "large-v3-turbo", label: "Large V3 Turbo (다운로드 약 2.8 GB)" },
+  { value: "large-v3", label: "Large V3 (다운로드 약 4.3 GB)" },
 ] as const;
 
 /** Store keys for persisted settings */
@@ -75,6 +75,11 @@ export const SETTINGS_KEYS = {
   pairLang: "pairLang",
   model: "model",
   speechLocale: "speechLocale",
+  dictationLocale: "dictationLocale",
+  dictationHint: "dictationHint",
+  dictationMicrophone: "dictationMicrophone",
+  dictationIdleSeconds: "dictationIdleSeconds",
+  dictationShortcut: "dictationShortcut",
   captureMode: "captureMode",
   captureWindow: "captureWindow",
   targetLanguage: "targetLanguage",
@@ -97,6 +102,11 @@ export const DEFAULTS = {
   pairLang: "日本語",
   model: "gemini-2.0-flash",
   speechLocale: "ja-JP",
+  dictationLocale: "ko-KR",
+  dictationHint: "",
+  dictationMicrophone: "",
+  dictationIdleSeconds: 300,
+  dictationShortcut: "Super+Ctrl+KeyD",
   captureMode: "window",
   captureWindow: "",
   targetLanguage: "auto",

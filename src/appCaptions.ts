@@ -471,10 +471,8 @@ async function startAppCaptions(): Promise<void> {
 
   // Set domain hint before starting
   const domainHint = await getSetting(SETTINGS_KEYS.domainHint, DEFAULTS.domainHint);
-  if (domainHint) {
-    await invoke("set_whisper_domain_hint", { hint: domainHint });
-    if (sessionId !== captionSessionId) return;
-  }
+  await invoke("set_whisper_domain_hint", { hint: domainHint });
+  if (sessionId !== captionSessionId) return;
 
   resetAppCaptionSession();
   scheduleRenderCaptions();

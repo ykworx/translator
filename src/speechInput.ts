@@ -103,9 +103,7 @@ async function startSpeechInput(): Promise<void> {
 
   // Set domain hint
   const domainHint = await getSetting(SETTINGS_KEYS.domainHint, DEFAULTS.domainHint);
-  if (domainHint) {
-    await invoke("set_whisper_domain_hint", { hint: domainHint });
-  }
+  await invoke("set_whisper_domain_hint", { hint: domainHint });
 
   updateSpeechUi("음성 인식 모델 로드 중…", true);
   try {

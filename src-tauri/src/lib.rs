@@ -2,9 +2,12 @@ pub mod benchmark;
 mod clipboard;
 mod caption_capture;
 mod model_manager;
+mod speech_model;
 mod openai;
 mod shortcut;
 mod speech;
+mod dictation;
+pub use dictation::list_dictation_microphones as list_microphones_for_diagnostics;
 mod window;
 
 use log::{error, warn};
@@ -92,7 +95,7 @@ fn open_handwriting_overlay(app: tauri::AppHandle) -> Result<(), String> {
 
 use shortcut::{
     CurrentShortcuts, DEFAULT_CLIPBOARD_SHORTCUT, DEFAULT_SELECT_SHORTCUT,
-    parse_shortcut_str, register_shortcut_handlers,
+    parse_shortcut_str, register_startup_shortcuts,
 };
 use window::{center_window_on_cursor, show_window_centered};
 
@@ -117,12 +120,18 @@ fn parse_configured_shortcut(configured: &str, default: &str, shortcut_name: &st
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(Mutex::new(CurrentShortcuts {
-            select: parse_default_shortcut(DEFAULT_SELECT_SHORTCUT, "select"),
-            clipboard: parse_default_shortcut(DEFAULT_CLIPBOARD_SHORTCUT, "clipboard"),
-        }))
+        .manage(Mutex::new(CurrentShortcuts::new(
+            parse_default_shortcut(DEFAULT_SELECT_SHORTCUT, "select"),
+            parse_default_shortcut(DEFAULT_CLIPBOARD_SHORTCUT, "clipboard"),
+            parse_default_shortcut(dictation::DEFAULT_DICTATION_SHORTCUT, "dictation"),
+        )))
         .invoke_handler(tauri::generate_handler![
             open_handwriting_overlay,
+            dictation::toggle_global_dictation,
+            dictation::list_dictation_microphones,
+            dictation::get_dictation_permissions,
+            dictation::request_dictation_permissions,
+            dictation::preview_dictation_panel,
             clipboard::read_clipboard_image,
             clipboard::read_clipboard_html,
             clipboard::write_clipboard_html,
@@ -139,6 +148,7 @@ pub fn run() {
             shortcut::update_shortcuts,
             shortcut::suspend_shortcuts,
             shortcut::resume_shortcuts,
+            shortcut::get_shortcut_status,
             model_manager::check_whisper_model,
             model_manager::download_whisper_model,
             model_manager::delete_whisper_model,
@@ -168,9 +178,13 @@ pub fn run() {
             let shortcut_hint =
                 MenuItem::with_id(app, "shortcut-hint", "⌘+Ctrl+T: 선택 번역 | +Shift: 클립보드 번역", false, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "설정…", true, None::<&str>)?;
+            #[cfg(target_os = "macos")]
+            let dictation_hint = MenuItem::with_id(app, "dictation-hint", "⌘+Ctrl+D: 어디서나 받아쓰기", false, None::<&str>)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let quit_item = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&about_item, &sep1, &shortcut_hint, &settings_item, &sep2, &quit_item])?;
+            #[cfg(target_os = "macos")]
+            menu.insert(&dictation_hint, 3)?;
 
             // Get existing tray icon (created from tauri.conf.json)
             let tray = app
@@ -265,6 +279,12 @@ pub fn run() {
                 .and_then(|v| v.as_str().map(String::from))
                 .unwrap_or_else(|| DEFAULT_CLIPBOARD_SHORTCUT.to_string());
 
+            let dictation_str = store.get("dictationShortcut")
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_else(|| dictation::DEFAULT_DICTATION_SHORTCUT.to_string());
+            let dictation_shortcut = parse_configured_shortcut(
+                &dictation_str, dictation::DEFAULT_DICTATION_SHORTCUT, "dictation",
+            );
             let select_shortcut =
                 parse_configured_shortcut(&select_str, DEFAULT_SELECT_SHORTCUT, "select");
             let clipboard_shortcut = parse_configured_shortcut(
@@ -284,15 +304,22 @@ pub fn run() {
                 })?;
                 current.select = select_shortcut.clone();
                 current.clipboard = clipboard_shortcut.clone();
+                current.dictation = dictation_shortcut.clone();
+                register_startup_shortcuts(app.handle(), &mut current);
             }
 
-            register_shortcut_handlers(app.handle(), select_shortcut, clipboard_shortcut)?;
-
             caption_capture::init_app_handle(app.handle().clone());
+            dictation::init(app.handle().clone());
 
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == "settings" && matches!(event, WindowEvent::Destroyed) {
+                if let Err(error) = shortcut::restore_after_settings_destroyed(window.app_handle()) {
+                    error!("Failed to restore shortcuts after settings destruction: {error}");
+                }
+                return;
+            }
             if window.label() != "main" { return; }
             match event {
                 WindowEvent::CloseRequested { api, .. } => {
@@ -312,6 +339,7 @@ pub fn run() {
         .run(|_app_handle, event| {
             if let tauri::RunEvent::Exit = event {
                 log::info!("Tauri exit — shutting down whisper");
+                dictation::shutdown();
                 model_manager::shutdown_whisper();
             }
         });
