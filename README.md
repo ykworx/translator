@@ -50,6 +50,8 @@ npm run tauri -- build
 
 프런트엔드만 실행하면 Tauri IPC가 필요한 기능은 사용할 수 없습니다. macOS 배포 빌드는 `src-tauri/tauri.conf.json`에 지정된 `Transrator Developer` 서명 인증서를 사용하므로, 빌드 환경의 인증서 설정과 일치해야 합니다.
 
+GitHub 배포 자동화는 [릴리즈 절차](docs/RELEASING.md)를 참고하세요. PR과 수동 실행은 빌드만 검증하고, 버전 태그는 배포용 서명·공증 후 Draft Release를 만듭니다. 공개 전에는 실제 설치와 음성 입력을 확인합니다.
+
 ## 사용과 설정
 
 트레이 메뉴의 **설정…**에서 백엔드, API 키, 언어 및 단축키를 설정합니다.

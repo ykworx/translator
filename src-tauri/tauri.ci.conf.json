@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "macOS": {
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.release.plist",
+      "hardenedRuntime": true
+    }
+  }
+}
+
