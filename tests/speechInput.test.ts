@@ -168,4 +168,78 @@ describe("microphone lifecycle", () => {
     expect(input.value).toBe("사용자가 확정한 결과");
     expect(button.disabled).toBe(false);
   });
+  it("appends partial and final speech after the existing draft without duplicating partials", async () => {
+    input.value = "기존 초안";
+    registerInvokeCommand("get_speech_recognition_state", () => ({ transcript: "인식 중", isRunning: true }));
+    registerInvokeCommand("stop_speech_recognition", () => ({ transcript: "인식 완료", isRunning: false, isFinal: true }));
+    button.click(); await vi.advanceTimersByTimeAsync(0);
+    expect(input.value).toBe("기존 초안");
+    await vi.advanceTimersByTimeAsync(350);
+    expect(input.value).toBe("기존 초안\n인식 중");
+    await vi.advanceTimersByTimeAsync(350);
+    expect(input.value).toBe("기존 초안\n인식 중");
+    button.click(); await vi.advanceTimersByTimeAsync(0);
+    expect(input.value).toBe("기존 초안\n인식 완료");
+  });
+
+  it("preserves edits while recording and offers the final transcript for explicit recovery", async () => {
+    registerInvokeCommand("get_speech_recognition_state", () => ({ transcript: "인식 중", isRunning: true }));
+    registerInvokeCommand("stop_speech_recognition", () => ({ transcript: "별도로 보관한 최종 결과", isRunning: false }));
+    input.value = "처음 초안";
+    button.click(); await vi.advanceTimersByTimeAsync(350);
+    input.value = "직접 편집한 초안";
+    input.dispatchEvent(new Event("input"));
+    await vi.advanceTimersByTimeAsync(350);
+    expect(input.value).toBe("직접 편집한 초안");
+    button.click(); await vi.advanceTimersByTimeAsync(0);
+    expect(input.value).toBe("직접 편집한 초안");
+    expect(status.querySelector("pre")!.textContent).toBe("별도로 보관한 최종 결과");
+    expect(button.disabled).toBe(true);
+    status.querySelector<HTMLButtonElement>(".speech-recovery button")!.click();
+    expect(input.value).toBe("직접 편집한 초안\n별도로 보관한 최종 결과");
+    expect(button.disabled).toBe(false);
+    expect(status.textContent).toBe("");
+  });
+
+  it("does not modify an active IME composition and allows recovery after it ends", async () => {
+    registerInvokeCommand("get_speech_recognition_state", () => ({ transcript: "음성", isRunning: true }));
+    registerInvokeCommand("stop_speech_recognition", () => ({ transcript: "최종 음성", isRunning: false }));
+    button.click(); await vi.advanceTimersByTimeAsync(0);
+    input.value = "한글 조합";
+    input.dispatchEvent(new CompositionEvent("compositionstart"));
+    await vi.advanceTimersByTimeAsync(350);
+    button.click(); await vi.advanceTimersByTimeAsync(0);
+    expect(input.value).toBe("한글 조합");
+    const add = status.querySelector<HTMLButtonElement>(".speech-recovery button")!;
+    expect(add.disabled).toBe(true);
+    input.dispatchEvent(new CompositionEvent("compositionend"));
+    expect(add.disabled).toBe(false);
+    add.click();
+    expect(input.value).toBe("한글 조합\n최종 음성");
+  });
+
+  it("detects programmatic draft replacement and discards only the separate speech result", async () => {
+    registerInvokeCommand("get_speech_recognition_state", () => ({ transcript: "별도 인식", isRunning: false }));
+    button.click(); await vi.advanceTimersByTimeAsync(0);
+    input.value = "다른 기능이 작성한 초안";
+    await vi.advanceTimersByTimeAsync(350);
+    expect(input.value).toBe("다른 기능이 작성한 초안");
+    const buttons = status.querySelectorAll<HTMLButtonElement>(".speech-recovery button");
+    buttons[1].click();
+    expect(input.value).toBe("다른 기능이 작성한 초안");
+    expect(button.disabled).toBe(false);
+  });
+
+  it("protects edits made while a cold model is loading", async () => {
+    let finish!: () => void;
+    registerInvokeCommand("ensure_whisper_loaded", () => new Promise<void>(resolve => { finish = resolve; }));
+    button.click(); await vi.advanceTimersByTimeAsync(0);
+    const { isSpeechInputActive } = await import("../src/speechInput");
+    expect(isSpeechInputActive()).toBe(true);
+    input.value = "기다리며 쓴 글";
+    input.dispatchEvent(new Event("input"));
+    finish(); await vi.advanceTimersByTimeAsync(0);
+    expect(input.value).toBe("기다리며 쓴 글");
+  });
+
 });

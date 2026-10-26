@@ -5,9 +5,9 @@ import { installTauriMock, registerInvokeCommand, resetInvokeCommands, resetTaur
 
 const api = vi.hoisted(() => ({ translateStream: vi.fn(), suggestReplies: vi.fn(), summarize: vi.fn(), koreanPronunciation: vi.fn() }));
 vi.mock("../src/api", () => api);
-vi.mock("../src/speechInput", () => ({ initSpeechInput: vi.fn() }));
+vi.mock("../src/speechInput", () => ({ initSpeechInput: vi.fn(), isSpeechInputActive: vi.fn(() => false) }));
 vi.mock("../src/appCaptions", () => ({ initAppCaptions: vi.fn(), forceStopCaptions: vi.fn().mockResolvedValue(undefined) }));
-vi.mock("../src/clipboardTranslate", () => ({ initClipboardListeners: vi.fn() }));
+vi.mock("../src/clipboardTranslate", () => ({ initClipboardListeners: vi.fn(), retryClipboardTranslation: vi.fn(() => false) }));
 vi.mock("../src/handwriting", () => ({ initHandwriting: vi.fn() }));
 
 const html = readFileSync(resolve("index.html"), "utf8");
@@ -219,4 +219,79 @@ describe("manual translation input", () => {
     document.getElementById("titlebar")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, buttons: 1 }));
     expect(drag).toHaveBeenCalledOnce();
   });
+  it.each(["resolve", "reject"] as const)("ignores an old translation after clearing and does not unlock a new request (%s)", async outcome => {
+    const old = deferred();
+    draft("old source"); submit().click();
+    await vi.waitFor(() => expect(api.translateStream).toHaveBeenCalledOnce());
+    document.getElementById("btn-clear")!.click();
+    const newer = deferred();
+    draft("new source"); submit().click();
+    await vi.waitFor(() => expect(api.translateStream).toHaveBeenCalledTimes(2));
+    if (outcome === "resolve") old.resolve("obsolete result"); else old.reject(new Error("obsolete error"));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(submit().getAttribute("aria-busy")).toBe("true");
+    expect(document.getElementById("chat")!.textContent).not.toContain("obsolete");
+    expect(input().value).toBe("");
+    newer.resolve("new result");
+    await vi.waitFor(() => expect(submit().getAttribute("aria-busy")).toBe("false"));
+    expect(entries()).toHaveLength(1);
+    expect(entries()[0].textContent).toContain("new result");
+  });
+
+  it("keeps the reader's scroll position through streaming and final replacement", async () => {
+    let chunk!: (text: string) => void;
+    let finish!: (text: string) => void;
+    api.translateStream.mockImplementationOnce((_text, _lang, onChunk) => {
+      chunk = onChunk;
+      return new Promise<string>(resolve => { finish = resolve; });
+    });
+    draft("long source"); submit().click();
+    await vi.waitFor(() => expect(api.translateStream).toHaveBeenCalledOnce());
+    const chat = document.getElementById("chat")!;
+    Object.defineProperties(chat, { scrollHeight: { configurable: true, value: 1500 }, clientHeight: { configurable: true, value: 300 } });
+    chat.scrollTop = 250;
+    chunk("partial result");
+    expect(chat.scrollTop).toBe(250);
+    finish("final result");
+    await vi.waitFor(() => expect(submit().getAttribute("aria-busy")).toBe("false"));
+    expect(chat.scrollTop).toBe(250);
+  });
+
+  it("continues following a stream while the reader stays at the bottom", async () => {
+    let chunk!: (text: string) => void;
+    api.translateStream.mockImplementationOnce((_text, _lang, onChunk) => { chunk = onChunk; return new Promise(() => {}); });
+    draft("source"); submit().click();
+    await vi.waitFor(() => expect(api.translateStream).toHaveBeenCalledOnce());
+    const chat = document.getElementById("chat")!;
+    Object.defineProperties(chat, { scrollHeight: { configurable: true, value: 1500 }, clientHeight: { configurable: true, value: 300 } });
+    chat.scrollTop = 1200;
+    chunk("partial");
+    expect(chat.scrollTop).toBe(1500);
+  });
+
+  it("blocks translation and retry while app voice input is active", async () => {
+    const speech = await import("../src/speechInput");
+    vi.mocked(speech.isSpeechInputActive).mockReturnValue(true);
+    draft("preserved voice draft");
+    expect(submit().disabled).toBe(true);
+    enter();
+    const event = new CustomEvent("retry-translation", { detail: { text: "retry" }, cancelable: true });
+    expect(document.dispatchEvent(event)).toBe(false);
+    expect(api.translateStream).not.toHaveBeenCalled();
+    expect(input().value).toBe("preserved voice draft");
+    vi.mocked(speech.isSpeechInputActive).mockReturnValue(false);
+  });
+
+  it("routes an image retry with its original image and keeps the newer draft", async () => {
+    const { addEntry } = await import("../src/ui");
+    const { retryClipboardTranslation } = await import("../src/clipboardTranslate");
+    vi.mocked(retryClipboardTranslation).mockReturnValueOnce(true);
+    addEntry({ original: "(이미지)", translated: "[오류] failed", isImage: true, imageBase64: "fixture-image" });
+    draft("newer draft");
+    document.querySelector<HTMLButtonElement>(".error-retry")!.click();
+    expect(retryClipboardTranslation).toHaveBeenCalledWith({ kind: "image", text: "(이미지)", imageBase64: "fixture-image" });
+    expect(api.translateStream).not.toHaveBeenCalled();
+    expect(input().value).toBe("newer draft");
+  });
+
 });

@@ -9,12 +9,12 @@ import { writeTextToClipboard, writeWithTextFallback, initClipboardCopyGuards } 
 import { translateStream } from "./api";
 import type { HandwritingResult } from "./api";
 import type { ChatEntry } from "./ui";
-import { chatHistory, chat, addEntry, clearChat, showEmptyState, clearInactiveOnboarding, notifyChatChanged } from "./ui";
+import { chatHistory, chat, addEntry, clearChat, showEmptyState, clearInactiveOnboarding, notifyChatChanged, getChatEpoch, invalidateChatRequests, isChatAtBottom } from "./ui";
 import { LANGUAGES, DEFAULTS, MAX_TEXTAREA_HEIGHT, SETTINGS_KEYS } from "./constants";
 import { populateSelect, getErrorMessage, escapeHtml } from "./utils";
-import { initSpeechInput } from "./speechInput";
+import { initSpeechInput, isSpeechInputActive } from "./speechInput";
 import { initAppCaptions, forceStopCaptions } from "./appCaptions";
-import { initClipboardListeners } from "./clipboardTranslate";
+import { initClipboardListeners, retryClipboardTranslation } from "./clipboardTranslate";
 import { initHandwriting } from "./handwriting";
 import { initSettingsAccess } from "./settingsAccess";
 import { initChatActions } from "./chatActions";
@@ -33,11 +33,12 @@ const disposeClipboardCopyGuards = initClipboardCopyGuards();
 function syncInputHeight(): void {
   inputField.style.height = "auto";
   inputField.style.height = Math.min(inputField.scrollHeight, MAX_TEXTAREA_HEIGHT) + "px";
+  inputField.style.overflowY = inputField.scrollHeight > MAX_TEXTAREA_HEIGHT ? "auto" : "hidden";
   syncSubmitState();
 }
 
 function syncSubmitState(): void {
-  btnTranslate.disabled = isSubmittingTranslation || isComposingInput || !inputField.value.trim();
+  btnTranslate.disabled = isSubmittingTranslation || isComposingInput || isSpeechInputActive() || !inputField.value.trim();
   btnTranslate.textContent = isSubmittingTranslation ? "번역 중…" : "번역";
   btnTranslate.setAttribute("aria-busy", String(isSubmittingTranslation));
 }
@@ -53,11 +54,13 @@ async function resolveLangConfig(): Promise<LangConfig> {
 
 // ─── Translation submit ─────────────────────────────
 async function handleSubmit(sourceText?: string): Promise<void> {
-  if (isSubmittingTranslation || isComposingInput) return;
+  if (isSubmittingTranslation || isComposingInput || isSpeechInputActive()) return;
 
   const text = (sourceText ?? inputField.value).trim();
   if (!text) return;
 
+  const epoch = getChatEpoch();
+  const current = () => epoch === getChatEpoch();
   isSubmittingTranslation = true;
   // Retry submits the failed entry directly, leaving any new draft untouched.
   if (sourceText === undefined) inputField.value = "";
@@ -89,26 +92,33 @@ async function handleSubmit(sourceText?: string): Promise<void> {
 
   try {
     const { targetLang, autoLangPair } = await resolveLangConfig();
+    if (!current()) return;
     const result = await translateStream(
       text,
       targetLang,
       (partial) => {
+        if (!current()) return;
+        const follow = isChatAtBottom();
         transCard.innerHTML = escapeHtml(partial.trim()).replace(/\n/g, "<br>");
-        chat.scrollTop = chat.scrollHeight;
+        if (follow) chat.scrollTop = chat.scrollHeight;
       },
       autoLangPair,
     );
+    if (!current()) return;
     entry.translated = result;
-    div.remove();
-    addEntry(entry);
+    addEntry(entry, { loading: div });
   } catch (e) {
+    if (!current()) return;
+    const follow = isChatAtBottom();
     div.remove();
-    if (!inputField.value && !isComposingInput) inputField.value = text;
+    if (!inputField.value && !isComposingInput && !isSpeechInputActive()) inputField.value = text;
     syncInputHeight();
-    addEntry({ original: text, translated: `[오류] ${getErrorMessage(e)}` });
+    addEntry({ original: text, translated: `[오류] ${getErrorMessage(e)}` }, { follow });
   } finally {
-    isSubmittingTranslation = false;
-    syncSubmitState();
+    if (current()) {
+      isSubmittingTranslation = false;
+      syncSubmitState();
+    }
   }
 }
 
@@ -138,6 +148,12 @@ initHandwriting(
 );
 
 const disposeChatActions = initChatActions();
+
+document.addEventListener("speech-active-changed", syncSubmitState);
+document.addEventListener("chat-cleared", () => {
+  isSubmittingTranslation = false;
+  syncSubmitState();
+});
 
 // ─── Clear ──────────────────────────────────────────
 btnClear.addEventListener("click", clearChat);
@@ -243,6 +259,7 @@ listen("handwriting-overlay-result", (event) => {
 });
 
 window.addEventListener("beforeunload", () => {
+  invalidateChatRequests();
   disposeChatActions();
   disposeCopyFeedback();
   disposeClipboardCopyGuards();
@@ -278,8 +295,13 @@ function showHwToast(r: HandwritingResult): void {
 // ─── Retry failed translations ────────────────────
 document.addEventListener("retry-translation", (e: Event) => {
   if (!(e instanceof CustomEvent)) return;
-  if (typeof e.detail?.text !== "string" || !e.detail.text.trim() || isSubmittingTranslation || isComposingInput) {
+  if (typeof e.detail?.text !== "string" || !e.detail.text.trim() || isSubmittingTranslation || isComposingInput || isSpeechInputActive()) {
     e.preventDefault();
+    return;
+  }
+  const source = e.detail.source;
+  if (source && source.kind !== "text") {
+    if (!retryClipboardTranslation(source)) e.preventDefault();
     return;
   }
   void handleSubmit(e.detail.text);
