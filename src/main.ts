@@ -5,11 +5,11 @@ const { listen } = window.__TAURI__.event;
 // ─── Module imports ──────────────────────────────────
 import type { LangConfig } from "./types";
 import { getSetting, setSetting } from "./store";
-import { writeTextToClipboard } from "./clipboard";
-import { suggestReplies, summarize, translateStream } from "./api";
+import { writeTextToClipboard, writeWithTextFallback, initClipboardCopyGuards } from "./clipboard";
+import { translateStream } from "./api";
 import type { HandwritingResult } from "./api";
 import type { ChatEntry } from "./ui";
-import { chatHistory, chat, addEntry, clearChat, showEmptyState, clearInactiveOnboarding } from "./ui";
+import { chatHistory, chat, addEntry, clearChat, showEmptyState, clearInactiveOnboarding, notifyChatChanged } from "./ui";
 import { LANGUAGES, DEFAULTS, MAX_TEXTAREA_HEIGHT, SETTINGS_KEYS } from "./constants";
 import { populateSelect, getErrorMessage, escapeHtml } from "./utils";
 import { initSpeechInput } from "./speechInput";
@@ -17,17 +17,17 @@ import { initAppCaptions, forceStopCaptions } from "./appCaptions";
 import { initClipboardListeners } from "./clipboardTranslate";
 import { initHandwriting } from "./handwriting";
 import { initSettingsAccess } from "./settingsAccess";
+import { initChatActions } from "./chatActions";
+import { copyWithFeedback, disposeCopyFeedback } from "./copyFeedback";
 
 // ─── DOM References ──────────────────────────────────
 const inputField = document.getElementById("input-field") as HTMLTextAreaElement;
 const langSelect = document.getElementById("lang-select") as HTMLSelectElement;
-const btnSuggest = document.getElementById("btn-suggest") as HTMLButtonElement;
-const btnSummarize = document.getElementById("btn-summarize") as HTMLButtonElement;
 const btnClear = document.getElementById("btn-clear") as HTMLButtonElement;
 const btnTranslate = document.getElementById("btn-translate") as HTMLButtonElement;
 let isSubmittingTranslation = false;
 let isComposingInput = false;
-let copyToastTimer: number | null = null;
+const disposeClipboardCopyGuards = initClipboardCopyGuards();
 
 // ─── Helpers ─────────────────────────────────────────
 function syncInputHeight(): void {
@@ -83,6 +83,7 @@ async function handleSubmit(sourceText?: string): Promise<void> {
     </div>
   `;
   chat.appendChild(div);
+  notifyChatChanged();
   chat.scrollTop = chat.scrollHeight;
   const transCard = div.querySelector(".card.trans") as HTMLElement;
 
@@ -136,77 +137,7 @@ initHandwriting(
   document.getElementById("btn-handwriting") as HTMLButtonElement,
 );
 
-// ─── Quick reply ────────────────────────────────────
-btnSuggest.addEventListener("click", async () => {
-  if (chatHistory.length === 0) return;
-  const last = chatHistory[chatHistory.length - 1];
-  btnSuggest.textContent = "생성 중…";
-  btnSuggest.disabled = true;
-
-  try {
-    const suggestions = await suggestReplies(last.original, last.translated);
-    if (suggestions.length > 0) {
-      const section = document.createElement("div");
-      section.className = "suggest-section";
-      section.innerHTML = `<div class="suggest-label">빠른 답장</div>`;
-      for (const s of suggestions) {
-        for (const [label, text] of [["KR", s.kr], ["JP", s.jp]] as const) {
-          const btn = document.createElement("div");
-          btn.className = "suggest-btn";
-          btn.textContent = `${label}: ${text}`;
-          btn.addEventListener("click", async () => {
-            await writeTextToClipboard(text).catch((err) => {
-              console.warn("Failed to copy suggestion to clipboard:", err);
-            });
-            document.querySelectorAll<HTMLElement>(".suggest-btn").forEach(b => {
-              if (b.textContent?.startsWith("\u2713")) {
-                b.textContent = b.dataset.orig || "";
-              }
-            });
-            btn.dataset.orig = btn.textContent || "";
-            btn.textContent = "\u2713 " + btn.textContent;
-          });
-          section.appendChild(btn);
-        }
-      }
-      chat.appendChild(section);
-      chat.scrollTop = chat.scrollHeight;
-    }
-  } catch (e) {
-    console.error("Suggest error:", e);
-  }
-
-  btnSuggest.textContent = "💬 답장";
-  btnSuggest.disabled = false;
-});
-
-// ─── Summarize ──────────────────────────────────────
-btnSummarize.addEventListener("click", async () => {
-  if (chatHistory.length === 0) return;
-  const last = chatHistory[chatHistory.length - 1];
-  btnSummarize.textContent = "생성 중…";
-  btnSummarize.disabled = true;
-
-  try {
-    const result = await summarize(last.original, last.translated);
-    if (result) {
-      const section = document.createElement("div");
-      section.className = "suggest-section";
-      section.innerHTML = `<div class="suggest-label">내용 요약</div>`;
-      const content = document.createElement("div");
-      content.className = "summary-content";
-      content.textContent = result;
-      section.appendChild(content);
-      chat.appendChild(section);
-      chat.scrollTop = chat.scrollHeight;
-    }
-  } catch (e) {
-    console.error("Summarize error:", e);
-  }
-
-  btnSummarize.textContent = "📋 요약";
-  btnSummarize.disabled = false;
-});
+const disposeChatActions = initChatActions();
 
 // ─── Clear ──────────────────────────────────────────
 btnClear.addEventListener("click", clearChat);
@@ -264,33 +195,13 @@ document.addEventListener("keydown", (e: KeyboardEvent) => {
     if (chatHistory.length > 0) {
       const last = chatHistory[chatHistory.length - 1];
       if (!last.translated.startsWith("[오류]")) {
-        writeTextToClipboard(last.translated).catch((err) => {
-          console.warn("Failed to copy last translation to clipboard:", err);
-        });
-        showCopyToast();
+        const text = last.translated;
+        void copyWithFeedback(() => writeWithTextFallback(() => writeTextToClipboard(text), text));
       }
     }
     return;
   }
 });
-
-function showCopyToast(): void {
-  let toast = document.getElementById("copy-toast");
-  if (!toast) {
-    toast = document.createElement("div");
-    toast.id = "copy-toast";
-    toast.textContent = "✓ 클립보드에 복사됨";
-    document.body.appendChild(toast);
-  }
-  toast.classList.add("visible");
-  if (copyToastTimer !== null) {
-    window.clearTimeout(copyToastTimer);
-  }
-  copyToastTimer = window.setTimeout(() => {
-    toast?.classList.remove("visible");
-    copyToastTimer = null;
-  }, 1800);
-}
 
 // ─── Experimental captions visibility ───────────────
 let unlistenExperimentalCaptions: (() => void) | null = null;
@@ -332,6 +243,9 @@ listen("handwriting-overlay-result", (event) => {
 });
 
 window.addEventListener("beforeunload", () => {
+  disposeChatActions();
+  disposeCopyFeedback();
+  disposeClipboardCopyGuards();
   unlistenExperimentalCaptions?.();
   unlistenExperimentalCaptions = null;
   unlistenHwOverlayResult?.();

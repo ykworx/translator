@@ -1,7 +1,7 @@
 // ─── UI Rendering ───────────────────────────────────
-import { writeTextToClipboard, writeHtmlToClipboard } from "./clipboard";
+import { writeTextToClipboard, writeHtmlToClipboard, writeWithTextFallback } from "./clipboard";
+import { copyWithFeedback } from "./copyFeedback";
 import { koreanPronunciation } from "./api";
-import { COPY_FEEDBACK_MS } from "./constants";
 import { escapeHtml } from "./utils";
 import { getActiveBackendId } from "./llmProfile";
 import { getProvider } from "./providerRegistry";
@@ -24,6 +24,13 @@ export interface ChatEntry {
 export let chatHistory: ChatEntry[] = [];
 export const MAX_HISTORY = 50;
 export const chat = document.getElementById("chat")!;
+let chatRevision = 0;
+export function getChatRevision(): number { return chatRevision; }
+export function notifyChatChanged(): void {
+  chatRevision++;
+  // renderLoading returns a row which callers append synchronously.
+  queueMicrotask(() => document.dispatchEvent(new Event("chat-changed")));
+}
 
 /** Sanitize HTML table: keep only safe tags/attributes, strip scripts and event handlers */
 function sanitizeTableHtml(html: string): string {
@@ -157,58 +164,19 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
       div.remove();
       const idx = chatHistory.indexOf(entry);
       if (idx !== -1) chatHistory.splice(idx, 1);
+      notifyChatChanged();
     });
   }
 
-  // Copy buttons (original + translated)
-  const copyOrigBtn = div.querySelector(".copy-orig") as HTMLElement | null;
-  if (copyOrigBtn) {
-    const textToCopy = entry.original;
-    copyOrigBtn.addEventListener("click", async () => {
-      try { await writeTextToClipboard(textToCopy); } catch {
-        const ta = document.createElement("textarea");
-        ta.value = textToCopy;
-        document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
-      }
-      copyOrigBtn.textContent = "✓ 복사됨";
-      copyOrigBtn.classList.add("active");
-      setTimeout(() => { copyOrigBtn.classList.remove("active"); setTimeout(() => { copyOrigBtn.textContent = "⧉ 복사"; }, 300); }, COPY_FEEDBACK_MS);
-    });
-  }
-
-  const copyTransBtn = div.querySelector(".copy-trans") as HTMLElement | null;
-  if (copyTransBtn) {
-    copyTransBtn.addEventListener("click", async () => {
-      try {
-        if (entry.isTable) {
-          await writeHtmlToClipboard(entry.translated);
-        } else {
-          await writeTextToClipboard(entry.translated);
-        }
-      } catch {
-        const ta = document.createElement("textarea");
-        ta.value = entry.translated;
-        document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
-      }
-      copyTransBtn.textContent = "✓ 복사됨";
-      copyTransBtn.classList.add("active");
-      setTimeout(() => { copyTransBtn.classList.remove("active"); setTimeout(() => { copyTransBtn.textContent = "⧉ 복사"; }, 300); }, COPY_FEEDBACK_MS);
-    });
-  }
-
-  const copyExtractedBtn = div.querySelector(".copy-extracted") as HTMLElement | null;
-  if (copyExtractedBtn && extractedTextRaw) {
-    copyExtractedBtn.addEventListener("click", async () => {
-      try { await writeTextToClipboard(extractedTextRaw); } catch {
-        const ta = document.createElement("textarea");
-        ta.value = extractedTextRaw;
-        document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
-      }
-      copyExtractedBtn.textContent = "✓ 복사됨";
-      copyExtractedBtn.classList.add("active");
-      setTimeout(() => { copyExtractedBtn.classList.remove("active"); setTimeout(() => { copyExtractedBtn.textContent = "⧉ 복사"; }, 300); }, COPY_FEEDBACK_MS);
-    });
-  }
+  // All explicit copies acknowledge success, including the legacy text fallback.
+  const bindCopy = (selector: string, text: string, write: () => Promise<void>) => {
+    const button = div.querySelector<HTMLButtonElement>(selector);
+    button?.addEventListener("click", () => void copyWithFeedback(() => writeWithTextFallback(write, text), button));
+  };
+  bindCopy(".copy-orig", entry.original, () => writeTextToClipboard(entry.original));
+  bindCopy(".copy-trans", entry.translated, () => entry.isTable
+    ? writeHtmlToClipboard(entry.translated) : writeTextToClipboard(entry.translated));
+  if (extractedTextRaw) bindCopy(".copy-extracted", extractedTextRaw, () => writeTextToClipboard(extractedTextRaw));
 
   const imageDetailToggle = div.querySelector(".image-detail-toggle") as HTMLButtonElement | null;
   const imageDetailSection = div.querySelector(".section.extracted") as HTMLElement | null;
@@ -279,11 +247,13 @@ export function renderLoading(original: string): HTMLDivElement {
       </div>
     </div>
   `;
+  notifyChatChanged();
   return div;
 }
 
 export function removeLoading(): void {
-  document.getElementById("loading-entry")?.remove();
+  const loading = document.getElementById("loading-entry");
+  if (loading) { loading.remove(); notifyChatChanged(); }
 }
 
 export function addEntry(entry: ChatEntry): void {
@@ -297,6 +267,7 @@ export function addEntry(entry: ChatEntry): void {
   removeLoading();
   chat.appendChild(renderEntry(entry));
   chat.scrollTop = chat.scrollHeight;
+  notifyChatChanged();
 }
 
 let emptyStateSequence = 0;
@@ -443,5 +414,6 @@ export function clearChat(): void {
   chatHistory = [];
   const drafts = [...chat.querySelectorAll(".empty-state")].filter(hasActiveCredentialForm);
   chat.replaceChildren(...drafts);
+  notifyChatChanged();
   void showEmptyState();
 }

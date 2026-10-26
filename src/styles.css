@@ -442,6 +442,10 @@ body {
   margin-bottom: 8px;
 }
 .suggest-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -452,6 +456,10 @@ body {
   color: var(--fg);
 }
 .suggest-btn:hover { background: rgba(128,128,128,0.15); }
+.toolbar-btn:disabled, .suggest-btn:disabled { opacity: 0.5; cursor: default; }
+#chat-action-status { color: var(--fg-dim); font-size: 11px; margin-top: 6px; max-height: 96px; overflow-y: auto; overflow-wrap: anywhere; }
+#chat-action-status:empty, .chat-action-message:empty { display: none; }
+.chat-action-message.error { color: var(--fg); }
 
 /* Live captions in chat */
 .caption-section {
