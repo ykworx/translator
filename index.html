@@ -26,8 +26,8 @@
           <button id="btn-zoom-captions" class="toolbar-btn hidden" title="선택 앱 실시간 번역">🖥 자막</button>
           <span class="toolbar-sep"></span>
           <button id="btn-handwriting" class="toolbar-btn" title="필기 인식">✏️ 필기</button>
-          <button id="btn-suggest" class="toolbar-btn" title="빠른 답장 생성">💬 답장</button>
-          <button id="btn-summarize" class="toolbar-btn" title="내용 요약">📋 요약</button>
+          <button id="btn-suggest" class="toolbar-btn" title="빠른 답장 생성" aria-describedby="chat-action-status">💬 답장</button>
+          <button id="btn-summarize" class="toolbar-btn" title="내용 요약" aria-describedby="chat-action-status">📋 요약</button>
           <span class="toolbar-sep"></span>
           <button id="btn-clear" class="toolbar-btn" title="대화 초기화" aria-label="대화 초기화">🗑</button>
         </div>
@@ -42,6 +42,7 @@
         <button id="btn-translate" type="button" aria-busy="false" disabled>번역</button>
       </div>
       <div id="settings-access-status" role="status" aria-live="polite"></div>
+      <div id="chat-action-status" role="status" aria-live="polite"></div>
       <div id="speech-status" aria-live="polite"></div>
       <div id="zoom-status" aria-live="polite"></div>
     </div>

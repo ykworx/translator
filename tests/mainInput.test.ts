@@ -190,6 +190,24 @@ describe("manual translation input", () => {
     expect(input().value).toBe("keep this draft");
   });
 
+  it.each(["resolve", "reject"] as const)("waits for shortcut clipboard acknowledgement (%s)", async outcome => {
+    const ui = await import("../src/ui");
+    ui.addEntry({ original: "원문", translated: "복사할 번역" });
+    let finish!: () => void;
+    let fail!: (error: Error) => void;
+    const pending = new Promise<void>((yes, no) => { finish = yes; fail = no; });
+    const write = vi.fn(() => pending);
+    registerInvokeCommand("plugin:clipboard-manager|write_text", write);
+    document.dispatchEvent(new KeyboardEvent("keydown", { metaKey: true, shiftKey: true, code: "KeyC", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(write).toHaveBeenCalledOnce());
+    expect(document.getElementById("copy-toast")).toBeNull();
+    if (outcome === "resolve") finish(); else fail(new Error("fixture clipboard failure"));
+    await vi.waitFor(() => expect(document.getElementById("copy-toast")).not.toBeNull());
+    const toast = document.getElementById("copy-toast")!;
+    expect(toast.dataset.kind).toBe(outcome === "resolve" ? "success" : "error");
+    if (outcome === "reject") expect(toast.textContent).not.toContain("복사됨");
+  });
+
   it("does not begin native dragging from the settings button or its child", async () => {
     const drag = vi.fn();
     registerInvokeCommand("plugin:window|start_dragging", drag);
