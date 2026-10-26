@@ -11,6 +11,19 @@ let isSpeechPolling = false;
 let speechSessionId = 0;
 let speechStopOperation: Promise<void> | null = null;
 let speechFailureReason = "";
+let speechStarting = false;
+let inputIsComposing = false;
+let speechInputDetached = false;
+let speechDraft = "";
+let lastAppliedInput = "";
+let recoveryTranscript = "";
+export function isSpeechInputActive(): boolean {
+  return speechStarting || isSpeechRecording || speechStopOperation !== null;
+}
+function notifySpeechActive(): void { document.dispatchEvent(new Event("speech-active-changed")); }
+function appendTranscript(draft: string, transcript: string): string {
+  return draft + (draft && transcript && !/\s$/.test(draft) ? "\n" : "") + transcript;
+}
 
 let inputField: HTMLTextAreaElement;
 let speechStatus: HTMLDivElement;
@@ -18,7 +31,9 @@ let btnMic: HTMLButtonElement;
 let syncInputHeight: () => void;
 
 function updateSpeechUi(statusText: string, recording: boolean): void {
-  speechStatus.textContent = statusText;
+  speechStatus.classList.remove("has-recovery");
+  speechStatus.textContent = statusText + (recording && speechInputDetached
+    ? " · 편집한 글은 유지합니다. 중지 후 인식 결과를 확인하세요." : "");
   speechStatus.classList.toggle("recording", recording);
   btnMic.classList.toggle("recording", recording);
   btnMic.textContent = recording ? "⏹ 중지" : "🎙 음성";
@@ -27,11 +42,51 @@ function updateSpeechUi(statusText: string, recording: boolean): void {
 }
 
 function applySpeechTranscript(state: SpeechRecognitionState): void {
-  inputField.value = state.transcript;
+  if (inputIsComposing || inputField.value !== lastAppliedInput) speechInputDetached = true;
+  if (speechInputDetached) return;
+  const value = appendTranscript(speechDraft, state.transcript);
+  if (value === lastAppliedInput) return;
+  inputField.value = value;
+  lastAppliedInput = value;
   syncInputHeight();
-  if (state.transcript) {
+}
+
+function showSpeechRecovery(transcript: string): void {
+  if (!speechInputDetached || !transcript) return;
+  recoveryTranscript = transcript;
+  speechStatus.classList.add("has-recovery");
+  btnMic.disabled = true;
+  const message = document.createElement("span");
+  message.textContent = "편집한 글을 유지했습니다. 인식 결과 전체를 확인한 뒤 추가하거나 버리면 새 녹음을 시작할 수 있습니다.";
+  const details = document.createElement("details");
+  details.className = "speech-recovery";
+  const summary = document.createElement("summary");
+  summary.textContent = "인식 결과 확인";
+  const preview = document.createElement("pre");
+  preview.textContent = transcript;
+  const add = document.createElement("button");
+  add.type = "button";
+  add.textContent = "입력칸 끝에 추가";
+  add.disabled = inputIsComposing;
+  const discard = document.createElement("button");
+  discard.type = "button";
+  discard.textContent = "이 인식 결과 버리기";
+  const finish = () => {
+    recoveryTranscript = "";
+    speechStatus.replaceChildren();
+    speechStatus.classList.remove("has-recovery");
+    btnMic.disabled = false;
     inputField.focus();
-  }
+    syncInputHeight();
+  };
+  add.addEventListener("click", () => {
+    if (inputIsComposing || isSpeechInputActive()) return;
+    inputField.value = appendTranscript(inputField.value, recoveryTranscript);
+    finish();
+  });
+  discard.addEventListener("click", finish);
+  details.append(summary, preview, add, discard);
+  speechStatus.append(message, details);
 }
 
 function stopSpeechPolling(): void {
@@ -80,6 +135,8 @@ async function pollSpeechState(sessionId: number): Promise<void> {
       isSpeechRecording = false;
       stopSpeechPolling();
       updateSpeechUi("", false);
+      notifySpeechActive();
+      showSpeechRecovery(state.transcript);
     }
   } catch (e) {
     if (sessionId !== speechSessionId) return;
@@ -143,6 +200,7 @@ async function stopSpeechInput(reason?: string): Promise<void> {
       isSpeechRecording = false;
       applySpeechTranscript(state);
       updateSpeechUi(speechFailureReason || state.error || "", false);
+      showSpeechRecovery(state.transcript);
     } catch (e) {
       if (sessionId !== speechSessionId) return;
       // The native owner may still be held after a failed IPC/stop. Keep the
@@ -156,7 +214,8 @@ async function stopSpeechInput(reason?: string): Promise<void> {
     await speechStopOperation;
   } finally {
     speechStopOperation = null;
-    btnMic.disabled = false;
+    btnMic.disabled = !!recoveryTranscript;
+    notifySpeechActive();
   }
 }
 
@@ -170,6 +229,18 @@ export function initSpeechInput(
   speechStatus = _speechStatus;
   btnMic = _btnMic;
   syncInputHeight = _syncInputHeight;
+  inputField.addEventListener("input", () => {
+    if (isSpeechInputActive()) speechInputDetached = true;
+  });
+  inputField.addEventListener("compositionstart", () => {
+    inputIsComposing = true;
+    if (isSpeechInputActive()) speechInputDetached = true;
+    speechStatus.querySelector<HTMLButtonElement>(".speech-recovery button")?.setAttribute("disabled", "");
+  });
+  inputField.addEventListener("compositionend", () => {
+    inputIsComposing = false;
+    speechStatus.querySelector<HTMLButtonElement>(".speech-recovery button")?.removeAttribute("disabled");
+  });
 
   btnMic.addEventListener("click", async () => {
     if (btnMic.disabled || speechStopOperation) return;
@@ -178,6 +249,11 @@ export function initSpeechInput(
       if (isSpeechRecording) {
         await stopSpeechInput();
       } else {
+        speechDraft = inputField.value;
+        lastAppliedInput = speechDraft;
+        speechInputDetached = false;
+        speechStarting = true;
+        notifySpeechActive();
         await startSpeechInput();
       }
     } catch (e) {
@@ -185,7 +261,9 @@ export function initSpeechInput(
       stopSpeechPolling();
       updateSpeechUi(getErrorMessage(e), false);
     } finally {
-      btnMic.disabled = false;
+      speechStarting = false;
+      btnMic.disabled = !!recoveryTranscript;
+      notifySpeechActive();
     }
   });
 }

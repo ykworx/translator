@@ -10,6 +10,11 @@ import { openSettingsFrom } from "./settingsAccess";
 
 export { escapeHtml };
 
+export type TranslationSource =
+  | { kind: "text"; text: string }
+  | { kind: "table"; text: string; html: string }
+  | { kind: "image"; text: string; imageBase64: string };
+
 export interface ChatEntry {
   original: string;
   translated: string;
@@ -19,12 +24,19 @@ export interface ChatEntry {
   imageBase64?: string;
   imageExtractedText?: string;
   timestamp?: number;
+  retrySource?: TranslationSource;
 }
 
 export let chatHistory: ChatEntry[] = [];
 export const MAX_HISTORY = 50;
 export const chat = document.getElementById("chat")!;
 let chatRevision = 0;
+let chatEpoch = 0;
+export function getChatEpoch(): number { return chatEpoch; }
+export function invalidateChatRequests(): void { chatEpoch++; }
+export function isChatAtBottom(): boolean {
+  return chat.scrollHeight - chat.clientHeight - chat.scrollTop <= 32;
+}
 export function getChatRevision(): number { return chatRevision; }
 export function notifyChatChanged(): void {
   chatRevision++;
@@ -85,7 +97,7 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
   const extractedTextRaw = (entry.imageExtractedText || "").trim();
   const extractedText = escapeHtml(extractedTextRaw).replace(/\n/g, "<br>");
   const isError = entry.translated.startsWith("[오류]");
-  const transText = entry.isTable
+  const transText = entry.isTable && !isError
     ? `<div class="table-wrap">${sanitizeTableHtml(entry.translated)}</div>`
     : escapeHtml(entry.translated.trim()).replace(/\n/g, "<br>");
   const origLabel = entry.isImage ? "원본 이미지" : "원문";
@@ -159,7 +171,11 @@ export function renderEntry(entry: ChatEntry): HTMLDivElement {
 
     const retryBtn = actions.querySelector(".error-retry");
     retryBtn?.addEventListener("click", () => {
-      const accepted = document.dispatchEvent(new CustomEvent("retry-translation", { detail: { text: entry.original }, cancelable: true }));
+      const accepted = document.dispatchEvent(new CustomEvent("retry-translation", { detail: { text: entry.original, source: entry.retrySource ?? (entry.isImage && entry.imageBase64
+        ? { kind: "image", text: entry.original, imageBase64: entry.imageBase64 }
+        : entry.isTable && entry.originalHtml
+          ? { kind: "table", text: entry.original, html: entry.originalHtml }
+          : { kind: "text", text: entry.original }) }, cancelable: true }));
       if (!accepted) return;
       div.remove();
       const idx = chatHistory.indexOf(entry);
@@ -256,7 +272,9 @@ export function removeLoading(): void {
   if (loading) { loading.remove(); notifyChatChanged(); }
 }
 
-export function addEntry(entry: ChatEntry): void {
+export function addEntry(entry: ChatEntry, options: { loading?: HTMLElement; follow?: boolean } = {}): void {
+  const follow = options.follow ?? isChatAtBottom();
+  const scrollTop = chat.scrollTop;
   clearInactiveOnboarding();
   if (!entry.timestamp) entry.timestamp = Date.now();
   chatHistory.push(entry);
@@ -264,9 +282,9 @@ export function addEntry(entry: ChatEntry): void {
     chatHistory.shift();
     chat.querySelector(".entry")?.remove();
   }
-  removeLoading();
+  if (options.loading) options.loading.remove(); else removeLoading();
   chat.appendChild(renderEntry(entry));
-  chat.scrollTop = chat.scrollHeight;
+  chat.scrollTop = follow ? chat.scrollHeight : scrollTop;
   notifyChatChanged();
 }
 
@@ -411,6 +429,8 @@ export async function showEmptyState({ preserveCredentialDraft = true } = {}): P
 }
 
 export function clearChat(): void {
+  invalidateChatRequests();
+  document.dispatchEvent(new Event("chat-cleared"));
   chatHistory = [];
   const drafts = [...chat.querySelectorAll(".empty-state")].filter(hasActiveCredentialForm);
   chat.replaceChildren(...drafts);

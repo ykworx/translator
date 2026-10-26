@@ -393,6 +393,7 @@ body {
   background-repeat: no-repeat;
   background-position: right 6px center;
 }
+#lang-select:focus-visible { outline: 2px solid rgba(0,122,255,0.6); outline-offset: 2px; }
 #lang-select:hover { background-color: rgba(128,128,128,0.16); }
 
 #speech-status {
@@ -790,3 +791,9 @@ body {
   font-size: 11px;
   color: var(--fg-dim);
 }
+
+/* A speech result never replaces text edited during recording. */
+#speech-status.has-recovery { white-space: normal; max-height: 160px; overflow-y: auto; }
+.speech-recovery summary { cursor: pointer; }
+.speech-recovery pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.speech-recovery button { margin: 4px 8px 2px 0; font: inherit; cursor: pointer; }
