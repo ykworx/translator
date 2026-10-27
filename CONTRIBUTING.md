@@ -39,6 +39,14 @@ API 키, 로그인 토큰, 인증서·개인 키, 실제 `settings.json`을 이�
 
 `dist/`, `src-tauri/target/`, 다운로드한 Whisper 모델과 로컬 빌드 산출물은 커밋하지 않습니다. `.env`·`.env.*`는 현재 `.gitignore`로 제외되며, 예외인 `.env.example`에는 가짜 값만 넣습니다. 의존성을 바꿀 때는 필요한 lock 파일과 변경 이유를 함께 포함합니다. 서브모듈 업데이트는 저장소가 가리키는 커밋의 변경으로 별도 검토할 수 있게 해주세요.
 
+## 의존성 업데이트
+
+[Dependabot 설정](.github/dependabot.yml)은 npm·Cargo·GitHub Actions를 매주 월요일 오전 9시(Asia/Tokyo)에 확인합니다. npm과 Actions의 minor·patch 업데이트는 생태계별로 묶고, Cargo는 patch만 묶습니다. 그 외 버전 변경은 별도 PR로 검토하며 일반 업데이트 PR 수는 npm 3개, Cargo 3개, Actions 2개로 제한합니다.
+
+Whisper·RNNoise 서브모듈은 매월 확인하고 한 번에 1개의 개별 PR만 엽니다. 서브모듈은 태그 릴리즈 대신 추적 브랜치의 커밋이 갱신될 수 있으므로 변경 이력·네이티브 빌드·음성 회귀 검증을 확인합니다.
+
+저장소의 Dependabot alerts와 security updates도 활성화합니다. 보안 업데이트는 정기 버전 점검 일정과 별도로 PR이 생성됩니다. 생성된 PR은 기존 CI와 코드 리뷰를 거쳐 머지하며, 이 설정은 의존성 버전이나 앱 설치 파일을 직접 바꾸지 않습니다. Dependabot PR에 배포 인증서나 새 쓰기 권한을 제공하지 않습니다.
+
 ## 릴리즈와 라이선스
 
 앱 배포, 버전 변경과 서명·공증은 [릴리즈 절차](docs/RELEASING.md)를 따릅니다. 일반 PR은 릴리즈 태그를 발행하거나 Apple 자격 증명을 추가할 필요가 없습니다. 배포 가능한지 판단할 때도 CI 빌드 확인과 실제 설치·권한·음성 입력 확인을 구분합니다.

@@ -1,0 +1,50 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 3
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 3
+    groups:
+      # Keep minor/major crate changes separate, including unstable 0.x APIs.
+      cargo-patch:
+        patterns: ["*"]
+        update-types: [patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 2
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Native engine changes get individual PRs and a slower schedule.
+  - package-ecosystem: gitsubmodule
+    directory: /
+    schedule:
+      interval: monthly
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 1
