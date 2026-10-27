@@ -10,6 +10,7 @@
   <!-- Titlebar drag region -->
   <div id="titlebar" data-tauri-drag-region>
     <span class="title">팝업 번역기</span>
+    <button id="btn-screen-pen" type="button" class="toolbar-btn" aria-label="화면 펜 켜기" title="화면 전체 위에 그리기">✎ 펜</button>
     <button id="btn-settings" type="button" class="toolbar-btn" aria-label="설정 열기" title="설정 열기 (⌘,)">⚙ 설정</button>
   </div>
 
@@ -41,6 +42,7 @@
         <span id="input-hint">Enter로 번역 · Shift+Enter로 줄바꿈</span>
         <button id="btn-translate" type="button" aria-busy="false" disabled>번역</button>
       </div>
+      <div id="screen-pen-status" role="status" aria-live="polite"></div>
       <div id="settings-access-status" role="status" aria-live="polite"></div>
       <div id="chat-action-status" role="status" aria-live="polite"></div>
       <div id="speech-status" aria-live="polite"></div>

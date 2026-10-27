@@ -26,4 +26,10 @@ xcrun swiftc \
   -framework AppKit \
   -o "$test_dir/panel-tests"
 "$test_dir/panel-tests"
+xcrun swiftc \
+  "$project_dir/src-tauri/swift/ScreenPen.swift" \
+  "$project_dir/tests/nativeScreenPen/main.swift" \
+  -framework AppKit \
+  -o "$test_dir/screen-pen-tests"
+"$test_dir/screen-pen-tests"
 python3 -B -m unittest discover -s "$project_dir/tests/native" -p 'test_*.py'

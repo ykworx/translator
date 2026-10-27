@@ -13,6 +13,7 @@ mod settings_navigation;
 mod shortcut;
 mod speech;
 mod dictation;
+mod screen_pen;
 pub use dictation::list_dictation_microphones as list_microphones_for_diagnostics;
 mod window;
 
@@ -182,6 +183,7 @@ pub fn run() {
             settings_navigation::consume_settings_navigation,
             build_info::get_build_info,
             open_handwriting_overlay,
+            screen_pen::open_screen_pen,
             dictation::toggle_global_dictation,
             dictation::supports_global_dictation,
             dictation::list_dictation_microphones,
@@ -261,9 +263,10 @@ pub fn run() {
             let dictation_hint = MenuItem::with_id(app, "dictation-hint", "⌘+Ctrl+D: 어디서나 받아쓰기", false, None::<&str>)?;
             #[cfg(target_os = "macos")]
             let dictation_settings = MenuItem::with_id(app, "dictation-settings", "받아쓰기 준비…", true, None::<&str>)?;
+            let screen_pen_item = MenuItem::with_id(app, "screen-pen", "화면 펜 켜기", true, None::<&str>)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let quit_item = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&about_item, &sep1, &shortcut_hint, &settings_item, &sep2, &quit_item])?;
+            let menu = Menu::with_items(app, &[&about_item, &sep1, &shortcut_hint, &settings_item, &screen_pen_item, &sep2, &quit_item])?;
             #[cfg(target_os = "macos")]
             {
                 menu.insert(&dictation_hint, 3)?;
@@ -303,6 +306,12 @@ pub fn run() {
             tray.on_menu_event(move |app, event| match event.id.as_ref() {
                 "quit" => {
                     app.exit(0);
+                }
+                "screen-pen" => {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = screen_pen::open_screen_pen(app).await { error!("Failed to open screen pen: {e}"); }
+                    });
                 }
                 "settings" => {
                     request_settings_window(app);
