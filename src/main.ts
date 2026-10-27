@@ -16,6 +16,7 @@ import { initSpeechInput, isSpeechInputActive } from "./speechInput";
 import { initAppCaptions, forceStopCaptions } from "./appCaptions";
 import { initClipboardListeners, retryClipboardTranslation } from "./clipboardTranslate";
 import { initHandwriting } from "./handwriting";
+import { initScreenPen } from "./screenPen";
 import { initSettingsAccess } from "./settingsAccess";
 import { initChatActions } from "./chatActions";
 import { copyWithFeedback, disposeCopyFeedback } from "./copyFeedback";
@@ -123,6 +124,7 @@ async function handleSubmit(sourceText?: string): Promise<void> {
 }
 
 // ─── Initialize modules ─────────────────────────────
+const disposeScreenPen = initScreenPen();
 initSettingsAccess(() => { if (!isSubmittingTranslation) void showEmptyState(); });
 syncSubmitState();
 
@@ -260,6 +262,7 @@ listen("handwriting-overlay-result", (event) => {
 
 window.addEventListener("beforeunload", () => {
   invalidateChatRequests();
+  disposeScreenPen();
   disposeChatActions();
   disposeCopyFeedback();
   disposeClipboardCopyGuards();

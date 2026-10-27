@@ -58,6 +58,7 @@ src/                       Frontend (vanilla TypeScript, no framework)
   ui.ts / styles.css       Chat rendering, table sanitization, theming
   settings.ts / store.ts   Settings UI and Tauri Store access
   speechInput.ts           Microphone input and transcript polling
+  screenPen.ts             Screen pen entry; AppKit drawing lives in swift/ScreenPen.swift
   appCaptions.ts           App-audio events, translation queue, caption rendering
   handwriting*.ts          Handwriting panel and full-screen overlay
 src-tauri/
@@ -93,6 +94,7 @@ src-tauri/
 - **Credential commands**: `capture_connection`, `get_credential_status`, `save_provider_credential`, `delete_provider_credential`; settings use `settings_load/get/set/delete/save` without generic Store permissions
 - **Gemini commands**: `gemini_generate_text`, `gemini_generate_text_stream`, `gemini_generate_image`; cloud generation accepts a native `runtimeId`, never a stored key
 - **OpenAI commands**: `openai_generate_text`, `openai_generate_text_stream`, `openai_generate_image`; streaming uses a Tauri IPC `Channel`
+- **Screen pen command**: `open_screen_pen`; temporary native macOS drawing panel with clear and close, no capture or AI requests
 - **UI/shortcut commands**: `open_handwriting_overlay`, `update_shortcuts`, `suspend_shortcuts`, `resume_shortcuts`
 - **Events**: `global-translate`, `global-translate-image`, `app-caption-update`, `model-download-progress`, `experimental-captions-changed`, `handwriting-overlay-result`
 - **Plugins**: clipboard-manager, global-shortcut, store (persistence), opener

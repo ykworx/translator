@@ -65,6 +65,7 @@ fn main() {
     let swift_dir = manifest_dir.join("swift");
     let swift_files: Vec<PathBuf> = vec![
         swift_dir.join("SwiftBridgeUtils.swift"),
+        swift_dir.join("ScreenPen.swift"),
         swift_dir.join("DictationState.swift"),
         swift_dir.join("DictationTranscriptView.swift"),
         swift_dir.join("DictationClipboard.swift"),
