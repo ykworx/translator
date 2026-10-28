@@ -43,6 +43,8 @@ API 키, 로그인 토큰, 인증서·개인 키, 실제 `settings.json`을 이�
 
 [Dependabot 설정](.github/dependabot.yml)은 npm·Cargo·GitHub Actions를 매주 월요일 오전 9시(Asia/Tokyo)에 확인합니다. npm과 Actions의 minor·patch 업데이트는 생태계별로 묶고, Cargo는 patch만 묶습니다. 그 외 버전 변경은 별도 PR로 검토하며 일반 업데이트 PR 수는 npm 3개, Cargo 3개, Actions 2개로 제한합니다.
 
+Tauri와 플러그인은 npm 패키지와 Rust crate의 major·minor 버전이 일치해야 합니다. Dependabot은 두 생태계의 lock 파일을 각각 갱신하므로, 버전 불일치로 빌드가 실패하면 대응 패키지를 함께 갱신한 통합 PR에서 검증합니다. 버전 검사를 우회하지 않습니다.
+
 Whisper·RNNoise 서브모듈은 매월 확인하고 한 번에 1개의 개별 PR만 엽니다. 서브모듈은 태그 릴리즈 대신 추적 브랜치의 커밋이 갱신될 수 있으므로 변경 이력·네이티브 빌드·음성 회귀 검증을 확인합니다.
 
 저장소의 Dependabot alerts와 security updates도 활성화합니다. 보안 업데이트는 정기 버전 점검 일정과 별도로 PR이 생성됩니다. 생성된 PR은 기존 CI와 코드 리뷰를 거쳐 머지하며, 이 설정은 의존성 버전이나 앱 설치 파일을 직접 바꾸지 않습니다. Dependabot PR에 배포 인증서나 새 쓰기 권한을 제공하지 않습니다.

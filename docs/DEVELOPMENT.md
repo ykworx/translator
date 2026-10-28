@@ -8,7 +8,7 @@ macOS 네이티브 개발에는 다음 도구가 필요합니다.
 
 | 도구 | 용도 |
 | --- | --- |
-| Node.js 22.12 이상인 22.x와 npm | Vite 요구 사항을 충족하는 CI와 같은 계열의 실행·검증 환경 |
+| Node.js 22.22.2 이상인 22.x와 npm | Vite·Vitest·jsdom 요구 사항을 충족하는 CI와 같은 계열의 실행·검증 환경 |
 | Rust stable과 Cargo | Tauri와 Rust 명령 빌드 |
 | Xcode 또는 Xcode Command Line Tools | Swift, clang, macOS SDK와 `xcrun` |
 | CMake | Whisper와 ggml 네이티브 빌드 |
@@ -45,7 +45,7 @@ npm ci
 git submodule update --init --recursive
 ```
 
-`npm ci`는 `package-lock.json`을 사용합니다. Whisper와 RNNoise도 저장소가 지정한 커밋으로 준비하며, 일반 개발을 위해 서브모듈을 최신 브랜치로 올릴 필요는 없습니다.
+`npm ci`는 `package-lock.json`을 사용합니다. Node 버전 관리 도구를 사용한다면 `.nvmrc`의 22 계열을 선택한 뒤 `node --version`이 22.22.2 이상인지 확인하세요. Node 24.15.0 이상인 24.x 또는 26 이상도 의존성의 지원 범위에 포함되지만, CI는 최신 22.x로 검증합니다. Whisper와 RNNoise도 저장소가 지정한 커밋으로 준비하며, 일반 개발을 위해 서브모듈을 최신 브랜치로 올릴 필요는 없습니다.
 
 ## 개발 중 실행
 
