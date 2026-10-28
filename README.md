@@ -22,7 +22,7 @@
 
 [Releases](https://github.com/ykworx/translator/releases)에서 공개 설치파일을 확인하세요. 아직 설치파일이 없거나 개발 버전을 실행하려면 소스에서 시작할 수 있습니다.
 
-macOS에서 Node.js/npm, Rust, Xcode Command Line Tools, CMake를 준비합니다.
+macOS에서 Node.js 22.22.2 이상인 22.x/npm, Rust, Xcode Command Line Tools, CMake를 준비합니다.
 
 ```bash
 git clone --recurse-submodules https://github.com/ykworx/translator.git
