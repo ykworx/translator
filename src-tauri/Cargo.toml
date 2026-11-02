@@ -34,7 +34,7 @@ futures-util = "0.3"
 tokio = { version = "1", features = ["time", "sync"] }
 httpdate = "1"
 uuid = { version = "1", features = ["v4"] }
-zip = "2"
+zip = "9"
 
 [package.metadata.tauri.cli]
 watcher-ignore = ["vendor", "**/vendor/**"]
